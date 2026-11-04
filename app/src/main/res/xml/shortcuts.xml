@@ -1,0 +1,16 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="record_now"
+        android:enabled="true"
+        android:icon="@drawable/ic_mic_notification"
+        android:shortcutShortLabel="@string/shortcut_record_now">
+        <intent
+            android:action="com.ottomusic.sketch.action.RECORD_NOW"
+            android:targetPackage="com.ottomusic.sketch"
+            android:targetClass="com.ottomusic.sketch.MainActivity">
+            <extra
+                android:name="com.ottomusic.sketch.extra.RECORD_NOW"
+                android:value="true" />
+        </intent>
+    </shortcut>
+</shortcuts>

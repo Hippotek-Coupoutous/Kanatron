@@ -3,6 +3,8 @@ package com.ottomusic.sketch.playback
 import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.frameAtBeat
 import com.ottomusic.sketch.core.mixClicks
+import com.ottomusic.sketch.core.pcm16At
+import com.ottomusic.sketch.core.putPcm16
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
@@ -46,10 +48,9 @@ internal class ClickPcmMixer(
             val clickSample = clicks[frame].toInt()
             for (channel in 0 until channels) {
                 val index = offset + (frame * channels + channel) * 2
-                val sample = (bytes[index].toInt() and 0xff) or (bytes[index + 1].toInt() shl 8)
-                val mixed = (sample.toShort().toInt() + clickSample).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                bytes[index] = mixed.toByte()
-                bytes[index + 1] = (mixed shr 8).toByte()
+                val sample = pcm16At(bytes, index)
+                val mixed = (sample + clickSample).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                putPcm16(bytes, index, mixed)
             }
         }
     }

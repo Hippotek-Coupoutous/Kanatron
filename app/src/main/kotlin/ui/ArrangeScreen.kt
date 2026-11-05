@@ -286,7 +286,7 @@ fun ArrangeScreen(
                 enabled = !loading && selectedIds.size in 2..Project.MAX_TRACKS
             )
         } else {
-            Text("${current.sampleRate} Hz · ${current.channels} channel${if (current.channels == 1) "" else "s"} · ${formatFrames(current.totalFrames, current.sampleRate)}")
+            Text("${current.sampleRate} Hz · ${current.channels} channel${if (current.channels == 1) "" else "s"} · ${RecordingCore.formatClock(RecordingCore.elapsedMillis(current.totalFrames, current.sampleRate), withMillis = true, hours = false)}")
             if (missingSources.isNotEmpty()) {
                 Text("Missing or changed source WAV: ${missingSources.joinToString()}. The project is saved; preview and export are paused until it is restored.", color = MaterialTheme.colorScheme.error)
             }
@@ -585,9 +585,4 @@ private fun laneColor(index: Int): Color = when (index % 4) {
     1 -> Synth.cyan
     2 -> Synth.violet
     else -> Synth.yellow
-}
-
-private fun formatFrames(frames: Long, sampleRate: Int): String {
-    val millis = RecordingCore.elapsedMillis(frames, sampleRate)
-    return "%d:%02d.%03d".format(millis / 60_000L, millis / 1_000L % 60L, millis % 1_000L)
 }

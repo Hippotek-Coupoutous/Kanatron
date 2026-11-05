@@ -3,6 +3,7 @@ package com.ottomusic.sketch.tuner
 import android.media.AudioRecord
 import com.ottomusic.sketch.core.TunerPitch
 import com.ottomusic.sketch.core.TunerPitchReading
+import com.ottomusic.sketch.core.pcm16At
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
 import com.ottomusic.sketch.platform.PcmInput
 import com.ottomusic.sketch.platform.PcmInputFactory
@@ -80,8 +81,9 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
 
             val bytes = ByteArray(4096)
             val samples = FloatArray(FRAME_SAMPLES)
+            val pair = ByteArray(2)
+            var pendingBytes = 0
             var sampleCount = 0
-            var pendingLowByte = -1
             while (!stopRequested) {
                 val count = created.read(bytes)
                 if (stopRequested) break
@@ -90,17 +92,14 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
                 if (count == 0) continue
 
                 for (index in 0 until count) {
-                    val value = bytes[index].toInt() and 0xff
-                    if (pendingLowByte < 0) {
-                        pendingLowByte = value
-                    } else {
-                        samples[sampleCount++] = ((pendingLowByte or (value shl 8)).toShort().toInt() / 32768f)
-                        pendingLowByte = -1
-                        if (sampleCount == samples.size) {
-                            val reading = TunerPitch.detect(samples, created.sampleRate, a4Hz)
-                            publishWhileActive(TunerAudioState(isListening = true, reading = reading))
-                            sampleCount = 0
-                        }
+                    pair[pendingBytes++] = bytes[index]
+                    if (pendingBytes < 2) continue
+                    pendingBytes = 0
+                    samples[sampleCount++] = pcm16At(pair, 0) / 32768f
+                    if (sampleCount == samples.size) {
+                        val reading = TunerPitch.detect(samples, created.sampleRate, a4Hz)
+                        publishWhileActive(TunerAudioState(isListening = true, reading = reading))
+                        sampleCount = 0
                     }
                 }
             }

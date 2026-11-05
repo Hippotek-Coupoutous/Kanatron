@@ -26,6 +26,18 @@ object RecordingCore {
         return (frames / sampleRate) * 1000L + (frames % sampleRate) * 1000L / sampleRate
     }
 
+    /**
+     * Clock text for [milliseconds]: mm:ss, or h:mm:ss past an hour, plus .mmm when [withMillis].
+     * Without [hours] the minute field counts total minutes instead, e.g. m:ss.mmm.
+     */
+    fun formatClock(milliseconds: Long, withMillis: Boolean = false, hours: Boolean = true): String {
+        val seconds = milliseconds / 1_000L
+        val tail = if (withMillis) "%02d.%03d".format(seconds % 60L, milliseconds % 1_000L) else "%02d".format(seconds % 60L)
+        if (!hours) return "%d:%s".format(milliseconds / 60_000L, tail)
+        return if (seconds >= 3_600L) "%d:%02d:%s".format(seconds / 3_600L, seconds / 60L % 60L, tail)
+        else "%02d:%s".format(seconds / 60L, tail)
+    }
+
     fun hasFreeSpace(freeBytes: Long, reserveBytes: Long): Boolean {
         require(freeBytes >= 0 && reserveBytes >= 0)
         return freeBytes >= reserveBytes
@@ -65,7 +77,7 @@ object RecordingCore {
         val samples = byteCount / 2
         for (i in 0 until samples) {
             val offset = i * 2
-            val sample = ((pcm16le[offset + 1].toInt() shl 8) or (pcm16le[offset].toInt() and 0xff)).toShort().toInt()
+            val sample = pcm16At(pcm16le, offset)
             val magnitude = kotlin.math.abs(sample)
             peak = maxOf(peak, magnitude)
             squares += sample.toDouble() * sample.toDouble()

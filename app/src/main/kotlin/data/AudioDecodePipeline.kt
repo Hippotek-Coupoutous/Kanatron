@@ -6,6 +6,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
 import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.core.putPcm16
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
@@ -144,8 +145,7 @@ internal class AudioDecodePipeline(
             repeat(samples) { index ->
                 val value = input.float.coerceIn(-1f, 1f)
                 val sample = if (value <= -1f) Short.MIN_VALUE.toInt() else (value * Short.MAX_VALUE).roundToInt()
-                output[index * 2] = sample.toByte()
-                output[index * 2 + 1] = (sample shr 8).toByte()
+                putPcm16(output, index * 2, sample)
             }
         }
     }

@@ -8,6 +8,18 @@ import java.io.OutputStream
 /** Sample rates accepted for project audio, imports and rendering. */
 val SUPPORTED_SAMPLE_RATES = 8_000..192_000
 
+/** Signed 16-bit little-endian sample at [offset], in -32768..32767. Inline: runs per sample in audio loops. */
+@Suppress("NOTHING_TO_INLINE")
+inline fun pcm16At(bytes: ByteArray, offset: Int): Int =
+    (bytes[offset].toInt() and 0xFF) or (bytes[offset + 1].toInt() shl 8)
+
+/** Writes [value] as a signed 16-bit little-endian sample at [offset]. */
+@Suppress("NOTHING_TO_INLINE")
+inline fun putPcm16(bytes: ByteArray, offset: Int, value: Int) {
+    bytes[offset] = value.toByte()
+    bytes[offset + 1] = (value shr 8).toByte()
+}
+
 class UnsupportedWavEncodingException(message: String) : IOException(message)
 
 data class WavFormat(

@@ -28,7 +28,7 @@ object PcmWavReader {
                 val wanted = minOf(bytes.size, (samples.size - sampleIndex) * 2)
                 input.readFully(bytes, 0, wanted)
                 for (offset in 0 until wanted step 2) {
-                    samples[sampleIndex++] = ((bytes[offset].toInt() and 0xFF) or (bytes[offset + 1].toInt() shl 8)).toShort()
+                    samples[sampleIndex++] = pcm16At(bytes, offset).toShort()
                 }
             }
         }

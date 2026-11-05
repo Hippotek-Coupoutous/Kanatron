@@ -25,9 +25,9 @@ internal object AacPrimingProbe {
 
     fun pcm(marker: ShortArray, channels: Int): ByteArray {
         require(channels in 1..2)
-        return ByteArray(marker.size * channels * 2) { index ->
-            val sample = marker[index / (channels * 2)].toInt()
-            if (index % 2 == 0) sample.toByte() else (sample shr 8).toByte()
+        val samples = marker.size * channels
+        return ByteArray(samples * 2).also { bytes ->
+            for (index in 0 until samples) putPcm16(bytes, index * 2, marker[index / channels].toInt())
         }
     }
 

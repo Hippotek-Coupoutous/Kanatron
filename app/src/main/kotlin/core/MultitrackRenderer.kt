@@ -110,8 +110,8 @@ object MultitrackRenderer {
                             val rounded = Math.round(sum)
                             if (rounded !in Short.MIN_VALUE.toLong()..Short.MAX_VALUE.toLong()) clipped++
                             val sample = rounded.coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toInt()
-                            pcm[byteOffset++] = sample.toByte()
-                            pcm[byteOffset++] = (sample ushr 8).toByte()
+                            putPcm16(pcm, byteOffset, sample)
+                            byteOffset += 2
                         }
                         output.write(pcm, 0, byteOffset)
                         start += count
@@ -248,8 +248,7 @@ object MultitrackRenderer {
 
         private fun sample(bytes: ByteArray, startFrame: Long, frame: Long, channel: Int): Int {
             val offset = Math.toIntExact((frame - startFrame) * format.blockAlign + channel * 2L)
-            val raw = (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
-            return if (raw and 0x8000 != 0) raw - 0x1_0000 else raw
+            return pcm16At(bytes, offset)
         }
 
         override fun close() = random.close()

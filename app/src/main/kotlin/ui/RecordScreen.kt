@@ -74,7 +74,7 @@ internal fun RecordScreen(
                 }
                 Text(label, color = if (recording.phase == RecordingPhase.RECORDING) Synth.pink else Synth.muted, fontWeight = FontWeight.SemiBold)
                 Text(
-                    formatTime(RecordingCore.elapsedMillis(recording.frames, recording.sampleRate)),
+                    RecordingCore.formatClock(RecordingCore.elapsedMillis(recording.frames, recording.sampleRate)),
                     color = if (active) Synth.pink else Synth.cyan, fontSize = 60.sp, fontFamily = FontFamily.Monospace
                 )
                 LevelMeter(recording.level.peak, recording.level.isClipping, Modifier.fillMaxWidth().height(54.dp))

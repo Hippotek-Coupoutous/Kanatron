@@ -36,7 +36,7 @@ object PeakExtractor {
                     val wanted = minOf(buffer.size.toLong(), remaining).toInt()
                     input.readFully(buffer, 0, wanted)
                     for (offset in 0 until wanted step 2) {
-                        val sample = ((buffer[offset + 1].toInt() shl 8) or (buffer[offset].toInt() and 0xff)).toShort()
+                        val sample = pcm16At(buffer, offset).toShort()
                         if (sample < minimum) minimum = sample
                         if (sample > maximum) maximum = sample
                     }

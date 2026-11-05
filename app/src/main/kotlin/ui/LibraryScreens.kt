@@ -117,7 +117,7 @@ internal fun HomeScreen(
                     playerState != null && (playing || playerState.positionFrames > current.trim.startFrame) -> playerState.positionFrames - current.trim.startFrame
                     else -> current.trim.frameCount
                 }
-                Text(formatTime(if (current == null) 0L else RecordingCore.elapsedMillis(frames.coerceAtLeast(0L), current.sampleRate)), color = Synth.cyan, fontSize = 56.sp, fontFamily = FontFamily.Monospace)
+                Text(RecordingCore.formatClock(if (current == null) 0L else RecordingCore.elapsedMillis(frames.coerceAtLeast(0L), current.sampleRate)), color = Synth.cyan, fontSize = 56.sp, fontFamily = FontFamily.Monospace)
                 MiniWave(peaks, current, playerState?.positionFrames ?: 0L, Modifier.fillMaxWidth().height(96.dp))
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
@@ -313,8 +313,8 @@ internal fun DetailScreen(
                 Text("${duration(project)} · ${project.sampleRate} Hz · ${date(project.createdAtEpochMillis)}", color = Synth.muted, style = MaterialTheme.typography.bodyMedium)
                 MiniWave(peaks, project, playerState.positionFrames, Modifier.fillMaxWidth().height(128.dp).semantics { contentDescription = "Waveform for ${project.name}" })
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatTime(RecordingCore.elapsedMillis(playerState.positionFrames, project.sampleRate)), fontFamily = FontFamily.Monospace, color = Synth.cyan)
-                    Text(formatTime(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate)), fontFamily = FontFamily.Monospace, color = Synth.muted)
+                    Text(RecordingCore.formatClock(RecordingCore.elapsedMillis(playerState.positionFrames, project.sampleRate)), fontFamily = FontFamily.Monospace, color = Synth.cyan)
+                    Text(RecordingCore.formatClock(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate)), fontFamily = FontFamily.Monospace, color = Synth.muted)
                 }
                 val seekStart = project.trim.startFrame.toFloat()
                 val seekEnd = project.trim.endFrame.toFloat().coerceAtLeast(seekStart + 1f)
@@ -375,14 +375,6 @@ internal fun MissingAudioScreen(projectName: String, onBack: () -> Unit) {
     }
 }
 
-private fun duration(project: Project): String = formatTime(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate))
-
-internal fun formatTime(milliseconds: Long): String {
-    val seconds = milliseconds / 1000L
-    val hours = seconds / 3600L
-    val minutes = seconds / 60L % 60L
-    val remainder = seconds % 60L
-    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, remainder) else "%02d:%02d".format(seconds / 60L, remainder)
-}
+private fun duration(project: Project): String = RecordingCore.formatClock(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate))
 
 private fun date(time: Long): String = SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(time))

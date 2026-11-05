@@ -703,15 +703,8 @@ private fun coarseStep(sampleRate: Int): Long = (sampleRate / 10).coerceAtLeast(
 private fun stepFrames(sampleRate: Int, coarse: Boolean): Long = if (coarse) coarseStep(sampleRate) else fineStep(sampleRate)
 private fun readableSize(bytes: Long): String = if (bytes < 1024L * 1024L) "${(bytes + 1023L) / 1024L} KB" else "%.1f MB".format(bytes / (1024.0 * 1024.0))
 
-private fun formatFrame(frame: Long, sampleRate: Int): String {
-    val milliseconds = RecordingCore.elapsedMillis(frame, sampleRate)
-    val hours = milliseconds / 3_600_000L
-    val minutes = milliseconds / 60_000L % 60L
-    val seconds = milliseconds / 1_000L % 60L
-    val millis = milliseconds % 1_000L
-    return if (hours > 0L) "%d:%02d:%02d.%03d".format(hours, minutes, seconds, millis)
-    else "%02d:%02d.%03d".format(milliseconds / 60_000L, seconds, millis)
-}
+private fun formatFrame(frame: Long, sampleRate: Int): String =
+    RecordingCore.formatClock(RecordingCore.elapsedMillis(frame, sampleRate), withMillis = true)
 
 private fun exportFailureMessage(failure: Throwable): String =
     com.ottomusic.sketch.ui.exportFailureMessage(failure, "Could not export this selection.")

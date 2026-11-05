@@ -24,7 +24,6 @@ internal class ExportRetention(
         projectId: String,
         preferredName: String,
         expectedBytes: Long,
-        forSharing: Boolean = false,
         writer: (File) -> Unit
     ): File =
         synchronized(LOCK) {
@@ -38,9 +37,9 @@ internal class ExportRetention(
             try {
                 writer(target)
                 if (!target.isFile) throw IOException("Export did not produce a file.")
+                // Every export leaves the app immediately as a share, so its share grace starts now.
                 val completedAt = now()
-                save(Entry(target.name, projectId, target.extension.lowercase(), completedAt,
-                    if (forSharing) completedAt else 0L, 0L))
+                save(Entry(target.name, projectId, target.extension.lowercase(), completedAt, completedAt, 0L))
                 makeRoom(0L, now())
                 target
             } catch (failure: Throwable) {
@@ -51,12 +50,6 @@ internal class ExportRetention(
                 ExportActivePaths.finish(target)
             }
         }
-
-    fun shared(file: File) = synchronized(LOCK) {
-        val target = ownedFile(file) ?: return@synchronized
-        val entry = load(target.name) ?: return@synchronized
-        save(entry.copy(lastSharedAt = now()))
-    }
 
     fun projectDeleted(projectId: String) = synchronized(LOCK) {
         val time = now()
@@ -83,12 +76,8 @@ internal class ExportRetention(
             }
         }
         val files = exportFiles()
-        val entries = files.associateWith { load(it.name) }
-        val latest = latestFiles(entries)
-
         files.forEach { file ->
-            val entry = entries[file]
-            if (canRetire(file, entry, file in latest, time)) remove(file)
+            if (canRetire(file, load(file.name), time)) remove(file)
         }
     }
 
@@ -98,8 +87,7 @@ internal class ExportRetention(
         if (fits(used, additionalBytes)) return
 
         val entries = exportFiles().associateWith { load(it.name) }
-        val latest = latestFiles(entries)
-        val candidates = entries.keys.filter { file -> canRetire(file, entries[file], file in latest, time) }
+        val candidates = entries.keys.filter { file -> canRetire(file, entries[file], time) }
             .sortedBy { file -> entries[file]?.completedAt ?: file.lastModified() }
         for (file in candidates) {
             val size = file.length()
@@ -109,13 +97,12 @@ internal class ExportRetention(
         throw IOException("Export storage is full. Delete an unneeded recording or try a shorter selection. Recent shares are kept for seven days.")
     }
 
-    private fun canRetire(file: File, entry: Entry?, isLatest: Boolean, time: Long): Boolean {
+    private fun canRetire(file: File, entry: Entry?, time: Long): Boolean {
         if (file.absolutePath in ExportActivePaths.snapshot()) return false
         if (entry == null) return time >= plus(file.lastModified(), LEGACY_MAX_AGE_MS)
         if (entry.retiredAt != 0L) {
             return entry.lastSharedAt == 0L || time >= plus(entry.lastSharedAt, SHARE_GRACE_MS)
         }
-        if (isLatest) return false
         val protectedUntil = maxOf(plus(entry.completedAt, SHARE_GRACE_MS),
             if (entry.lastSharedAt == 0L) 0L else plus(entry.lastSharedAt, SHARE_GRACE_MS))
         return time >= protectedUntil
@@ -124,7 +111,7 @@ internal class ExportRetention(
     private fun uniqueTarget(name: String): File {
         require(name == File(name).name && name.length <= 240) { "Invalid export filename" }
         val extension = name.substringAfterLast('.', "").lowercase()
-        require(extension == "wav" || extension == "m4a") { "Unsupported export format" }
+        require(extension == "wav") { "Unsupported export format" }
         val stem = name.dropLast(extension.length + 1).ifBlank { "Recording" }
         var suffix = 1
         while (true) {
@@ -135,14 +122,8 @@ internal class ExportRetention(
     }
 
     private fun exportFiles(): List<File> = exports.listFiles().orEmpty().filter {
-        it.isFile && (it.extension.equals("wav", true) || it.extension.equals("m4a", true))
+        it.isFile && it.extension.equals("wav", true)
     }
-
-    private fun latestFiles(entries: Map<File, Entry?>): Set<File> = entries.mapNotNull { (file, entry) ->
-        if (entry == null || entry.retiredAt != 0L) null else file to entry
-    }.groupBy { (_, entry) -> entry.projectId to entry.extension }
-        .mapValues { (_, owned) -> owned.maxWithOrNull(compareBy<Pair<File, Entry>> { it.second.completedAt }.thenBy { it.first.name })?.first }
-            .values.filterNotNull().toSet()
 
     private fun totalBytes(): Long = try {
         exportFiles().fold(0L) { total, file -> Math.addExact(total, file.length()) }
@@ -159,10 +140,6 @@ internal class ExportRetention(
         metadataFile(file.name).delete()
         return true
     }
-
-    private fun ownedFile(file: File): File? = runCatching {
-        file.canonicalFile.takeIf { it.parentFile == exports.canonicalFile && it.isFile }
-    }.getOrNull()
 
     private fun save(entry: Entry) {
         if (!metadata.isDirectory && !metadata.mkdirs()) throw IOException("Could not save export ownership.")
@@ -188,7 +165,7 @@ internal class ExportRetention(
         val fields = file.readText(Charsets.UTF_8).split('\n')
         require(fields.size == 6)
         val entry = Entry(fields[0], fields[1], fields[2], fields[3].toLong(), fields[4].toLong(), fields[5].toLong())
-        require(PROJECT_ID.matches(entry.projectId) && (entry.extension == "wav" || entry.extension == "m4a"))
+        require(PROJECT_ID.matches(entry.projectId) && entry.extension == "wav")
         require(entry.fileName == File(entry.fileName).name && entry.fileName.length <= 240)
         require(entry.fileName.substringAfterLast('.', "").lowercase() == entry.extension)
         entry

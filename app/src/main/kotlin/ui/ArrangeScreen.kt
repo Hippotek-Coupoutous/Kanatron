@@ -53,23 +53,16 @@ import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.data.AacM4aExporter
-import com.ottomusic.sketch.data.PlatformAacEncoder
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.data.WavExporter
 import com.ottomusic.sketch.playback.WavPlayer
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-private enum class ArrangeExportFormat(val label: String) {
-    Wav("WAV"), M4a("M4A (AAC)")
-}
 
 private data class DragPreview(val clipId: String, val positionFrames: Long)
 
@@ -92,11 +85,7 @@ fun ArrangeScreen(
     var loading by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var note by remember { mutableStateOf<String?>(null) }
     var player by remember { mutableStateOf<WavPlayer?>(null) }
-    var exportFormat by rememberSaveable { mutableStateOf(ArrangeExportFormat.Wav.name) }
-    var exportProgress by remember { mutableStateOf(0f) }
-    var activeExport by remember { mutableStateOf<AtomicBoolean?>(null) }
 
     LaunchedEffect(editingProjectId) {
         if (editingProjectId.isNotBlank()) {
@@ -130,7 +119,6 @@ fun ArrangeScreen(
     fun persist(next: Project) {
         stopPreview()
         error = null
-        note = null
         busy = true
         scope.launch {
             try {
@@ -190,59 +178,37 @@ fun ArrangeScreen(
         }
     }
 
-    fun exportAndShare() {
+    fun shareArrangement() {
         val current = project ?: return
         if (missingSources.isNotEmpty()) return
         stopPreview()
         busy = true
         error = null
-        note = null
-        exportProgress = 0f
-        val format = ArrangeExportFormat.valueOf(exportFormat)
-        val cancel = AtomicBoolean(false)
-        activeExport = cancel
         scope.launch {
             try {
                 val file = withContext(Dispatchers.IO) {
-                    val selected = current.trim
-                    val estimated = when (format) {
-                        ArrangeExportFormat.Wav -> WavFormat.outputBytes(selected.frameCount, current.channels)
-                        ArrangeExportFormat.M4a -> AacM4aExporter.estimateOutputBytes(selected.frameCount, current.sampleRate, current.channels)
-                    }
-                    val name = when (format) {
-                        ArrangeExportFormat.Wav -> ExportFilename.wav("${current.name}-mix.wav", current.name)
-                        ArrangeExportFormat.M4a -> ExportFilename.m4a("${current.name}-mix.m4a", current.name)
-                    }
-                    repository.exportFile(current.id, name, estimated, forSharing = true) { target ->
-                        repository.withTemporaryWav(current, cancel) { source ->
-                            val onProgress: (Long, Long) -> Unit = { done, total ->
-                                scope.launch { exportProgress = if (total == 0L) 1f else done.toFloat() / total }
-                            }
-                            when (format) {
-                                ArrangeExportFormat.Wav -> WavExporter.export(source, target, selected, cancel, onProgress)
-                                ArrangeExportFormat.M4a -> AacM4aExporter.export(source, target, selected, PlatformAacEncoder(), cancel, onProgress)
-                            }
+                    val selection = current.trim
+                    val name = ExportFilename.wav("${current.name}-mix", current.name)
+                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, current.channels)
+                    repository.exportFile(current.id, name, estimatedBytes) { target ->
+                        repository.withTemporaryWav(current) { source ->
+                            WavExporter.export(source, target, selection)
                         }
-                    }.also(repository::markExportShared)
+                    }
                 }
                 shareExport(context, file, "Share arrangement")
-                note = "Export ready to share."
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Throwable) {
-                error = exportFailureMessage(failure, "Could not export this arrangement.")
+                error = exportFailureMessage(failure, "Could not prepare this arrangement for sharing.")
             } finally {
-                activeExport = null
                 busy = false
             }
         }
     }
 
     DisposableEffect(Unit) {
-        onDispose {
-            activeExport?.set(true)
-            player?.release()
-        }
+        onDispose { player?.release() }
     }
 
     val currentPlayer = player
@@ -296,7 +262,7 @@ fun ArrangeScreen(
         } else {
             Text("${current.sampleRate} Hz · ${current.channels} channel${if (current.channels == 1) "" else "s"} · ${RecordingCore.formatClock(RecordingCore.elapsedMillis(current.totalFrames, current.sampleRate), withMillis = true, hours = false)}")
             if (missingSources.isNotEmpty()) {
-                Text("Missing or changed source WAV: ${missingSources.joinToString()}. The project is saved; preview and export are paused until it is restored.", color = MaterialTheme.colorScheme.error)
+                Text("Missing or changed source WAV: ${missingSources.joinToString()}. The project is saved; preview and sharing are paused until it is restored.", color = MaterialTheme.colorScheme.error)
             }
             SynthPanel {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -359,29 +325,13 @@ fun ArrangeScreen(
             }
 
             SynthPanel {
-                Text("Export arrangement", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ArrangeExportFormat.entries.forEach { format ->
-                        FilterChip(
-                            selected = exportFormat == format.name,
-                            onClick = { exportFormat = format.name },
-                            enabled = !busy,
-                            label = { Text(format.label) }
-                        )
-                    }
-                }
-                if (busy && activeExport != null) {
-                    Text("${(exportProgress * 100).roundToInt()}%")
-                    BigButton(text = "Cancel export", onClick = { activeExport?.set(true) }, enabled = true)
-                }
                 BigButton(
-                    text = if (busy) "Preparing…" else "Export & share",
-                    onClick = ::exportAndShare,
+                    text = if (busy) "Preparing…" else "Share arrangement",
+                    onClick = ::shareArrangement,
                     primary = true,
                     enabled = !busy && missingSources.isEmpty()
                 )
             }
-            note?.let { Text(it) }
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     }

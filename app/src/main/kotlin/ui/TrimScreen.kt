@@ -70,13 +70,10 @@ import com.ottomusic.sketch.core.TrimEdge
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.core.parseExactTimeMillis
-import com.ottomusic.sketch.data.AacM4aExporter
-import com.ottomusic.sketch.data.PlatformAacEncoder
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.data.WavExporter
 import com.ottomusic.sketch.playback.WavPlayer
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -84,10 +81,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-private enum class ExportFormat(val label: String) {
-    Wav("WAV"), M4a("M4A (AAC)")
-}
 
 @Composable
 fun TrimScreen(
@@ -211,14 +204,9 @@ private fun TrimEditorLoaded(
     var showMore by remember(initial.id) { mutableStateOf(false) }
     var editingEdge by remember(initial.id) { mutableStateOf<TrimEdge?>(null) }
     var exactTime by remember(initial.id) { mutableStateOf("") }
-    var exportName by remember(initial.id) { mutableStateOf("${initial.name}-trim.wav") }
-    var exportFormat by remember(initial.id) { mutableStateOf(ExportFormat.Wav) }
-    var exportInProgress by remember { mutableStateOf(false) }
-    var exportProgress by remember { mutableStateOf(0f) }
-    var exportFailure by remember { mutableStateOf<String?>(null) }
+    var shareInProgress by remember { mutableStateOf(false) }
+    var shareFailure by remember { mutableStateOf<String?>(null) }
     var editFailure by remember { mutableStateOf<String?>(null) }
-    var exportedFile by remember { mutableStateOf<File?>(null) }
-    var activeExport by remember { mutableStateOf<AtomicBoolean?>(null) }
     var edgeAudition by remember { mutableStateOf(false) }
     val peaks by produceState(initialValue = emptyList<Peak>(), key1 = wav.absolutePath) {
         val peakJob = currentCoroutineContext()[Job]
@@ -238,7 +226,6 @@ private fun TrimEditorLoaded(
             editFailure = null
         } catch (failure: Throwable) {
             project = persistedProject
-            exportedFile = null
             editFailure = failure.message ?: "Could not save this trim change."
         }
     }
@@ -248,7 +235,6 @@ private fun TrimEditorLoaded(
         val next = actions.command() ?: return
         if (next == project.trim) return
         project = project.copy(trim = next, undoHistory = actions.historySnapshot())
-        exportedFile = null
         editFailure = null
         if (persist) persistEditState()
     }
@@ -289,61 +275,24 @@ private fun TrimEditorLoaded(
         view.announceForAccessibility("${edge.name} boundary ${formatFrame(frame, sampleRate)}")
     }
 
-    fun beginExport() {
-        exportFailure = null
-        exportedFile = null
-        val selectedFormat = exportFormat
-        val targetName = when (selectedFormat) {
-            ExportFormat.Wav -> ExportFilename.wav(exportName, project.name)
-            ExportFormat.M4a -> ExportFilename.m4a(exportName, project.name)
-        }
-        val cancelled = AtomicBoolean(false)
-        activeExport = cancelled
-        exportInProgress = true
-        exportProgress = 0f
-        val selectedRange = trim
+    fun shareSelection() {
+        shareFailure = null
+        shareInProgress = true
+        val selection = trim
         scope.launch {
             try {
-                var reportedPercent = -1
-                val onProgress: (Long, Long) -> Unit = { copied, totalBytes ->
-                    val percent = if (totalBytes == 0L) 100 else (copied.toDouble() * 100.0 / totalBytes).toInt()
-                    if (percent != reportedPercent) {
-                        reportedPercent = percent
-                        scope.launch { exportProgress = percent / 100f }
+                val file = withContext(Dispatchers.IO) {
+                    val name = ExportFilename.wav("${project.name}-trim", project.name)
+                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, project.channels)
+                    repository.exportFile(project.id, name, estimatedBytes) { target ->
+                        WavExporter.export(wav, target, selection)
                     }
                 }
-                exportedFile = withContext(Dispatchers.IO) {
-                    val estimatedBytes = when (selectedFormat) {
-                        ExportFormat.Wav -> WavFormat.outputBytes(selectedRange.frameCount, project.channels)
-                        ExportFormat.M4a -> AacM4aExporter.estimateOutputBytes(
-                            selectedRange.frameCount, project.sampleRate, project.channels
-                        )
-                    }
-                    repository.exportFile(project.id, targetName, estimatedBytes) { target ->
-                        when (selectedFormat) {
-                            ExportFormat.Wav -> WavExporter.export(wav, target, selectedRange, cancelled, onProgress = onProgress)
-                            ExportFormat.M4a -> AacM4aExporter.export(
-                                wav, target, selectedRange, PlatformAacEncoder(), cancelled, onProgress = onProgress
-                            )
-                        }
-                    }
-                }
+                shareExport(context, file, "Share selection")
             } catch (failure: Throwable) {
-                exportFailure = exportFailureMessage(failure)
+                shareFailure = exportFailureMessage(failure, "Could not prepare this selection for sharing.")
             } finally {
-                exportInProgress = false
-                activeExport = null
-            }
-        }
-    }
-
-    fun beginShare(file: File) {
-        scope.launch {
-            try {
-                withContext(Dispatchers.IO) { repository.markExportShared(file) }
-                shareExport(context, file)
-            } catch (failure: Throwable) {
-                exportFailure = failure.message ?: "Could not prepare this export for sharing."
+                shareInProgress = false
             }
         }
     }
@@ -474,19 +423,6 @@ private fun TrimEditorLoaded(
                     onAudition = ::audition
                 )
             }
-
-            Text("Export filename", style = MaterialTheme.typography.labelLarge)
-            OutlinedTextField(
-                value = exportName,
-                onValueChange = { exportName = it },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
-            )
-            if (exportFailure != null) Text(exportFailure!!, color = MaterialTheme.colorScheme.error)
-            if (exportInProgress) {
-                androidx.compose.material3.LinearProgressIndicator(progress = { exportProgress }, modifier = Modifier.fillMaxWidth())
-                Text("Exporting ${ (exportProgress * 100).toInt() }%", style = MaterialTheme.typography.bodySmall)
-            }
         }
 
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -533,52 +469,20 @@ private fun TrimEditorLoaded(
         }
 
         Surface(tonalElevation = 3.dp) {
-            Column(
+            Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Format", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-                    ExportFormat.entries.forEach { format ->
-                        if (exportFormat == format) {
-                            Button(enabled = false, onClick = {}, modifier = Modifier.heightIn(min = 48.dp)) { Text(format.label) }
-                        } else {
-                            OutlinedButton(
-                                enabled = !exportInProgress,
-                                onClick = {
-                                    exportFormat = format
-                                    exportName = when (format) {
-                                        ExportFormat.Wav -> ExportFilename.wav(exportName, project.name)
-                                        ExportFormat.M4a -> ExportFilename.m4a(exportName, project.name)
-                                    }
-                                    exportedFile = null
-                                    exportFailure = null
-                                },
-                                modifier = Modifier.heightIn(min = 48.dp)
-                            ) { Text(format.label) }
-                        }
-                    }
+                Column(Modifier.weight(1f)) {
+                    Text("${formatFrame(trim.frameCount, sampleRate)} selected", style = MaterialTheme.typography.bodyMedium)
+                    shareFailure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
-                Row(
-                    Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("${formatFrame(trim.frameCount, sampleRate)} selected", style = MaterialTheme.typography.bodyMedium)
-                        Text("WAV · ${readableSize(WavFormat.outputBytes(trim.frameCount, project.channels))}", style = MaterialTheme.typography.bodySmall)
-                        Text(
-                            "M4A (AAC) · ${readableSize(AacM4aExporter.estimateOutputBytes(trim.frameCount, sampleRate, project.channels))}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    if (exportInProgress) {
-                        Button(onClick = { activeExport?.set(true) }, modifier = Modifier.heightIn(min = 56.dp)) { Text("Cancel") }
-                    } else if (exportedFile != null) {
-                        Button(onClick = { beginShare(exportedFile!!) }, modifier = Modifier.heightIn(min = 56.dp)) { Text("Share ${exportFormat.label}") }
-                    } else {
-                        Button(onClick = ::beginExport, modifier = Modifier.heightIn(min = 56.dp)) { Text("Export ${exportFormat.label}") }
-                    }
-                }
+                Button(
+                    enabled = !shareInProgress,
+                    onClick = ::shareSelection,
+                    modifier = Modifier.heightIn(min = 56.dp)
+                ) { Text("Share WAV") }
             }
         }
     }
@@ -701,10 +605,6 @@ private fun DrawScope.drawTrimWaveform(
 private fun fineStep(sampleRate: Int): Long = (sampleRate / 100).coerceAtLeast(1).toLong()
 private fun coarseStep(sampleRate: Int): Long = (sampleRate / 10).coerceAtLeast(1).toLong()
 private fun stepFrames(sampleRate: Int, coarse: Boolean): Long = if (coarse) coarseStep(sampleRate) else fineStep(sampleRate)
-private fun readableSize(bytes: Long): String = if (bytes < 1024L * 1024L) "${(bytes + 1023L) / 1024L} KB" else "%.1f MB".format(bytes / (1024.0 * 1024.0))
 
 private fun formatFrame(frame: Long, sampleRate: Int): String =
     RecordingCore.formatClock(RecordingCore.elapsedMillis(frame, sampleRate), withMillis = true)
-
-private fun exportFailureMessage(failure: Throwable): String =
-    com.ottomusic.sketch.ui.exportFailureMessage(failure, "Could not export this selection.")

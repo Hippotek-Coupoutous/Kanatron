@@ -252,11 +252,8 @@ class ProjectRepository(context: Context) {
         projectId: String,
         preferredName: String,
         estimatedBytes: Long,
-        forSharing: Boolean = false,
         writer: (File) -> Unit
-    ): File = exportRetention.write(projectId, preferredName, estimatedBytes, forSharing, writer)
-
-    fun markExportShared(file: File) = exportRetention.shared(file)
+    ): File = exportRetention.write(projectId, preferredName, estimatedBytes, writer)
 
     fun sweepStartupOrphans(activeDecodePaths: Set<String>, activeStagingPaths: Set<String>) {
         StartupOrphanSweep.sweep(

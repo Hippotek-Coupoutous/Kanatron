@@ -12,9 +12,6 @@ import java.nio.file.AtomicMoveNotSupportedException
 
 internal fun exportFailureMessage(failure: Throwable, fallback: String): String {
     val causes = generateSequence(failure) { it.cause }.toList()
-    if (causes.any { it is com.ottomusic.sketch.data.ExportCancelledException }) {
-        return "Export cancelled. No partial file was saved."
-    }
     if (causes.any { it is AtomicMoveNotSupportedException }) {
         return "This storage cannot safely replace the export. Any existing file was left unchanged."
     }
@@ -32,7 +29,7 @@ private fun isDestinationPermissionFailure(failure: Throwable): Boolean = when (
     is FileNotFoundException -> {
         val message = failure.message.orEmpty()
         message.contains("permission denied", true) || message.contains("EACCES", true) ||
-            message.matches(Regex(".*[\\\\/]\\.(?:wav-export|m4a-export|export-owner)-[A-Za-z0-9]+\\.tmp$")) ||
+            message.matches(Regex(".*[\\\\/]\\.(?:wav-export|export-owner)-[A-Za-z0-9]+\\.tmp$")) ||
             message.matches(Regex(".*[\\\\/]mix-source-[A-Za-z0-9]+\\.wav$"))
     }
     else -> false
@@ -41,7 +38,7 @@ private fun isDestinationPermissionFailure(failure: Throwable): Boolean = when (
 internal fun shareExport(context: Context, file: File, title: String = "Share audio") {
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     val send = Intent(Intent.ACTION_SEND).apply {
-        type = if (file.extension.equals("m4a", true)) "audio/mp4" else "audio/wav"
+        type = "audio/wav"
         putExtra(Intent.EXTRA_STREAM, uri)
         clipData = ClipData.newUri(context.contentResolver, file.name, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

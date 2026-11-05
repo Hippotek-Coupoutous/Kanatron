@@ -69,7 +69,6 @@ import com.ottomusic.sketch.ui.Synth
 import com.ottomusic.sketch.ui.TrimScreen
 import com.ottomusic.sketch.ui.TunerScreen
 import com.ottomusic.sketch.ui.shareExport
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -386,10 +385,9 @@ private fun AudioSketchApp(
                     val file = repository.exportFile(
                         project.id,
                         ExportFilename.wav(project.name, project.name),
-                        source.length(),
-                        forSharing = true
+                        source.length()
                     ) { target ->
-                        WavExporter.export(source, target, TrimRange(0L, project.totalFrames), AtomicBoolean(false))
+                        WavExporter.export(source, target, TrimRange(0L, project.totalFrames))
                     }
                     file
                 }

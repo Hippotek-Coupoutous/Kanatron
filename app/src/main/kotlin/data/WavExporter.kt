@@ -11,9 +11,6 @@ import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.util.concurrent.atomic.AtomicBoolean
-
-class ExportCancelledException : IOException("Audio export cancelled")
 
 internal data class WavExportSlice(
     val source: File,
@@ -25,13 +22,7 @@ internal data class WavExportSlice(
 )
 
 object WavExporter {
-    fun export(
-        source: File,
-        destination: File,
-        trim: TrimRange,
-        cancelled: AtomicBoolean = AtomicBoolean(false),
-        onProgress: (copiedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
-    ): File {
+    fun export(source: File, destination: File, trim: TrimRange): File {
         val slice = selection(source, destination, trim)
         val sourceFile = slice.source
         val destinationFile = slice.destination
@@ -50,24 +41,19 @@ object WavExporter {
             RandomAccessFile(sourceFile, "r").use { input ->
                 input.seek(slice.dataOffset)
                 FileOutputStream(tempFile).use { output ->
-                    checkCancelled(cancelled)
                     WavFormat.writeHeader(output, format.channels, format.sampleRate, payloadSize)
                     val buffer = ByteArray(8192)
                     var copied = 0L
                     while (copied < payloadSize) {
-                        checkCancelled(cancelled)
                         val wanted = minOf(buffer.size.toLong(), payloadSize - copied).toInt()
                         input.readFully(buffer, 0, wanted)
                         output.write(buffer, 0, wanted)
                         copied += wanted
-                        onProgress(copied, payloadSize)
                     }
-                    checkCancelled(cancelled)
                     output.fd.sync()
                 }
             }
 
-            checkCancelled(cancelled)
             moveAtomically(tempFile.toPath(), destinationFile.toPath())
             committed = true
             return destinationFile
@@ -89,10 +75,6 @@ object WavExporter {
         val payloadSize = Math.multiplyExact(trim.frameCount, format.blockAlign.toLong())
         val dataOffset = Math.addExact(format.dataOffset, Math.multiplyExact(trim.startFrame, format.blockAlign.toLong()))
         return WavExportSlice(sourceFile, destinationFile, parent, format, payloadSize, dataOffset)
-    }
-
-    internal fun checkCancelled(cancelled: AtomicBoolean) {
-        if (cancelled.get()) throw ExportCancelledException()
     }
 
     internal fun moveAtomically(from: Path, to: Path) {

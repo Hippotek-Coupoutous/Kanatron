@@ -7,7 +7,7 @@ import com.ottomusic.sketch.core.pcm16At
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
 import com.ottomusic.sketch.platform.PcmInput
 import com.ottomusic.sketch.platform.PcmInputFactory
-import com.ottomusic.sketch.recording.MicrophoneOwnership
+import com.ottomusic.sketch.platform.MicrophoneOwnership
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

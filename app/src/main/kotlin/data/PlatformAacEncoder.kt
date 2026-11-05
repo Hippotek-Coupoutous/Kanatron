@@ -1,15 +1,13 @@
-package com.ottomusic.sketch.core
+package com.ottomusic.sketch.data
 
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import com.ottomusic.sketch.data.AndroidAudioDecoderFactory
-import com.ottomusic.sketch.data.AudioDecodePipeline
-import com.ottomusic.sketch.data.ExportActivePaths
-import com.ottomusic.sketch.data.FilePcmWavSinkFactory
-import com.ottomusic.sketch.data.ImportCancellation
+import com.ottomusic.sketch.core.AacGaplessMetadata
+import com.ottomusic.sketch.core.AacPrimingProbe
+import com.ottomusic.sketch.core.PcmWavReader
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files

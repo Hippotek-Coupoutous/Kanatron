@@ -12,7 +12,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 
 internal fun exportFailureMessage(failure: Throwable, fallback: String): String {
     val causes = generateSequence(failure) { it.cause }.toList()
-    if (causes.any { it is com.ottomusic.sketch.core.ExportCancelledException }) {
+    if (causes.any { it is com.ottomusic.sketch.data.ExportCancelledException }) {
         return "Export cancelled. No partial file was saved."
     }
     if (causes.any { it is AtomicMoveNotSupportedException }) {

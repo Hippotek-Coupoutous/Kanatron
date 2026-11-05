@@ -1,6 +1,8 @@
-package com.ottomusic.sketch.core
+package com.ottomusic.sketch.data
 
-import com.ottomusic.sketch.data.ExportActivePaths
+import com.ottomusic.sketch.core.ExportPreflight
+import com.ottomusic.sketch.core.TrimRange
+import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
 import java.io.FileOutputStream

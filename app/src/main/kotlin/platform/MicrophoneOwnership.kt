@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.recording
+package com.ottomusic.sketch.platform
 
 import java.util.concurrent.atomic.AtomicBoolean
 

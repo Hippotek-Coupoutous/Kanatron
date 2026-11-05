@@ -5,7 +5,6 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.recording.WavRecorder
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -71,7 +70,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
             try {
                 val result = withContext(Dispatchers.IO) {
                     if (startup) {
-                        val activePath = WavRecorder.activePath
+                        val activePath = RecordingActivePath.path
                         repository.sweepStartupOrphans(ImportActivePaths.activeDecodePaths(), ImportActivePaths.activeStagingPaths())
                         repository.recoverTakes(activePath)
                         repository.recoverOrphanImports()
@@ -80,7 +79,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                     val audioFiles = library.projects.mapNotNull { project ->
                         runCatching { repository.audioFile(project).takeIf(File::isFile)?.let { project.id to it } }.getOrNull()
                     }.toMap()
-                    val silentFiles = if (startup) repository.silentRecoveryCandidates(WavRecorder.activePath) else emptyList()
+                    val silentFiles = if (startup) repository.silentRecoveryCandidates(RecordingActivePath.path) else emptyList()
                     LibrarySnapshot(library, audioFiles, silentFiles)
                 }
                 if (generation == libraryGeneration) {

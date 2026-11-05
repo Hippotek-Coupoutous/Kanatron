@@ -7,6 +7,8 @@ import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.RecordingLevel
 import com.ottomusic.sketch.core.TakeFinalization
 import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.data.RecordingActivePath
+import com.ottomusic.sketch.platform.MicrophoneOwnership
 import com.ottomusic.sketch.platform.PcmInput
 import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
@@ -50,8 +52,6 @@ class WavRecorder(
     companion object {
         const val START_RESERVE_BYTES = 10L * 1024L * 1024L
         const val RECORDING_RESERVE_BYTES = 4L * 1024L * 1024L
-        @Volatile var activePath: String? = null
-            private set
     }
 
     private val mutableState = MutableStateFlow(WavRecorderState())
@@ -91,7 +91,7 @@ class WavRecorder(
                 output.write(RecordingCore.header(openedRate, openedChannels, 0))
                 output.fd.sync()
             }
-            activePath = file.absolutePath
+            RecordingActivePath.path = file.absolutePath
             beforeRecording(opened)
             opened.start()
             inputDevice = opened.inputDevice
@@ -103,7 +103,7 @@ class WavRecorder(
             microphoneLease?.close()
             microphoneLease = null
             recorder = null
-            activePath = null
+            RecordingActivePath.path = null
             // No worker has consumed audio yet; a failed start must not leave an empty take behind.
             file.delete()
             throw failure
@@ -238,7 +238,7 @@ class WavRecorder(
                 releaseRecorder = {
                     try { recorder?.release() } finally {
                         recorder = null
-                        activePath = null
+                        RecordingActivePath.path = null
                         microphoneLease?.close()
                         microphoneLease = null
                     }

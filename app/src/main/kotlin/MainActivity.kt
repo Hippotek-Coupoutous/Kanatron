@@ -47,16 +47,16 @@ import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.ResumeStartGate
 import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.TrimRange
-import com.ottomusic.sketch.core.WavExporter
 import com.ottomusic.sketch.data.AppViewModel
 import com.ottomusic.sketch.data.ImportStage
 import com.ottomusic.sketch.data.OverdubCalibrationStore
+import com.ottomusic.sketch.data.RecordingActivePath
+import com.ottomusic.sketch.data.WavExporter
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
 import com.ottomusic.sketch.playback.ClickEngine
 import com.ottomusic.sketch.playback.MonitorClick
 import com.ottomusic.sketch.recording.RecordingPhase
 import com.ottomusic.sketch.recording.RecordingService
-import com.ottomusic.sketch.recording.WavRecorder
 import com.ottomusic.sketch.ui.ArrangeScreen
 import com.ottomusic.sketch.ui.AudioSketchTheme
 import com.ottomusic.sketch.ui.DetailScreen
@@ -483,7 +483,7 @@ private fun AudioSketchApp(
             microphoneDenied = microphoneDenied,
             lifecycle = hostLifecycle,
             microphoneBlockedReason = when {
-                recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || WavRecorder.activePath != null ->
+                recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || RecordingActivePath.path != null ->
                     "Stop the active recording before tuning."
                 layerOn -> "Turn Layer off before tuning."
                 else -> null

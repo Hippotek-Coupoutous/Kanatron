@@ -1,9 +1,13 @@
 package com.kanatron.app.playback
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Process
+import android.os.SystemClock
+import android.util.Log
 import com.kanatron.app.core.AudioClockPoint
 import com.kanatron.app.core.WavFormat
 import com.kanatron.app.platform.PcmOutput
@@ -16,6 +20,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 data class PlayerState(val positionFrames: Long = 0L, val totalFrames: Long = 0L, val isPlaying: Boolean = false, val error: String? = null)
+
+private const val TAG = "KanatronAudio"
 
 private data class SeekRequest(val frame: Long, val revision: Long)
 
@@ -50,8 +56,10 @@ class WavPlayer(
     }
 
     private val appContext = context.applicationContext
+    private val debugAudioLog = (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     private val format = sourceFormat ?: wav.inputStream().use(WavFormat::read)
     private val align = format.blockAlign
+    private val blockBytes = maxOf(align, 8192 / align * align)
     private val totalFrames = format.frameCount
     private val clickMixer = monitorClick?.let { ClickPcmMixer(format.sampleRate, format.channels, it) }
     private val countInFrames = monitorClick?.countInFrames(format.sampleRate) ?: 0L
@@ -63,6 +71,8 @@ class WavPlayer(
     @Volatile private var stopFrame = totalFrames
     @Volatile private var closed = false
     @Volatile private var track: PcmOutput? = null
+    // True while the AudioTrack is started and its buffered audio is still valid (a flush clears it).
+    @Volatile private var outputStarted = false
     @Volatile private var focusRequest: AudioFocusRequest? = null
     private val worker = RestartableWorker("wav-player", ::playLoop)
 
@@ -86,12 +96,11 @@ class WavPlayer(
         stopFrame = stopAtFrame.coerceIn(requestedSeek.get().frame, totalFrames)
         playing = true
         mutableState.value = mutableState.value.copy(isPlaying = true, error = null)
-        try {
-            track?.play()
-        } catch (failure: Throwable) {
+        // Resume of a started track reuses its buffered block; that also releases a write blocked by pause().
+        if (outputStarted && runCatching { track?.play() }.isFailure) {
             playing = false
-            mutableState.value = mutableState.value.copy(isPlaying = false, error = failure.message ?: "Playback failed")
             abandonFocus()
+            mutableState.value = mutableState.value.copy(isPlaying = false, error = "Could not resume playback")
             return
         }
         worker.start()
@@ -134,12 +143,22 @@ class WavPlayer(
     }
 
     private fun playLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         try {
             val output = createTrack() ?: throw IllegalStateException("Could not create audio output")
             track = output
+            outputStarted = false
+            if (debugAudioLog) {
+                Log.d(TAG, "track rate=${format.sampleRate} bufferFrames=${output.bufferSizeInFrames} bufferCapacityFrames=${output.bufferCapacityInFrames}")
+            }
             try {
             RandomAccessFile(wav, "r").use { input ->
-            val buffer = ByteArray(maxOf(align, 8192 / align * align))
+            val buffer = ByteArray(blockBytes)
+            val publishEveryFrames = format.sampleRate / 10L
+            var lastPublishFrame = -1L
+            var publishDue = true
+            var lastUnderruns = output.underruns
+            var lastWriteMs = SystemClock.elapsedRealtime()
             val routeCheckFrames = format.sampleRate / 4L
             var routeFrames = routeCheckFrames
             var routeKey = ""
@@ -170,7 +189,8 @@ class WavPlayer(
                             pendingCount = 0
                             pendingIsBacking = true
                             headBase = output.playedFrames
-                            if (playing) output.play()
+                            outputStarted = false
+                            publishDue = true
                             resetApplied = true
                         }
                     }
@@ -188,7 +208,11 @@ class WavPlayer(
                             val played = (output.playedFrames - headBase) and 0xffff_ffffL
                             val backingPlayed = (played - countInFrames).coerceAtLeast(0L)
                             val frame = (appliedFrame + backingPlayed).coerceAtMost(stopFrame)
-                            mutableState.value = PlayerState(frame, totalFrames, frame < stopFrame)
+                            if (publishDue || frame < lastPublishFrame || frame - lastPublishFrame >= publishEveryFrames) {
+                                publishDue = false
+                                lastPublishFrame = frame
+                                mutableState.value = PlayerState(frame, totalFrames, frame < stopFrame)
+                            }
                             if (backingPlayed >= submittedFrames && played >= outputFramesSubmitted) {
                                 output.pause()
                                 requestedSeek.updateAndGet {
@@ -244,11 +268,30 @@ class WavPlayer(
                     routeFrames += writtenFrames
                     if (pendingIsBacking) submittedFrames += writtenFrames
                 }
+                // An unstarted track consumes nothing, so play() only once a full block sits in its buffer.
+                if (!outputStarted && pendingOffset >= pendingCount && playing && !closed &&
+                    requestedSeek.get().revision == appliedRevision) {
+                    output.play()
+                    outputStarted = true
+                }
+                if (debugAudioLog) {
+                    val nowMs = SystemClock.elapsedRealtime()
+                    val count = output.underruns
+                    if (count > lastUnderruns) {
+                        lastUnderruns = count
+                        Log.w(TAG, "underruns=$count headFrames=${output.playedFrames} sinceWriteMs=${nowMs - lastWriteMs}")
+                    }
+                    lastWriteMs = nowMs
+                }
                 synchronized(this) {
                     if (playing && requestedSeek.get().revision == appliedRevision) {
                         val played = (output.playedFrames - headBase) and 0xffff_ffffL
                         val frame = (appliedFrame + (played - countInFrames).coerceAtLeast(0L)).coerceAtMost(stopFrame)
-                        mutableState.value = PlayerState(frame, totalFrames, true)
+                        if (publishDue || frame < lastPublishFrame || frame - lastPublishFrame >= publishEveryFrames) {
+                            publishDue = false
+                            lastPublishFrame = frame
+                            mutableState.value = PlayerState(frame, totalFrames, true)
+                        }
                     }
                 }
                 if (routeFrames >= routeCheckFrames) {
@@ -280,7 +323,9 @@ class WavPlayer(
     }
 
     private fun createTrack(): PcmOutput? {
-        return PlatformPorts.pcmOutputFactory(appContext).open(format.sampleRate, format.channels)
+        // 4 write blocks of buffered headroom (48 kHz: ~340 ms mono, ~170 ms stereo).
+        return PlatformPorts.pcmOutputFactory(appContext)
+            .open(format.sampleRate, format.channels, blockBytes * 4)
     }
 
     @Synchronized

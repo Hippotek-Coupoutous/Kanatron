@@ -2,6 +2,7 @@ package com.kanatron.app.recording
 
 import android.content.Context
 import android.media.AudioRecord
+import android.os.Process
 import com.kanatron.app.core.AudioClockPoint
 import com.kanatron.app.core.RecordingCore
 import com.kanatron.app.core.RecordingLevel
@@ -155,6 +156,7 @@ class WavRecorder(
     }
 
     private fun recordLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         var output: FileOutputStream? = null
         try {
             val input = recorder ?: return

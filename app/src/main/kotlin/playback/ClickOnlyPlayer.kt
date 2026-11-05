@@ -14,7 +14,7 @@ internal class ClickOnlyPlayer(
     private val onClock: (AudioClockPoint, String, String) -> Unit,
     private val onRoute: (String, String) -> Unit = { _, _ -> }
 ) {
-    private val output: PcmOutput = PlatformPorts.pcmOutputFactory(context.applicationContext).open(sampleRate, 1)
+    private val output: PcmOutput = PlatformPorts.pcmOutputFactory(context.applicationContext).open(sampleRate, 1, bufferBytes = null)
         ?: throw IllegalStateException("Could not create click monitor output")
     private val mixer = ClickPcmMixer(sampleRate, 1, settings)
     private val lock = Any()

@@ -373,6 +373,7 @@ private fun AudioSketchApp(
     var layerClickBeats by rememberSaveable { mutableStateOf(4) }
     var layerCountInBars by rememberSaveable { mutableStateOf(0) }
     var homeId by rememberSaveable { mutableStateOf<String?>(null) }
+    var arrangeProjectId by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(selectedId) { appViewModel.selectProject(selectedId) }
 
     fun share(project: Project) {
@@ -427,16 +428,26 @@ private fun AudioSketchApp(
             appViewModel.consumeImportedProject(id)
         }
     }
+    // One exit for editing screens so system Back refreshes exactly like on-screen Back.
+    fun leave(to: Route, changedProjectId: String? = null) {
+        if (changedProjectId != null) {
+            appViewModel.refreshLibrary(changedProjectId)
+            selectedId = changedProjectId
+            homeId = changedProjectId
+        } else if (to == Route.LIBRARY) {
+            appViewModel.refreshLibrary()
+        }
+        route = to
+    }
+
     BackHandler(enabled = route != Route.LIBRARY) {
-        route = when (route) {
-            Route.TRIM -> {
-                selected?.let { selectedId = it.id }
-                Route.DETAIL
-            }
-            Route.DETAIL, Route.RECORD, Route.MIX -> Route.LIBRARY
-            Route.TUNER, Route.ARRANGE -> Route.LIBRARY
-            Route.OVERDUB_CALIBRATION -> Route.RECORD
-            Route.LIBRARY -> Route.LIBRARY
+        when (route) {
+            Route.TRIM -> leave(Route.DETAIL, selected?.id ?: selectedId)
+            Route.DETAIL, Route.RECORD, Route.MIX -> leave(Route.LIBRARY)
+            Route.TUNER -> leave(Route.LIBRARY)
+            Route.ARRANGE -> leave(Route.LIBRARY, arrangeProjectId ?: homeId ?: selectedId)
+            Route.OVERDUB_CALIBRATION -> leave(Route.RECORD)
+            Route.LIBRARY -> Unit
         }
     }
 
@@ -465,15 +476,15 @@ private fun AudioSketchApp(
                 onTrim = { selectedId = it.id; route = Route.TRIM },
                 onMix = { route = Route.MIX },
                 onTuner = { route = Route.TUNER },
-                onArrange = { route = Route.ARRANGE },
+                onArrange = { arrangeProjectId = null; route = Route.ARRANGE },
                 onImport = onImportRequest
             )
         }
         Route.MIX -> {
             MixScreen(
                 projects = projects, repository = repository,
-                onBack = { route = Route.LIBRARY },
-                onSaved = { appViewModel.refreshLibrary(it.id); homeId = it.id; route = Route.LIBRARY }
+                onBack = { leave(Route.LIBRARY) },
+                onSaved = { appViewModel.invalidatePlayback(it.id); leave(Route.LIBRARY, it.id) }
             )
         }
         Route.TUNER -> TunerScreen(
@@ -488,18 +499,23 @@ private fun AudioSketchApp(
             },
             onRequestMicrophone = onTunerMicRequest,
             onOpenSettings = onOpenSettings,
-            onBack = { route = Route.LIBRARY }
+            onBack = { leave(Route.LIBRARY) }
         )
         Route.ARRANGE -> ArrangeScreen(
             projects = projects,
             repository = repository,
             initialProjectId = homeId ?: selectedId,
-            onBack = { route = Route.LIBRARY },
-            onSaved = { appViewModel.refreshLibrary(it.id); selectedId = it.id; homeId = it.id; route = Route.LIBRARY }
+            onBack = { leave(Route.LIBRARY) },
+            onSaved = { leave(Route.LIBRARY, it.id) },
+            onProjectChanged = {
+                appViewModel.invalidatePlayback(it.id)
+                arrangeProjectId = it.id
+                if (route == Route.LIBRARY) appViewModel.refreshLibrary(it.id)
+            }
         )
         Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
             route = recording.overdubRoute ?: calibrationStore.lastRoute(),
-            onBack = { route = Route.RECORD }
+            onBack = { leave(Route.RECORD) }
         )
         Route.RECORD -> {
             val clickSettings = layerClickBpm.takeIf { it > 0 }?.let {
@@ -514,7 +530,7 @@ private fun AudioSketchApp(
                 startError = startError,
                 layering = layerBackingId != null,
                 calibrationAvailable = recording.overdubRoute != null || calibrationStore.lastRoute() != null,
-                onBack = { route = Route.LIBRARY },
+                onBack = { leave(Route.LIBRARY) },
                 onCalibration = { route = Route.OVERDUB_CALIBRATION },
                 onRecord = { onRecordRequest(layerBackingId, clickSettings) },
                 onRequestMic = { onRecordRequest(layerBackingId, clickSettings) },
@@ -533,12 +549,12 @@ private fun AudioSketchApp(
         Route.DETAIL -> if (selected != null && selected.id == selectedId) {
             val project = selected
             val wav = appState.audioFiles[project.id]
-            if (wav == null) MissingAudioScreen(project.name) { route = Route.LIBRARY }
+            if (wav == null) MissingAudioScreen(project.name) { leave(Route.LIBRARY) }
             else DetailScreen(
                 project = project,
                 wav = wav,
                 playbackAllowed = playbackAllowed(recording.phase),
-                onBack = { appViewModel.refreshLibrary(); route = Route.LIBRARY },
+                onBack = { leave(Route.LIBRARY) },
                 onTrim = { route = Route.TRIM },
                 onShare = { share(project) },
                 onRename = { name -> appViewModel.renameProject(project.id, name) },
@@ -555,10 +571,7 @@ private fun AudioSketchApp(
                     TrimScreen(
                         projectId = project.id,
                         playbackAllowed = playbackAllowed(recording.phase),
-                        onBack = {
-                            appViewModel.selectProject(project.id, force = true)
-                            route = Route.DETAIL
-                        },
+                        onBack = { leave(Route.DETAIL, project.id) },
                         onProjectChanged = { appViewModel.refreshLibrary(it.id) }
                     )
                 }
@@ -702,7 +715,7 @@ private fun AudioSketchApp(
                 confirmButton = {
                     TextButton(onClick = { selectedId?.let { appViewModel.selectProject(it, force = true) } }) { Text("Retry") }
                 },
-                dismissButton = { TextButton(onClick = { selectedId = null; route = Route.LIBRARY }) { Text("Back to library") } }
+                dismissButton = { TextButton(onClick = { selectedId = null; leave(Route.LIBRARY) }) { Text("Back to library") } }
             )
         }
         shareFailure != null -> {

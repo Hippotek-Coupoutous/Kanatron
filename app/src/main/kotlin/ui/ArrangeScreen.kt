@@ -27,6 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -73,7 +74,8 @@ fun ArrangeScreen(
     repository: ProjectRepository,
     initialProjectId: String?,
     onBack: () -> Unit,
-    onSaved: (Project) -> Unit
+    onSaved: (Project) -> Unit,
+    onProjectChanged: (Project) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -124,6 +126,7 @@ fun ArrangeScreen(
             try {
                 val saved = withContext(Dispatchers.IO) { repository.saveEditState(next) }
                 project = saved
+                onProjectChanged(saved)
                 missingSources = withContext(Dispatchers.IO) { repository.missingSources(saved) }
             } catch (failure: CancellationException) {
                 throw failure
@@ -147,6 +150,7 @@ fun ArrangeScreen(
                 }
                 editingProjectId = created.id
                 project = created
+                onProjectChanged(created)
                 missingSources = withContext(Dispatchers.IO) { repository.missingSources(created) }
             } catch (failure: CancellationException) {
                 throw failure
@@ -218,11 +222,13 @@ fun ArrangeScreen(
         Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Leaving mid-save would refresh the library before the write lands.
+        BackHandler(enabled = busy) {}
         SynthTopBar(
             title = if (current == null) "Arrange" else "Arrangement",
-            onBack = { stopPreview(); if (current != null) onSaved(current) else onBack() },
+            onBack = { if (!busy) { stopPreview(); if (current != null) onSaved(current) else onBack() } },
             action = if (current != null) ({
-                androidx.compose.material3.TextButton(onClick = { stopPreview(); onSaved(current) }) { Text("Done") }
+                androidx.compose.material3.TextButton(enabled = !busy, onClick = { stopPreview(); onSaved(current) }) { Text("Done") }
             }) else null
         )
 

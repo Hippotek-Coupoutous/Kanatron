@@ -89,11 +89,11 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                         _state.update {
                             it.copy(
                                 projects = result.library.projects,
-                                // Entries added or replaced during the IO check are fresh, so they are kept unchecked.
-                                audioFiles = result.audioFiles + it.audioFiles.filter { (id, file) ->
+                                // Fresh results win; entries added during the IO check are kept unchecked.
+                                audioFiles = it.audioFiles.filter { (id, file) ->
                                     result.library.projects.any { project -> project.id == id } &&
                                         (existingAudioFiles[id] != file || existingLive[id] == file)
-                                },
+                                } + result.audioFiles,
                                 libraryLoaded = true,
                                 unreadableProjectCount = result.library.unreadableCount,
                                 libraryError = null
@@ -159,6 +159,13 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                 }
             }
         }
+    }
+
+    /** Drops a cached playback file so the next load resolves the latest render. */
+    fun invalidatePlayback(projectId: String) {
+        // An in-flight load may hold the pre-save render; cancelling it keeps that stale file out.
+        playbackJobs.remove(projectId)?.cancel()
+        _state.update { it.copy(audioFiles = it.audioFiles - projectId) }
     }
 
     /** Resolves Home playback on demand; library enumeration never renders arrangements. */

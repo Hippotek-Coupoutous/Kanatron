@@ -8,6 +8,7 @@ import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.ProjectArrangementActions
 import com.ottomusic.sketch.core.ProjectClip
 import com.ottomusic.sketch.core.TrimRange
+import com.ottomusic.sketch.core.firstClip
 import com.ottomusic.sketch.data.OverdubCalibrationStore
 import com.ottomusic.sketch.data.ProjectRepository
 
@@ -49,7 +50,7 @@ internal class TakePersister(private val context: Context) {
                 }
                 val calibration = route?.let { OverdubCalibrationStore(context).calibration(it) }
                 val calibratedPlacement = OverdubTiming.placement(
-                    alignment?.positionFrames ?: base.trim.startFrame,
+                    alignment?.positionFrames ?: 0L,
                     calibration.takeIf { alignment != null }
                 )
                 val correction = OverdubTiming.driftCorrectionPpm(
@@ -68,10 +69,11 @@ internal class TakePersister(private val context: Context) {
                 } else {
                     val arrangement = repository.appendRecordedTake(base.id, savedTake.id, calibratedPlacement.positionFrames)
                     var edited = arrangement
+                    val takeSource = savedTake.firstClip.source.wav
                     val track = arrangement.tracks.firstOrNull { candidate ->
-                        candidate.clips.any { it.source.wav == savedTake.sourceWav }
+                        candidate.clips.any { it.source.wav == takeSource }
                     }
-                    val clip = track?.clips?.firstOrNull { it.source.wav == savedTake.sourceWav }
+                    val clip = track?.clips?.firstOrNull { it.source.wav == takeSource }
                     if (track != null && clip != null) {
                         if (correction != null && correction in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM && correction != 0) {
                             edited = ProjectArrangementActions.setRateCorrection(edited, track.id, clip.id, correction)

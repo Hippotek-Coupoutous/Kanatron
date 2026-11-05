@@ -11,7 +11,7 @@ import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
 import java.io.IOException
 
-/** Bounded on-disk cache of rendered arrangement previews. */
+/** Bounded on-disk cache of rendered project previews. */
 internal class PreviewCache(private val directory: File) {
 
     /** Renders or reuses the private preview; [check] runs under the cache lock before any preview file is touched. */
@@ -19,7 +19,7 @@ internal class PreviewCache(private val directory: File) {
         synchronized(PREVIEW_LOCK) {
             check()
             if (!directory.isDirectory && !directory.mkdirs()) {
-                throw IOException("Could not create the arrangement preview folder.")
+                throw IOException("Could not create the project preview folder.")
             }
             cleanupRenderTemps()
             val expectedBytes = Math.addExact(
@@ -27,7 +27,7 @@ internal class PreviewCache(private val directory: File) {
                 WavFormat.HEADER_BYTES.toLong()
             )
             if (expectedBytes > MAX_PREVIEW_BYTES) {
-                throw IOException("This arrangement is too large for the preview cache. Shorten its clips and try again.")
+                throw IOException("This project is too large for the preview cache. Shorten its clips and try again.")
             }
             val fingerprint = sha256Hex(renderKey(project))
             val target = File(directory, "${project.id}.$fingerprint.wav")
@@ -37,7 +37,7 @@ internal class PreviewCache(private val directory: File) {
                 return target
             }
             if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(directory), expectedBytes)) {
-                throw IOException("Not enough free storage to prepare the arrangement preview.")
+                throw IOException("Not enough free storage to prepare the project preview.")
             }
             if (target.exists()) target.delete()
             MultitrackRenderer.renderToWav(project, sourceFile, target)

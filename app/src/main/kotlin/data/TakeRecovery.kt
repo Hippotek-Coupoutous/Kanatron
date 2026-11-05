@@ -25,11 +25,11 @@ internal class TakeRecovery(
     /** Source paths referenced by project metadata, plus whether every JSON could be read at all. */
     class SourceReferences internal constructor(private val sources: Set<String>, private val fullyReadable: Boolean) {
         /** Unreadable metadata makes every source look referenced, so nothing may be deleted or rebuilt. */
-        fun isReferenced(sourceWav: String): Boolean = !fullyReadable || sourceWav in sources
+        fun isReferenced(sourcePath: String): Boolean = !fullyReadable || sourcePath in sources
     }
 
     /** Scans all project metadata once; callers reuse the result for every candidate in one pass. */
-    fun sourceReferences(excludingProjectId: String? = null): SourceReferences {
+    fun sourceReferences(): SourceReferences {
         val bases = linkedMapOf<String, File>()
         projects.listFiles().orEmpty().forEach { file ->
             val baseName = when {
@@ -42,11 +42,10 @@ internal class TakeRecovery(
         }
         val sources = mutableSetOf<String>()
         var fullyReadable = true
-        for ((baseName, file) in bases) {
-            if (baseName.removeSuffix(".json") == excludingProjectId) continue
+        for (file in bases.values) {
             try {
                 val project = ProjectStore(file).load()
-                val liveTracks = project.tracks + project.arrangementUndoHistory.flatMap(ProjectArrangementSnapshot::tracks)
+                val liveTracks = project.tracks + project.undoHistory.flatMap(ProjectArrangementSnapshot::tracks)
                 liveTracks.flatMap(ProjectTrack::clips).mapTo(sources) { it.source.wav }
             } catch (_: Exception) {
                 fullyReadable = false

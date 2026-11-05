@@ -102,8 +102,8 @@ internal fun SketchScreen(
                 Text(current?.name ?: "No take yet", color = Synth.muted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 val frames = when {
                     current == null -> 0L
-                    playerState != null && (playing || playerState.positionFrames > current.trim.startFrame) -> playerState.positionFrames - current.trim.startFrame
-                    else -> current.trim.frameCount
+                    playerState != null && (playing || playerState.positionFrames > 0L) -> playerState.positionFrames
+                    else -> current.totalFrames
                 }
                 Text(RecordingCore.formatClock(if (current == null) 0L else RecordingCore.elapsedMillis(frames.coerceAtLeast(0L), current.sampleRate)), color = Synth.cyan, fontSize = 56.sp, fontFamily = FontFamily.Monospace)
                 MiniWave(peaks, current, playerState?.positionFrames ?: 0L, Modifier.fillMaxWidth().height(96.dp))
@@ -114,8 +114,8 @@ internal fun SketchScreen(
                     onClick = {
                         val p = player ?: return@RoundButton
                         if (playing) p.pause() else {
-                            if (playerState!!.positionFrames !in current!!.trim.startFrame until current.trim.endFrame) p.seek(current.trim.startFrame)
-                            p.play(current.trim.endFrame)
+                            if (playerState!!.positionFrames !in 0L until current!!.totalFrames) p.seek(0L)
+                            p.play(current!!.totalFrames)
                         }
                     },
                     size = 84.dp, enabled = player != null && playbackAllowed
@@ -209,7 +209,7 @@ internal fun LibraryScreen(
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("Delete recording?") },
-            text = { Text("${delete.name} and its original WAV will be removed.") },
+            text = { Text("${delete.name} will be removed. Audio still used by another recording is kept.") },
             confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete(delete) }) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
         )
@@ -257,16 +257,14 @@ private fun MiniWave(peaks: List<Peak>, project: Project?, position: Long, modif
         val step = size.width / peaks.size
         val total = project.totalFrames.toFloat()
         peaks.forEachIndexed { index, peak ->
-            val frame = (index + 0.5f) / peaks.size * total
-            val inside = frame >= project.trim.startFrame && frame < project.trim.endFrame
             val x = index * step + step / 2
             drawLine(
-                if (inside) Synth.cyan else Synth.violet.copy(alpha = 0.35f),
+                Synth.cyan,
                 androidx.compose.ui.geometry.Offset(x, center - peak.max / 32768f * center), androidx.compose.ui.geometry.Offset(x, center - peak.min / 32768f * center),
                 strokeWidth = maxOf(2.dp.toPx(), step * 0.55f), cap = StrokeCap.Round
             )
         }
-        if (position > project.trim.startFrame) {
+        if (position > 0L) {
             val x = size.width * position / total
             drawLine(Synth.pink, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, size.height), strokeWidth = 2.dp.toPx())
         }

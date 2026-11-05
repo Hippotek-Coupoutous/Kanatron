@@ -186,7 +186,11 @@ internal class AppViewModel(
     fun refreshLibrary(selectId: String? = null) = refreshLibrary(startup = false, selectId = selectId)
 
     private fun refreshLibrary(startup: Boolean, selectId: String? = null): Job {
-        if (selectId != null) selectProject(selectId, force = true)
+        if (selectId != null) {
+            // The selected project may have changed its playable file; force a fresh resolve.
+            invalidatePlayback(selectId)
+            selectProject(selectId, force = true)
+        }
         val generation = ++libraryGeneration
         _state.update { it.copy(libraryError = null) }
         return viewModelScope.launch {
@@ -200,7 +204,7 @@ internal class AppViewModel(
                     }
                     val library = repository.readLibrary()
                     val audioFiles = library.projects.mapNotNull { project ->
-                        runCatching { repository.audioFile(project).takeIf(File::isFile)?.let { project.id to it } }.getOrNull()
+                        runCatching { repository.directPlaybackFile(project)?.let { project.id to it } }.getOrNull()
                     }.toMap()
                     val silentFiles = if (startup) repository.recovery.silentRecoveryCandidates(RecordingActivePath.path) else emptyList()
                     LibrarySnapshot(library, audioFiles, silentFiles)
@@ -290,7 +294,7 @@ internal class AppViewModel(
         _state.update { it.copy(audioFiles = it.audioFiles - projectId) }
     }
 
-    /** Resolves Home playback on demand; library enumeration never renders arrangements. */
+    /** Resolves Home playback on demand; library enumeration never renders previews. */
     fun loadPlaybackFile(id: String?) {
         if (id == null || _state.value.audioFiles[id]?.isFile == true || playbackJobs[id]?.isActive == true) return
         lateinit var job: Job

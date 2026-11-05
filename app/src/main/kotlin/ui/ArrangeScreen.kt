@@ -54,6 +54,7 @@ import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.core.firstClip
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.data.WavExporter
 import com.ottomusic.sketch.playback.WavPlayer
@@ -79,7 +80,7 @@ fun ArrangeScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val ordered = remember(projects) { projects.filterNot(Project::isArrangement).sortedByDescending(Project::createdAtEpochMillis) }
+    val ordered = remember(projects) { projects.sortedByDescending(Project::createdAtEpochMillis) }
     var selectedIds by rememberSaveable(initialProjectId) { mutableStateOf(listOfNotNull(initialProjectId)) }
     var editingProjectId by rememberSaveable(initialProjectId) { mutableStateOf(initialProjectId ?: "") }
     var project by remember(initialProjectId) { mutableStateOf<Project?>(null) }
@@ -95,7 +96,7 @@ fun ArrangeScreen(
             error = null
             try {
                 val loaded = withContext(Dispatchers.IO) { repository.get(editingProjectId) }
-                if (loaded?.isArrangement == true) {
+                if (loaded != null) {
                     project = loaded
                     missingSources = withContext(Dispatchers.IO) { repository.missingSources(loaded) }
                 }
@@ -191,7 +192,7 @@ fun ArrangeScreen(
         scope.launch {
             try {
                 val file = withContext(Dispatchers.IO) {
-                    val selection = current.trim
+                    val selection = TrimRange(0L, current.totalFrames)
                     val name = ExportFilename.wav("${current.name}-mix", current.name)
                     val estimatedBytes = WavFormat.outputBytes(selection.frameCount, current.channels)
                     repository.exportFile(current.id, name, estimatedBytes) { target ->
@@ -240,7 +241,7 @@ fun ArrangeScreen(
             SynthPanel {
                 ordered.forEach { source ->
                     val selected = source.id in selectedIds
-                    val available = runCatching { repository.audioFile(source).isFile }.getOrDefault(false)
+                    val available = runCatching { repository.missingSources(source).isEmpty() }.getOrDefault(false)
                     FilterChip(
                         selected = selected,
                         enabled = available && (selected || selectedIds.size < Project.MAX_TRACKS),
@@ -281,7 +282,7 @@ fun ArrangeScreen(
                     BigButton(
                         text = if (busy) "Working…" else "Undo",
                         onClick = { ProjectArrangementActions.undo(current)?.let(::persist) },
-                        enabled = !busy && current.arrangementUndoHistory.isNotEmpty(),
+                        enabled = !busy && current.undoHistory.isNotEmpty(),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -300,7 +301,8 @@ fun ArrangeScreen(
             if (current.tracks.size < Project.MAX_TRACKS) {
                 val existingSources = current.tracks.flatMap(ProjectTrack::clips).map { it.source.wav }.toSet()
                 val availableSources = ordered.filter { source ->
-                    source.sourceWav !in existingSources && runCatching { repository.audioFile(source).isFile }.getOrDefault(false)
+                    source.firstClip.source.wav !in existingSources &&
+                        runCatching { repository.audioFile(source).isFile }.getOrDefault(false)
                 }
                 if (availableSources.isNotEmpty()) {
                     SynthPanel {
@@ -310,13 +312,12 @@ fun ArrangeScreen(
                                 selected = false,
                                 onClick = {
                                     val trackId = "track-${UUID.randomUUID()}"
+                                    val sourceClip = source.firstClip
                                     val clip = ProjectClip(
                                         id = "clip-${UUID.randomUUID()}",
-                                        source = com.ottomusic.sketch.core.ProjectAudioSource(
-                                            source.sourceWav, source.sampleRate, source.channels, source.totalFrames
-                                        ),
+                                        source = sourceClip.source,
                                         positionFrames = 0L,
-                                        trim = source.trim
+                                        trim = sourceClip.trim
                                     )
                                     runCatching { ProjectArrangementActions.addTrack(current, ProjectTrack(trackId, source.name, listOf(clip))) }
                                         .onSuccess(::persist)

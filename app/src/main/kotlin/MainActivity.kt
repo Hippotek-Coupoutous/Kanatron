@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -345,6 +346,8 @@ private fun AudioSketchApp(
     LaunchedEffect(recording.projectId, recording.phase, route) {
         val finishedProjectId = recording.projectId
         if (finishedProjectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
+            // The backing project gained a track in place, so its cached playback is stale.
+            appViewModel.invalidatePlayback(finishedProjectId)
             appViewModel.refreshLibrary(finishedProjectId.takeIf { route == Route.RECORD })
             if (route == Route.RECORD) appViewModel.setHome(finishedProjectId)
         }
@@ -411,10 +414,14 @@ private fun AudioSketchApp(
                 }
                 Route.MIX -> {
                     val project = selected?.takeIf { it.id == selectedId }
+                    // Multitrack playback is rendered on demand, so availability means the source WAVs exist.
+                    val sourcesMissing by produceState<Boolean?>(null, project) {
+                        value = project?.let { withContext(Dispatchers.IO) { repository.missingSources(it).isNotEmpty() } } ?: false
+                    }
                     if (selectedId != null && project == null) Text("Loading recording…")
                     else MixEntryScreen(
                         project = project,
-                        audioAvailable = project != null && appState.audioFiles[project.id] != null,
+                        audioAvailable = sourcesMissing != true,
                         takeCount = projects.size,
                         onOpenLibrary = { appViewModel.navigate(Route.LIBRARY) },
                         onTrim = { appViewModel.navigate(Route.TRIM) },

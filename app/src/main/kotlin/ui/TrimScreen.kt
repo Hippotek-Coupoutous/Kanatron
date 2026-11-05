@@ -64,11 +64,13 @@ import com.ottomusic.sketch.core.ExportFilename
 import com.ottomusic.sketch.core.Peak
 import com.ottomusic.sketch.core.PeakExtractor
 import com.ottomusic.sketch.core.Project
+import com.ottomusic.sketch.core.ProjectArrangementActions
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.TrimActions
 import com.ottomusic.sketch.core.TrimEdge
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.core.firstClip
 import com.ottomusic.sketch.core.parseExactTimeMillis
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.data.WavExporter
@@ -97,7 +99,7 @@ fun TrimScreen(
             try {
                 val repository = ProjectRepository(context)
                 val project = repository.get(projectId) ?: return@withContext TrimLoadState.MissingProject
-                val wav = repository.playbackFile(project)
+                val wav = repository.audioFile(project)
                 if (!wav.isFile) TrimLoadState.MissingAudio else TrimLoadState.Ready(repository, project, wav)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -192,11 +194,12 @@ private fun TrimEditorLoaded(
     val scope = rememberCoroutineScope()
     val latestOnProjectChanged = rememberUpdatedState(onProjectChanged)
     val view = LocalView.current
-    val total = initial.totalFrames
-    val sampleRate = initial.sampleRate
     var project by remember(initial.id) { mutableStateOf(initial) }
     var persistedProject by remember(initial.id) { mutableStateOf(initial) }
-    val trim = project.trim
+    val firstClip = project.firstClip
+    val total = firstClip.source.totalFrames
+    val sampleRate = firstClip.source.sampleRate
+    val trim = firstClip.trim
     val undoCount = project.undoHistory.size
     var activeEdge by remember(initial.id) { mutableStateOf(TrimEdge.Start) }
     var coarseStepSelected by remember(initial.id) { mutableStateOf(false) }
@@ -231,10 +234,14 @@ private fun TrimEditorLoaded(
     }
 
     fun edit(persist: Boolean = true, command: TrimActions.() -> TrimRange?) {
-        val actions = TrimActions(project.trim, total, sampleRate, initialHistory = project.undoHistory)
+        val clip = project.firstClip
+        val actions = TrimActions(clip.trim, clip.source.totalFrames, clip.source.sampleRate)
         val next = actions.command() ?: return
-        if (next == project.trim) return
-        project = project.copy(trim = next, undoHistory = actions.historySnapshot())
+        if (next == clip.trim) return
+        val edited = ProjectArrangementActions.setClipTrim(project, project.tracks.first().id, clip.id, next)
+        // One gesture is one undo step: later unsaved drag updates keep the snapshot taken at its start.
+        val dragInProgress = !persist && project.undoHistory.size > persistedProject.undoHistory.size
+        project = if (dragInProgress) edited.copy(undoHistory = project.undoHistory) else edited
         editFailure = null
         if (persist) persistEditState()
     }
@@ -268,7 +275,10 @@ private fun TrimEditorLoaded(
         edgeAudition = true
     }
 
-    fun undo() { edit { this.undo() } }
+    fun undo() {
+        project = ProjectArrangementActions.undo(project) ?: return
+        persistEditState()
+    }
 
     fun announce(edge: TrimEdge) {
         val frame = if (edge == TrimEdge.Start) trim.startFrame else trim.endFrame
@@ -283,7 +293,7 @@ private fun TrimEditorLoaded(
             try {
                 val file = withContext(Dispatchers.IO) {
                     val name = ExportFilename.wav("${project.name}-trim", project.name)
-                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, project.channels)
+                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, project.firstClip.source.channels)
                     repository.exportFile(project.id, name, estimatedBytes) { target ->
                         WavExporter.export(wav, target, selection)
                     }

@@ -14,6 +14,7 @@ import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.core.firstClip
 import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
 import java.io.IOException
@@ -58,16 +59,12 @@ class ProjectRepository(context: Context) {
         }
     }
 
-    fun audioFile(project: Project): File {
-        require(!project.isArrangement) { "Arranged projects use their rendered playback file." }
-        val name = File(project.sourceWav).name
-        require(name.matches(RECORDING_PATH)) { "Invalid recording path" }
-        return File(recordings, name)
-    }
+    /** The raw WAV of a project's first clip; trim screens start from that file. */
+    fun audioFile(project: Project): File = sourceFile(project.firstClip.source)
 
     private fun sourceFile(source: ProjectAudioSource): File {
         val name = File(source.wav).name
-        require(source.wav == "recordings/$name" && RECORDING_PATH.matches(name)) { "Invalid arrangement source path." }
+        require(source.wav == "recordings/$name" && RECORDING_PATH.matches(name)) { "Invalid recording source path." }
         return File(recordings, name)
     }
 
@@ -76,9 +73,20 @@ class ProjectRepository(context: Context) {
         .filterNot(::isValidSource)
         .map(ProjectAudioSource::wav).distinct()
 
-    /** Lazily returns the immutable source or materializes an arrangement's bounded private preview. */
+    /** The first clip is the whole project only while every audio-relevant field is at its default. */
+    private fun directSource(project: Project): ProjectAudioSource? {
+        val track = project.tracks.singleOrNull() ?: return null
+        val clip = track.clips.singleOrNull() ?: return null
+        val untouched = clip.positionFrames == 0L && clip.gainPermille == 1_000 && !clip.muted &&
+            clip.rateCorrectionPpm == 0 && track.gainPermille == 1_000 && !track.muted &&
+            clip.source.sampleRate == project.sampleRate &&
+            clip.trim.startFrame == 0L && clip.trim.endFrame == clip.source.totalFrames
+        return clip.source.takeIf { untouched }
+    }
+
+    /** Returns the raw source for a one-clip project, otherwise its bounded private preview. */
     fun playbackFile(project: Project): File {
-        if (!project.isArrangement) return audioFile(project)
+        directSource(project)?.let { return sourceFile(it) }
         return previewCache.render(project, ::sourceFile) {
             if (missingSources(project).isNotEmpty()) {
                 throw IOException("A source WAV is missing or no longer matches its saved format.")
@@ -86,13 +94,16 @@ class ProjectRepository(context: Context) {
         }
     }
 
+    /** Raw playback without rendering, for library enumeration that must stay cheap. */
+    fun directPlaybackFile(project: Project): File? =
+        directSource(project)?.let(::sourceFile)?.takeIf(File::isFile)
+
     /** Holds the private rendered WAV only while the bounded export callback consumes it. */
     fun <T> withTemporaryWav(
         project: Project,
         cancelled: AtomicBoolean = AtomicBoolean(false),
         consume: (File) -> T
     ): T = synchronized(ARRANGEMENT_WORK_LOCK) {
-        require(project.isArrangement)
         if (!arrangementWork.isDirectory && !arrangementWork.mkdirs()) {
             throw IOException("Could not create the temporary mix folder.")
         }
@@ -103,7 +114,7 @@ class ProjectRepository(context: Context) {
         )
         if (expectedBytes > WavFormat.MAX_WAV_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
         if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(arrangementWork), expectedBytes)) {
-            throw IOException("Not enough free storage to prepare the arrangement for export.")
+            throw IOException("Not enough free storage to prepare the project for export.")
         }
         val temp = File.createTempFile("mix-source-", ".wav", arrangementWork)
         try {
@@ -132,41 +143,34 @@ class ProjectRepository(context: Context) {
         val cleanName = name.trim()
         require(cleanName.isNotEmpty()) { "An arrangement needs a name." }
         require(sources.size in 2..Project.MAX_TRACKS) { "Choose two to ${Project.MAX_TRACKS} recordings." }
-        require(sources.none { it.isArrangement }) { "Choose source recordings, not another arrangement." }
-        val sampleRate = sources.first().sampleRate
-        val tracks = sources.mapIndexed { index, source ->
-            val audio = ProjectAudioSource(source.sourceWav, source.sampleRate, source.channels, source.totalFrames)
+        val sourceTracks = sources.flatMap(Project::tracks)
+        require(sourceTracks.size <= Project.MAX_TRACKS) { "An arrangement supports up to ${Project.MAX_TRACKS} tracks." }
+        require(sourceTracks.sumOf { it.clips.size } <= Project.MAX_CLIPS) { "An arrangement supports up to ${Project.MAX_CLIPS} clips." }
+        var clipNumber = 0
+        val tracks = sourceTracks.mapIndexed { trackIndex, track ->
             ProjectTrack(
-                id = "track-${index + 1}",
-                name = source.name,
-                clips = listOf(
-                    ProjectClip(
-                        id = "clip-${index + 1}",
-                        source = audio,
-                        positionFrames = 0L,
-                        trim = source.trim
-                    )
-                )
+                id = "track-${trackIndex + 1}",
+                name = track.name,
+                clips = track.clips.map { clip ->
+                    clipNumber++
+                    clip.copy(id = "clip-$clipNumber")
+                },
+                gainPermille = track.gainPermille,
+                muted = track.muted,
+                solo = track.solo
             )
         }
-        val channels = sources.maxOf { it.channels }
-        val frames = MultitrackRenderer.frameCount(tracks, sampleRate)
         return Project(
             id = id,
             name = cleanName,
-            sourceWav = "",
-            sampleRate = sampleRate,
-            channels = channels,
-            totalFrames = frames,
-            trim = TrimRange(0L, frames),
+            sampleRate = sources.first().sampleRate,
+            channels = sources.maxOf { it.channels },
             createdAtEpochMillis = System.currentTimeMillis(),
-            tracks = tracks,
-            isArrangement = true
+            tracks = tracks
         )
     }
 
     fun saveArrangement(project: Project): Project {
-        require(project.isArrangement)
         synchronized(PROJECT_LOCK) {
             require(!projectFile(project.id).exists()) { "An arrangement with this id already exists." }
             ProjectStore(projectFile(project.id)).save(project)
@@ -174,34 +178,25 @@ class ProjectRepository(context: Context) {
         return project
     }
 
-    /** Persists a completed mic-only take as a new, frame-positioned track. */
+    /** Persists a completed mic-only take as a new, frame-positioned track on the backing project. */
     fun appendRecordedTake(baseProjectId: String, takeProjectId: String, positionFrames: Long): Project {
         require(positionFrames >= 0L)
         require(baseProjectId != takeProjectId)
         synchronized(PROJECT_LOCK) {
-            val base = get(baseProjectId) ?: error("The arrangement source could not be found.")
+            val base = get(baseProjectId) ?: error("The backing project could not be found.")
             val take = get(takeProjectId) ?: error("The recorded take could not be found.")
-            require(!take.isArrangement) { "A recorded take must be a single-source project." }
             require(audioFile(take).isFile) { "The recorded take's WAV is missing." }
-            val updated = if (base.isArrangement) {
-                val clipId = "clip-${UUID.randomUUID()}"
-                val trackId = "track-${UUID.randomUUID()}"
-                val clip = ProjectClip(
-                    id = clipId,
-                    source = ProjectAudioSource(take.sourceWav, take.sampleRate, take.channels, take.totalFrames),
-                    positionFrames = positionFrames,
-                    trim = take.trim
-                )
-                ProjectArrangementActions.addTrack(base, ProjectTrack(trackId, take.name, listOf(clip)))
-            } else {
-                val arrangement = createArrangement(
-                    id = "arr-${UUID.randomUUID()}",
-                    name = "${base.name} + ${take.name}",
-                    sources = listOf(base, take)
-                )
-                ProjectArrangementActions.setPosition(arrangement, "track-2", "clip-2", positionFrames)
-            }
-            return if (base.isArrangement) saveEditState(updated) else saveArrangement(updated)
+            val takeClip = take.firstClip
+            val clip = ProjectClip(
+                id = "clip-${UUID.randomUUID()}",
+                source = takeClip.source,
+                positionFrames = positionFrames,
+                trim = takeClip.trim
+            )
+            val updated = ProjectArrangementActions.addTrack(
+                base, ProjectTrack("track-${UUID.randomUUID()}", take.name, listOf(clip))
+            )
+            return saveEditState(updated)
         }
     }
 
@@ -285,25 +280,15 @@ class ProjectRepository(context: Context) {
         synchronized(PROJECT_LOCK) {
             val project = get(id)
             if (project != null) {
-                val ownedSourceFile = if (project.isArrangement) null else runCatching { audioFile(project) }.getOrNull()
-                val sourcePath = if (project.isArrangement) null else project.sourceWav
-                val sourceReferenced = sourcePath?.let {
-                    recovery.sourceReferences(excludingProjectId = id).isReferenced(it)
-                }
-                val arrangementSources = if (project.isArrangement) {
-                    (project.tracks + project.arrangementUndoHistory.flatMap(ProjectArrangementSnapshot::tracks))
-                        .flatMap(ProjectTrack::clips).map { it.source }.distinct()
-                } else emptyList()
+                val sources = (project.tracks + project.undoHistory.flatMap(ProjectArrangementSnapshot::tracks))
+                    .flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
                 val metadata = projectFile(id)
                 if (!metadata.delete() && metadata.exists()) throw IOException("Could not delete the project metadata.")
                 File(metadata.path + ".bak").delete()
-                if (ownedSourceFile != null && sourceReferenced == false) ownedSourceFile.delete()
-                if (project.isArrangement) {
-                    previewCache.delete(id)
-                    arrangementSources.forEach { source ->
-                        val remaining = recovery.sourceReferences()
-                        if (!remaining.isReferenced(source.wav)) runCatching { sourceFile(source).delete() }
-                    }
+                previewCache.delete(id)
+                val references = recovery.sourceReferences()
+                sources.forEach { source ->
+                    if (!references.isReferenced(source.wav)) runCatching { sourceFile(source).delete() }
                 }
             }
         }
@@ -396,13 +381,24 @@ class ProjectRepository(context: Context) {
         val project = Project(
             id = id,
             name = name,
-            sourceWav = "recordings/${file.name}",
             sampleRate = sampleRate,
             channels = channels,
-            totalFrames = frames,
-            trim = TrimRange(0, frames),
             createdAtEpochMillis = System.currentTimeMillis(),
-            silent = silent
+            silent = silent,
+            tracks = listOf(
+                ProjectTrack(
+                    id = "track-main",
+                    name = name,
+                    clips = listOf(
+                        ProjectClip(
+                            id = "clip-main",
+                            source = ProjectAudioSource("recordings/${file.name}", sampleRate, channels, frames),
+                            positionFrames = 0L,
+                            trim = TrimRange(0L, frames)
+                        )
+                    )
+                )
+            )
         )
         synchronized(PROJECT_LOCK) { ProjectStore(projectFile(id)).save(project) }
         return project

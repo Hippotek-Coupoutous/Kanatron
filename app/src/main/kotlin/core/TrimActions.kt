@@ -2,33 +2,22 @@ package com.ottomusic.sketch.core
 
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.util.ArrayDeque
 
 enum class TrimEdge { Start, End }
 
-/** Frame-exact editing commands. */
+/** Frame-exact editing commands; project undo history owns the history. */
 class TrimActions(
     initialRange: TrimRange,
     private val totalFrames: Long,
-    private val sampleRate: Int,
-    private val maxUndo: Int = UndoPolicy.MAX_UNDO,
-    initialHistory: List<TrimRange> = emptyList()
+    private val sampleRate: Int
 ) {
-    private val history = ArrayDeque<TrimRange>()
-
     var range: TrimRange = initialRange
         private set
 
     init {
         initialRange.requireValidFor(totalFrames)
         require(sampleRate > 0)
-        require(maxUndo >= 0)
-        require(initialHistory.size <= maxUndo)
-        initialHistory.forEach { it.requireValidFor(totalFrames) }
-        history.addAll(initialHistory)
     }
-
-    fun historySnapshot(): List<TrimRange> = history.toList()
 
     fun setRange(startFrame: Long, endFrame: Long): TrimRange {
         val start = startFrame.coerceIn(0L, totalFrames - 1L)
@@ -55,16 +44,7 @@ class TrimActions(
     fun setEndAtFrame(frame: Long): TrimRange =
         apply(TrimRange(range.startFrame, frame.coerceIn(range.startFrame + 1L, totalFrames)))
 
-    fun undo(): TrimRange? {
-        if (history.isEmpty()) return null
-        return history.removeLast().also { range = it }
-    }
-
     private fun apply(next: TrimRange): TrimRange {
-        if (next != range && maxUndo > 0) {
-            if (history.size == maxUndo) history.removeFirst()
-            history.addLast(range)
-        }
         range = next
         return range
     }

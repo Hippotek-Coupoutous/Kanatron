@@ -64,107 +64,62 @@ data class ProjectTrack(
     }
 }
 
-data class ProjectArrangementSnapshot(
-    val trim: TrimRange,
-    val tracks: List<ProjectTrack>,
-    val totalFrames: Long,
-    val trimUndoHistory: List<TrimRange> = emptyList()
-)
+/** One undoable track layout of a project. */
+data class ProjectArrangementSnapshot(val tracks: List<ProjectTrack>)
 
-private fun defaultProjectTracks(
-    name: String,
-    sourceWav: String,
-    sampleRate: Int,
-    channels: Int,
-    totalFrames: Long
-): List<ProjectTrack> = listOf(
-    ProjectTrack(
-        id = "track-main",
-        name = name,
-        clips = listOf(
-            ProjectClip(
-                id = "clip-main",
-                source = ProjectAudioSource(sourceWav, sampleRate, channels, totalFrames),
-                positionFrames = 0L,
-                trim = TrimRange(0L, totalFrames)
-            )
-        )
-    )
-)
+/** The first track's first clip; every project starts from one recording. */
+val Project.firstClip: ProjectClip get() = tracks.first().clips.first()
+
+private fun requireValidTracks(tracks: List<ProjectTrack>, channels: Int, sampleRate: Int) {
+    require(tracks.isNotEmpty()) { "A project must contain at least one track." }
+    require(tracks.size <= Project.MAX_TRACKS) { "A project supports up to ${Project.MAX_TRACKS} tracks." }
+    require(tracks.map(ProjectTrack::id).distinct().size == tracks.size) { "Track ids must be unique." }
+    val clips = tracks.flatMap(ProjectTrack::clips)
+    require(clips.map(ProjectClip::id).distinct().size == clips.size) { "Clip ids must be unique." }
+    require(clips.size <= Project.MAX_CLIPS) { "A project supports up to ${Project.MAX_CLIPS} clips." }
+    require(clips.maxOf { it.source.channels } == channels) { "Project channels do not match its sources." }
+    require(clips.any { it.source.sampleRate == sampleRate }) { "The project sample rate must match at least one source rate." }
+    require(MultitrackRenderer.frameCount(tracks, sampleRate) > 0L) { "A project must contain audio." }
+}
 
 data class Project(
     val id: String,
     val name: String,
-    val sourceWav: String,
     val sampleRate: Int,
     val channels: Int,
-    val totalFrames: Long,
-    val trim: TrimRange,
     val createdAtEpochMillis: Long,
     val silent: Boolean = false,
-    val undoHistory: List<TrimRange> = emptyList(),
-    val tracks: List<ProjectTrack> = defaultProjectTracks(name, sourceWav, sampleRate, channels, totalFrames),
-    val isArrangement: Boolean = false,
-    val arrangementUndoHistory: List<ProjectArrangementSnapshot> = emptyList()
+    val tracks: List<ProjectTrack>,
+    val undoHistory: List<ProjectArrangementSnapshot> = emptyList()
 ) {
     init {
         require(id.matches(PROJECT_ID))
         require(name.isNotBlank())
-        require(if (isArrangement) sourceWav.isEmpty() else sourceWav.isNotBlank())
         require(sampleRate in SUPPORTED_SAMPLE_RATES)
         require(channels in 1..2)
-        require(totalFrames > 0)
-        trim.requireValidFor(totalFrames)
+        requireValidTracks(tracks, channels, sampleRate)
         require(undoHistory.size <= UndoPolicy.MAX_UNDO) { "Undo history exceeds its limit" }
-        undoHistory.forEach { it.requireValidFor(totalFrames) }
-        require(tracks.isNotEmpty())
-        require(tracks.size <= MAX_TRACKS) { "An arrangement supports up to $MAX_TRACKS tracks." }
-        require(tracks.map(ProjectTrack::id).distinct().size == tracks.size) { "Track ids must be unique." }
-        require(tracks.flatMap(ProjectTrack::clips).map(ProjectClip::id).distinct().size == tracks.sumOf { it.clips.size }) { "Clip ids must be unique." }
-        require(tracks.sumOf { it.clips.size } <= MAX_CLIPS) { "An arrangement supports up to $MAX_CLIPS clips." }
-        require(arrangementUndoHistory.size <= UndoPolicy.MAX_UNDO) { "Arrangement undo history exceeds its limit" }
-        arrangementUndoHistory.forEach { snapshot ->
-            snapshot.trim.requireValidFor(snapshot.totalFrames)
-            require(snapshot.trimUndoHistory.size <= UndoPolicy.MAX_UNDO)
-            snapshot.trimUndoHistory.forEach { it.requireValidFor(snapshot.totalFrames) }
-            require(MultitrackRenderer.frameCount(snapshot.tracks, sampleRate) == snapshot.totalFrames)
-            require(snapshot.tracks.isNotEmpty() && snapshot.tracks.size <= MAX_TRACKS)
-            require(snapshot.tracks.sumOf { it.clips.size } <= MAX_CLIPS)
-        }
-        if (isArrangement) {
-            require(MultitrackRenderer.frameCount(tracks, sampleRate) == totalFrames) {
-                "Arrangement length does not match its clips."
-            }
-            require(tracks.flatMap(ProjectTrack::clips).maxOf { it.source.channels } == channels) {
-                "Arrangement channels do not match its sources."
-            }
-            require(tracks.flatMap(ProjectTrack::clips).any { it.source.sampleRate == sampleRate }) {
-                "The project sample rate must match at least one source rate."
-            }
+        undoHistory.forEach { snapshot ->
+            requireValidTracks(snapshot.tracks, channels, sampleRate)
         }
     }
 
+    /** The exact project length implied by its clips; clip trims do the trimming. */
+    val totalFrames: Long get() = MultitrackRenderer.frameCount(tracks, sampleRate)
+
     fun toJson(): String = buildString {
         append('{')
-        append("\"schemaVersion\":2,")
+        append("\"schemaVersion\":3,")
         append("\"id\":").append(quote(id)).append(',')
         append("\"name\":").append(quote(name)).append(',')
-        append("\"sourceWav\":").append(quote(sourceWav)).append(',')
         append("\"sampleRate\":").append(sampleRate).append(',')
         append("\"channels\":").append(channels).append(',')
-        append("\"totalFrames\":").append(totalFrames).append(',')
-        append("\"trim\":").append(trim.toJsonObject()).append(',')
         append("\"silent\":").append(silent).append(',')
-        append("\"undoHistory\":").append(undoHistory.rangesToJson()).append(',')
-        append("\"isArrangement\":").append(isArrangement).append(',')
         append("\"tracks\":").append(tracks.tracksToJson()).append(',')
-        append("\"arrangementUndoHistory\":[")
-        arrangementUndoHistory.forEachIndexed { index, snapshot ->
+        append("\"undoHistory\":[")
+        undoHistory.forEachIndexed { index, snapshot ->
             if (index > 0) append(',')
-            append("{\"trim\":").append(snapshot.trim.toJsonObject())
-            append(",\"tracks\":").append(snapshot.tracks.tracksToJson())
-            append(",\"totalFrames\":").append(snapshot.totalFrames)
-            append(",\"trimUndoHistory\":").append(snapshot.trimUndoHistory.rangesToJson()).append('}')
+            append("{\"tracks\":").append(snapshot.tracks.tracksToJson()).append('}')
         }
         append("],\"createdAtEpochMillis\":").append(createdAtEpochMillis)
         append('}')
@@ -179,40 +134,23 @@ data class Project(
             require(json.toByteArray(Charsets.UTF_8).size <= MAX_JSON_BYTES) { "Project JSON is too large" }
             val root = JsonReader(json).read() as? Map<*, *> ?: throw IllegalArgumentException("Project JSON must be an object")
             val version = root.long("schemaVersion")
-            require(version == 2L) { "Unsupported project schema version: $version" }
-            val trim = root["trim"].asObject("trim").toTrimRange()
-            val undoHistory = root["undoHistory"].asTrimHistory("undo history")
-            val id = root.string("id")
-            val name = root.string("name")
-            val sourceWav = root.string("sourceWav")
-            val sampleRate = root.long("sampleRate").toIntExact("sampleRate")
-            val channels = root.long("channels").toIntExact("channels")
-            val totalFrames = root.long("totalFrames")
-            val arrangement = root.boolean("isArrangement")
+            require(version == 3L) { "Unsupported project schema version: $version" }
             val tracks = root["tracks"].asArray("tracks").map { it.asTrack() }
-            val history = root["arrangementUndoHistory"].asArray("arrangement undo history").map {
-                val entry = it.asObject("arrangement undo entry")
+            val history = root["undoHistory"].asArray("undo history").map {
+                val entry = it.asObject("undo entry")
                 ProjectArrangementSnapshot(
-                    trim = entry["trim"].asObject("arrangement undo trim").toTrimRange(),
-                    tracks = entry["tracks"].asArray("arrangement undo tracks").map { track -> track.asTrack() },
-                    totalFrames = entry.long("totalFrames"),
-                    trimUndoHistory = entry["trimUndoHistory"].asTrimHistory("arrangement trim undo history")
+                    tracks = entry["tracks"].asArray("undo tracks").map { track -> track.asTrack() }
                 )
             }
             return Project(
-                id = id,
-                name = name,
-                sourceWav = sourceWav,
-                sampleRate = sampleRate,
-                channels = channels,
-                totalFrames = totalFrames,
-                trim = trim,
+                id = root.string("id"),
+                name = root.string("name"),
+                sampleRate = root.long("sampleRate").toIntExact("sampleRate"),
+                channels = root.long("channels").toIntExact("channels"),
                 createdAtEpochMillis = root.long("createdAtEpochMillis"),
                 silent = if (root.containsKey("silent")) root.boolean("silent") else false,
-                undoHistory = undoHistory,
                 tracks = tracks,
-                isArrangement = arrangement,
-                arrangementUndoHistory = history
+                undoHistory = history
             )
         }
 
@@ -255,12 +193,6 @@ data class Project(
         private fun Any?.asArray(field: String): List<*> =
             this as? List<*> ?: throw IllegalArgumentException("Missing or invalid '$field'")
 
-        private fun Any?.asTrimHistory(field: String): List<TrimRange> = when (this) {
-            null -> emptyList()
-            is List<*> -> map { it.asObject(field).toTrimRange() }
-            else -> throw IllegalArgumentException("Invalid $field")
-        }
-
         private fun Map<*, *>.toTrimRange(): TrimRange = TrimRange(long("startFrame"), long("endFrame"))
 
         private fun Any?.asTrack(): ProjectTrack {
@@ -297,8 +229,6 @@ data class Project(
 
         private fun TrimRange.toJsonObject(): String =
             "{\"startFrame\":$startFrame,\"endFrame\":$endFrame}"
-
-        private fun List<TrimRange>.rangesToJson(): String = joinToString(prefix = "[", postfix = "]") { it.toJsonObject() }
 
         private fun List<ProjectTrack>.tracksToJson(): String = joinToString(prefix = "[", postfix = "]") { track ->
             buildString {

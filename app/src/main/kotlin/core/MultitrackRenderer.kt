@@ -27,6 +27,7 @@ object MultitrackRenderer {
     fun twoTakeMix(a: Project, b: Project, offsetFrames: Long, gainA: Int, gainB: Int): Project {
         require(a.id != b.id) { "Choose two different recordings." }
         require(offsetFrames != Long.MIN_VALUE)
+        // Each take is represented by its playback file, already trimmed or rendered as needed.
         val tracks = listOf(a, b).mapIndexed { index, source ->
             ProjectTrack(
                 id = "track-$index",
@@ -36,16 +37,14 @@ object MultitrackRenderer {
                     id = "clip-$index",
                     source = ProjectAudioSource(source.id, source.sampleRate, source.channels, source.totalFrames),
                     positionFrames = if (index == 0) maxOf(0L, -offsetFrames) else maxOf(0L, offsetFrames),
-                    trim = source.trim
+                    trim = TrimRange(0L, source.totalFrames)
                 ))
             )
         }
-        val frames = frameCount(tracks, a.sampleRate)
         return Project(
-            id = "mix", name = "Mix", sourceWav = "", sampleRate = a.sampleRate,
-            channels = maxOf(a.channels, b.channels), totalFrames = frames,
-            trim = TrimRange(0L, frames), createdAtEpochMillis = 0L,
-            tracks = tracks, isArrangement = true
+            id = "mix", name = "Mix", sampleRate = a.sampleRate,
+            channels = maxOf(a.channels, b.channels), createdAtEpochMillis = 0L,
+            tracks = tracks
         )
     }
 
@@ -66,11 +65,9 @@ object MultitrackRenderer {
         cancelled: AtomicBoolean = AtomicBoolean(false),
         onProgress: (completedFrames: Long, totalFrames: Long) -> Unit = { _, _ -> }
     ): MultitrackRenderResult {
-        require(project.isArrangement) { "Only arranged projects can be rendered as a multitrack mix." }
-        val frames = frameCount(project.tracks, project.sampleRate)
-        require(frames == project.totalFrames) { "Arrangement length does not match its clips." }
+        val frames = project.totalFrames
         val channels = project.tracks.flatMap(ProjectTrack::clips).maxOfOrNull { it.source.channels } ?: 1
-        require(channels == project.channels) { "Arrangement channel count does not match its sources." }
+        require(channels == project.channels) { "Project channel count does not match its sources." }
         val dataBytes = Math.multiplyExact(Math.multiplyExact(frames, channels.toLong()), 2L)
         if (dataBytes > WavFormat.MAX_WAV_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
 

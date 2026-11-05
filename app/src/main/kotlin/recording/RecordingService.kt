@@ -198,11 +198,11 @@ class RecordingService : Service() {
             createdRecorder.start { input ->
                 registerRecordingCallback(input)
                 overdubBaseProject?.let { project ->
-                    // Arrangement previews are rendered at their project rate; single-source files use that same rate.
+                    // The playback file starts at project frame zero; clip trims are already applied.
                     clockTracker.attach(
                         SharedAudioTimeline(
                             projectSampleRate = project.sampleRate,
-                            projectStartFrame = project.trim.startFrame,
+                            projectStartFrame = 0L,
                             captureSampleRate = input.sampleRate,
                             backingSampleRate = project.sampleRate,
                             countInFrames = monitorClick?.countInFrames(project.sampleRate) ?: 0L
@@ -281,8 +281,8 @@ class RecordingService : Service() {
                     return@Thread
                 }
                 backingPlayer = player
-                player.seek(project.trim.startFrame)
-                player.play(project.trim.endFrame)
+                player.seek(0L)
+                player.play(project.totalFrames)
                 main.postDelayed({ reportBackingStatus(player) }, 1_000L)
             } catch (_: Throwable) {
                 main.post {
@@ -345,7 +345,7 @@ class RecordingService : Service() {
     private fun resumeTransport() {
         clockTracker.timeline?.resume()
         recorder?.resume()
-        overdubBaseProject?.let { backingPlayer?.play(it.trim.endFrame) }
+        overdubBaseProject?.let { backingPlayer?.play(it.totalFrames) }
         clickOnlyPlayer?.resume()
     }
 

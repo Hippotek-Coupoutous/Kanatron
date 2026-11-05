@@ -9,6 +9,12 @@ object ProjectArrangementActions {
         return apply(project, project.tracks + track)
     }
 
+    fun removeTrack(project: Project, trackId: String): Project {
+        require(project.tracks.size > 1) { "A project must keep at least one track." }
+        require(project.tracks.any { it.id == trackId }) { "Track not found." }
+        return apply(project, project.tracks.filterNot { it.id == trackId })
+    }
+
     fun updateTrack(project: Project, trackId: String, transform: (ProjectTrack) -> ProjectTrack): Project {
         val nextTracks = project.tracks.map { if (it.id == trackId) transform(it) else it }
         require(nextTracks.any { it.id == trackId }) { "Track not found." }

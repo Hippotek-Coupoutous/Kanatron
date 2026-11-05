@@ -24,30 +24,6 @@ class MultitrackRenderCancelledException : IOException("Mix render cancelled")
 object MultitrackRenderer {
     const val BLOCK_FRAMES = 1_024
 
-    fun twoTakeMix(a: Project, b: Project, offsetFrames: Long, gainA: Int, gainB: Int): Project {
-        require(a.id != b.id) { "Choose two different recordings." }
-        require(offsetFrames != Long.MIN_VALUE)
-        // Each take is represented by its playback file, already trimmed or rendered as needed.
-        val tracks = listOf(a, b).mapIndexed { index, source ->
-            ProjectTrack(
-                id = "track-$index",
-                name = source.name,
-                gainPermille = if (index == 0) gainA else gainB,
-                clips = listOf(ProjectClip(
-                    id = "clip-$index",
-                    source = ProjectAudioSource(source.id, source.sampleRate, source.channels, source.totalFrames),
-                    positionFrames = if (index == 0) maxOf(0L, -offsetFrames) else maxOf(0L, offsetFrames),
-                    trim = TrimRange(0L, source.totalFrames)
-                ))
-            )
-        }
-        return Project(
-            id = "mix", name = "Mix", sampleRate = a.sampleRate,
-            channels = maxOf(a.channels, b.channels), createdAtEpochMillis = 0L,
-            tracks = tracks
-        )
-    }
-
     fun frameCount(tracks: List<ProjectTrack>, sampleRate: Int): Long {
         require(sampleRate in SUPPORTED_SAMPLE_RATES)
         return tracks.flatMap(ProjectTrack::clips).maxOfOrNull { clip ->

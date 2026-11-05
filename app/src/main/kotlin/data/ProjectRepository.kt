@@ -59,8 +59,10 @@ class ProjectRepository(context: Context) {
         }
     }
 
-    /** The raw WAV of a project's first clip; trim screens start from that file. */
+    /** The raw WAV of a project's first clip. */
     fun audioFile(project: Project): File = sourceFile(project.firstClip.source)
+
+    fun audioFile(source: ProjectAudioSource): File = sourceFile(source)
 
     private fun sourceFile(source: ProjectAudioSource): File {
         val name = File(source.wav).name
@@ -123,59 +125,6 @@ class ProjectRepository(context: Context) {
         } finally {
             temp.delete()
         }
-    }
-
-    fun renderMix(
-        a: Project, b: Project, mix: Project, destination: File,
-        cancelled: AtomicBoolean
-    ): com.ottomusic.sketch.core.MultitrackRenderResult {
-        val sources = mapOf(a.id to playbackFile(a), b.id to playbackFile(b))
-        val bytes = Math.addExact(Math.multiplyExact(mix.totalFrames, mix.channels * 2L), WavFormat.HEADER_BYTES.toLong())
-        val parent = destination.absoluteFile.parentFile ?: throw IOException("No mix output folder.")
-        if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(parent), bytes)) {
-            throw IOException("Not enough free storage to save this mix.")
-        }
-        return MultitrackRenderer.renderToWav(mix, { sources.getValue(it.wav) }, destination, cancelled)
-    }
-
-    fun createArrangement(id: String, name: String, sources: List<Project>): Project {
-        require(id.matches(PROJECT_ID)) { "Invalid arrangement id" }
-        val cleanName = name.trim()
-        require(cleanName.isNotEmpty()) { "An arrangement needs a name." }
-        require(sources.size in 2..Project.MAX_TRACKS) { "Choose two to ${Project.MAX_TRACKS} recordings." }
-        val sourceTracks = sources.flatMap(Project::tracks)
-        require(sourceTracks.size <= Project.MAX_TRACKS) { "An arrangement supports up to ${Project.MAX_TRACKS} tracks." }
-        require(sourceTracks.sumOf { it.clips.size } <= Project.MAX_CLIPS) { "An arrangement supports up to ${Project.MAX_CLIPS} clips." }
-        var clipNumber = 0
-        val tracks = sourceTracks.mapIndexed { trackIndex, track ->
-            ProjectTrack(
-                id = "track-${trackIndex + 1}",
-                name = track.name,
-                clips = track.clips.map { clip ->
-                    clipNumber++
-                    clip.copy(id = "clip-$clipNumber")
-                },
-                gainPermille = track.gainPermille,
-                muted = track.muted,
-                solo = track.solo
-            )
-        }
-        return Project(
-            id = id,
-            name = cleanName,
-            sampleRate = sources.first().sampleRate,
-            channels = sources.maxOf { it.channels },
-            createdAtEpochMillis = System.currentTimeMillis(),
-            tracks = tracks
-        )
-    }
-
-    fun saveArrangement(project: Project): Project {
-        synchronized(PROJECT_LOCK) {
-            require(!projectFile(project.id).exists()) { "An arrangement with this id already exists." }
-            ProjectStore(projectFile(project.id)).save(project)
-        }
-        return project
     }
 
     /** Persists a completed mic-only take as a new, frame-positioned track on the backing project. */

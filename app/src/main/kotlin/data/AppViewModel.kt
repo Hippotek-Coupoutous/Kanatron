@@ -23,7 +23,7 @@ import kotlinx.coroutines.withContext
 
 internal enum class Route {
     LIBRARY, SKETCH, MIX, TUNER,
-    RECORD, TRIM, ARRANGE, MIX_TAKES, OVERDUB_CALIBRATION;
+    RECORD, TRIM, OVERDUB_CALIBRATION;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == MIX || this == TUNER
@@ -36,7 +36,8 @@ internal data class AppUiState(
     val route: Route = Route.LIBRARY,
     val selectedId: String? = null,
     val homeId: String? = null,
-    val arrangeProjectId: String? = null,
+    val trimTrackId: String? = null,
+    val trimClipId: String? = null,
     val layerOn: Boolean = false,
     val layerBackingId: String? = null,
     val layerClickBpm: Int = 0,
@@ -98,7 +99,8 @@ internal class AppViewModel(
 
     fun setHome(id: String?) = updateState { it.copy(homeId = id) }
 
-    fun setArrangeProject(id: String?) = updateState { it.copy(arrangeProjectId = id) }
+    fun setTrimTarget(trackId: String?, clipId: String?) =
+        updateState { it.copy(trimTrackId = trackId, trimClipId = clipId) }
 
     fun setLayerEnabled(on: Boolean) = updateState { it.copy(layerOn = on) }
 
@@ -427,7 +429,8 @@ internal class AppViewModel(
         savedStateHandle[KEY_ROUTE] = state.route.name
         savedStateHandle[KEY_SELECTED] = state.selectedId
         savedStateHandle[KEY_HOME] = state.homeId
-        savedStateHandle[KEY_ARRANGE] = state.arrangeProjectId
+        savedStateHandle[KEY_TRIM_TRACK] = state.trimTrackId
+        savedStateHandle[KEY_TRIM_CLIP] = state.trimClipId
         savedStateHandle[KEY_LAYER_ON] = state.layerOn
         savedStateHandle[KEY_LAYER_BACKING] = state.layerBackingId
         savedStateHandle[KEY_LAYER_CLICK_BPM] = state.layerClickBpm
@@ -444,7 +447,8 @@ internal class AppViewModel(
         route = savedStateHandle.get<String>(KEY_ROUTE)?.let { stored -> runCatching { Route.valueOf(stored) }.getOrNull() } ?: Route.LIBRARY,
         selectedId = savedStateHandle.get<String>(KEY_SELECTED),
         homeId = savedStateHandle.get<String>(KEY_HOME),
-        arrangeProjectId = savedStateHandle.get<String>(KEY_ARRANGE),
+        trimTrackId = savedStateHandle.get<String>(KEY_TRIM_TRACK),
+        trimClipId = savedStateHandle.get<String>(KEY_TRIM_CLIP),
         layerOn = savedStateHandle.get<Boolean>(KEY_LAYER_ON) ?: false,
         layerBackingId = savedStateHandle.get<String>(KEY_LAYER_BACKING),
         layerClickBpm = savedStateHandle.get<Int>(KEY_LAYER_CLICK_BPM) ?: 0,
@@ -478,7 +482,8 @@ internal class AppViewModel(
         const val KEY_ROUTE = "route"
         const val KEY_SELECTED = "selectedProjectId"
         const val KEY_HOME = "homeProjectId"
-        const val KEY_ARRANGE = "arrangeProjectId"
+        const val KEY_TRIM_TRACK = "trimTrackId"
+        const val KEY_TRIM_CLIP = "trimClipId"
         const val KEY_LAYER_ON = "layerOn"
         const val KEY_LAYER_BACKING = "layerBackingId"
         const val KEY_LAYER_CLICK_BPM = "layerClickBpm"

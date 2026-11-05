@@ -64,10 +64,8 @@ import com.ottomusic.sketch.playback.ClickEngine
 import com.ottomusic.sketch.playback.MonitorClick
 import com.ottomusic.sketch.recording.RecordingPhase
 import com.ottomusic.sketch.recording.RecordingService
-import com.ottomusic.sketch.ui.ArrangeScreen
 import com.ottomusic.sketch.ui.AudioSketchTheme
 import com.ottomusic.sketch.ui.LibraryScreen
-import com.ottomusic.sketch.ui.MixEntryScreen
 import com.ottomusic.sketch.ui.MixScreen
 import com.ottomusic.sketch.ui.OverdubCalibrationScreen
 import com.ottomusic.sketch.ui.RecordScreen
@@ -297,6 +295,7 @@ private fun AudioSketchApp(
     var silentRecoveryFailure by remember { mutableStateOf<String?>(null) }
     var shareFailure by remember { mutableStateOf<String?>(null) }
     var shareFailureProject by remember { mutableStateOf<Project?>(null) }
+    var mixBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val click = remember { ClickEngine() }
     androidx.compose.runtime.DisposableEffect(click) { onDispose { click.release() } }
@@ -363,11 +362,10 @@ private fun AudioSketchApp(
 
     BackHandler(enabled = route != Route.LIBRARY) {
         when (route) {
-            Route.SKETCH, Route.MIX, Route.TUNER -> appViewModel.leave(Route.LIBRARY)
+            Route.SKETCH, Route.TUNER -> appViewModel.leave(Route.LIBRARY)
+            Route.MIX -> appViewModel.leave(Route.LIBRARY)
             Route.RECORD -> appViewModel.leave(Route.SKETCH)
             Route.TRIM -> appViewModel.leave(Route.MIX, selected?.id ?: selectedId)
-            Route.ARRANGE -> appViewModel.leave(Route.MIX, appState.arrangeProjectId ?: homeId ?: selectedId)
-            Route.MIX_TAKES -> appViewModel.leave(Route.MIX)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.RECORD)
             Route.LIBRARY -> Unit
         }
@@ -419,17 +417,19 @@ private fun AudioSketchApp(
                         value = project?.let { withContext(Dispatchers.IO) { repository.missingSources(it).isNotEmpty() } } ?: false
                     }
                     if (selectedId != null && project == null) Text("Loading recording…")
-                    else MixEntryScreen(
+                    else MixScreen(
                         project = project,
+                        projects = projects,
+                        repository = repository,
                         audioAvailable = sourcesMissing != true,
-                        takeCount = projects.size,
                         onOpenLibrary = { appViewModel.navigate(Route.LIBRARY) },
-                        onTrim = { appViewModel.navigate(Route.TRIM) },
-                        onArrange = {
-                            appViewModel.setArrangeProject(null)
-                            appViewModel.navigate(Route.ARRANGE)
+                        onDone = { appViewModel.leave(Route.LIBRARY) },
+                        onTrimClip = { trackId, clipId ->
+                            appViewModel.setTrimTarget(trackId, clipId)
+                            appViewModel.navigate(Route.TRIM)
                         },
-                        onMixTakes = { appViewModel.navigate(Route.MIX_TAKES) }
+                        onProjectChanged = { appViewModel.invalidatePlayback(it.id) },
+                        onBusyChange = { mixBusy = it }
                     )
                 }
                 Route.TUNER -> TunerScreen(
@@ -445,26 +445,6 @@ private fun AudioSketchApp(
                     onRequestMicrophone = onTunerMicRequest,
                     onOpenSettings = onOpenSettings,
                     onBack = { appViewModel.leave(Route.LIBRARY) }
-                )
-                Route.MIX_TAKES -> MixScreen(
-                    projects = projects, repository = repository,
-                    onBack = { appViewModel.leave(Route.MIX) },
-                    onSaved = {
-                        appViewModel.invalidatePlayback(it.id)
-                        appViewModel.leave(Route.LIBRARY, it.id)
-                    }
-                )
-                Route.ARRANGE -> ArrangeScreen(
-                    projects = projects,
-                    repository = repository,
-                    initialProjectId = homeId ?: selectedId,
-                    onBack = { appViewModel.leave(Route.MIX) },
-                    onSaved = { appViewModel.leave(Route.MIX, it.id) },
-                    onProjectChanged = {
-                        appViewModel.invalidatePlayback(it.id)
-                        appViewModel.setArrangeProject(it.id)
-                        if (route == Route.LIBRARY) appViewModel.refreshLibrary(it.id)
-                    }
                 )
                 Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
                     route = recording.overdubRoute ?: calibrationStore.lastRoute(),
@@ -510,18 +490,25 @@ private fun AudioSketchApp(
                         androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Synth.text) {
                             TrimScreen(
                                 projectId = project.id,
+                                trackId = appState.trimTrackId,
+                                clipId = appState.trimClipId,
                                 playbackAllowed = playbackAllowed(recording.phase),
                                 onBack = { appViewModel.leave(Route.MIX, project.id) },
                                 onProjectChanged = { appViewModel.refreshLibrary(it.id) }
                             )
                         }
                     }
-                } else if (selectedId == null) {
+                } else {
                     Text("Loading recording…")
-                } else Text("Loading recording…")
+                }
             }
         }
-        if (route.isTopLevel) TopLevelBar(route) { appViewModel.navigate(it) }
+        if (route.isTopLevel) TopLevelBar(route, itemsEnabled = !mixBusy) { destination ->
+            // Mix edits change the project's duration and metadata, so leaving it refreshes the library.
+            if (route == Route.MIX) appViewModel.leave(destination, selected?.id ?: selectedId)
+            else if (destination == Route.LIBRARY) appViewModel.leave(Route.LIBRARY)
+            else appViewModel.navigate(destination)
+        }
     }
     val takeErrorKey = "${recording.projectId ?: "no-project"}:${recording.error}"
     val hasTakeError = recording.phase == RecordingPhase.FAILED && recording.error != null &&
@@ -702,12 +689,13 @@ private val TOP_DESTINATIONS = listOf(
 )
 
 @Composable
-private fun TopLevelBar(current: Route, onNavigate: (Route) -> Unit) {
+private fun TopLevelBar(current: Route, itemsEnabled: Boolean, onNavigate: (Route) -> Unit) {
     NavigationBar(containerColor = Synth.night, contentColor = Synth.text) {
         TOP_DESTINATIONS.forEach { destination ->
             val selected = destination.route == current
             NavigationBarItem(
                 selected = selected,
+                enabled = itemsEnabled,
                 onClick = { if (!selected) onNavigate(destination.route) },
                 icon = { SynthGlyph(destination.icon, if (selected) Synth.cyan else Synth.muted) },
                 label = { Text(destination.label) },

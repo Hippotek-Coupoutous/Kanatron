@@ -1,51 +1,67 @@
 package com.ottomusic.sketch.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.ottomusic.sketch.core.ExportFilename
 import com.ottomusic.sketch.core.MultitrackRenderer
 import com.ottomusic.sketch.core.Project
+import com.ottomusic.sketch.core.ProjectArrangementActions
+import com.ottomusic.sketch.core.ProjectClip
+import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.RecordingCore
+import com.ottomusic.sketch.core.TrimRange
+import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.core.firstClip
 import com.ottomusic.sketch.data.ProjectRepository
-import com.ottomusic.sketch.data.ImportActivePaths
+import com.ottomusic.sketch.data.WavExporter
 import com.ottomusic.sketch.playback.WavPlayer
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 import kotlinx.coroutines.CancellationException
@@ -53,260 +69,509 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Entry to the editing tools for one project; Trim/Arrange/Mix stay reachable as sub-routes. */
+private data class DragPreview(val clipId: String, val positionFrames: Long)
+
+/** The Mix destination: one project's tracks, clip controls, preview, share and track management. */
 @Composable
-internal fun MixEntryScreen(
+fun MixScreen(
     project: Project?,
+    projects: List<Project>,
+    repository: ProjectRepository,
     audioAvailable: Boolean,
-    takeCount: Int,
     onOpenLibrary: () -> Unit,
-    onTrim: () -> Unit,
-    onArrange: () -> Unit,
-    onMixTakes: () -> Unit
+    onDone: () -> Unit,
+    onTrimClip: (trackId: String, clipId: String) -> Unit,
+    onProjectChanged: (Project) -> Unit,
+    onBusyChange: (Boolean) -> Unit
 ) {
-    if (project != null && !audioAvailable) {
+    if (project == null) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text("Mix", color = Synth.night, style = MaterialTheme.typography.headlineMedium)
+            SynthPanel { Text("Pick a recording in the Library", color = Synth.muted) }
+            BigButton("Open Library", onOpenLibrary, Modifier.fillMaxWidth(), primary = true)
+        }
+        return
+    }
+    if (!audioAvailable) {
         MissingAudioScreen(project.name, onOpenLibrary)
         return
     }
-    Box(Modifier.fillMaxSize()) {
-        Column(
-            Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text("Mix", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-            if (project == null) {
-                SynthPanel { Text("Pick a recording in the Library", color = Synth.muted) }
-                BigButton("Open Library", onOpenLibrary, Modifier.fillMaxWidth(), primary = true)
-            } else {
-                SynthPanel {
-                    Text(project.name, color = Synth.text, style = MaterialTheme.typography.headlineSmall)
-                    if (project.silent) Text("Silent recording · all captured samples are zero-valued", color = MaterialTheme.colorScheme.tertiary)
-                    Text(
-                        "${RecordingCore.formatClock(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate))} · ${project.sampleRate} Hz",
-                        color = Synth.muted, style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-                BigButton("Trim", onTrim, Modifier.fillMaxWidth())
-                BigButton("Arrange", onArrange, Modifier.fillMaxWidth())
-                BigButton("Mix two takes", onMixTakes, Modifier.fillMaxWidth(), enabled = takeCount >= 2)
-                if (takeCount < 2) Text("Record or import two takes first.", color = Synth.night)
-            }
-        }
-    }
+    MixEditor(project, projects, repository, onDone, onTrimClip, onProjectChanged, onBusyChange)
 }
 
 @Composable
-fun MixScreen(
+private fun MixEditor(
+    initial: Project,
     projects: List<Project>,
     repository: ProjectRepository,
-    onBack: () -> Unit,
-    onSaved: (Project) -> Unit,
+    onDone: () -> Unit,
+    onTrimClip: (trackId: String, clipId: String) -> Unit,
+    onProjectChanged: (Project) -> Unit,
+    onBusyChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    val ordered = remember(projects) { projects.sortedByDescending { it.createdAtEpochMillis } }
-    var idA by rememberSaveable { mutableStateOf(ordered.firstOrNull()?.id) }
-    var idB by rememberSaveable { mutableStateOf(ordered.getOrNull(1)?.id) }
-    var offsetMs by rememberSaveable { mutableStateOf(0) }
-    var gainA by rememberSaveable { mutableStateOf(1f) }
-    var gainB by rememberSaveable { mutableStateOf(1f) }
-
-    var error by remember { mutableStateOf<String?>(null) }
-    var note by remember { mutableStateOf<String?>(null) }
+    var project by remember(initial.id) { mutableStateOf(initial) }
+    var missingSources by remember(initial.id) { mutableStateOf(emptyList<String>()) }
     var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     var player by remember { mutableStateOf<WavPlayer?>(null) }
-    var previewFile by remember { mutableStateOf<File?>(null) }
-    var activeRender by remember { mutableStateOf<AtomicBoolean?>(null) }
+    var removingTrack by remember { mutableStateOf<ProjectTrack?>(null) }
+    var edited by remember { mutableStateOf(false) }
 
-    val takeA = ordered.firstOrNull { it.id == idA } ?: ordered.firstOrNull()
-    val takeB = ordered.firstOrNull { it.id == idB && it.id != takeA?.id }
-        ?: ordered.firstOrNull { it.id != takeA?.id }
-    val ready = takeA != null && takeB != null
+    // The bottom navigation must not take the user away from a save, render or share.
+    val latestOnBusyChange = rememberUpdatedState(onBusyChange)
+    LaunchedEffect(busy) { latestOnBusyChange.value(busy) }
 
-    val current = player
-    val isPlaying = if (current != null) current.state.collectAsState().value.isPlaying else false
+    // Re-read on entry so a trim made in the sub-route, or a stale selection snapshot, is not shown.
+    LaunchedEffect(initial.id) {
+        val fresh = try {
+            withContext(Dispatchers.IO) { repository.get(initial.id) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            null
+        }
+        if (fresh == null || edited) return@LaunchedEffect
+        project = fresh
+        missingSources = withContext(Dispatchers.IO) { repository.missingSources(fresh) }
+    }
 
     fun stopPreview() {
-        val p = player
+        val current = player
         player = null
-        if (p != null) {
-            p.stop()
-            p.release()
-        }
-        previewFile?.delete()
-        previewFile = null
+        current?.stop()
+        current?.release()
     }
 
-    // Any input change drops the stale preview.
-    fun update(change: () -> Unit) {
-        if (busy) return
+    fun persist(next: Project) {
+        if (next == project) return
+        edited = true
         stopPreview()
         error = null
-        note = null
-        change()
-    }
-
-    fun render(save: Boolean) {
-        val a = takeA ?: return
-        val b = takeB ?: return
-        stopPreview()
-        error = null
-        note = null
         busy = true
-        val cancel = AtomicBoolean(false)
-        activeRender = cancel
-        val mix = MultitrackRenderer.twoTakeMix(
-            a, b, (offsetMs.toDouble() * a.sampleRate / 1000.0).roundToLong(),
-            (gainA * 1000).roundToInt(), (gainB * 1000).roundToInt()
-        )
         scope.launch {
-            var output: File? = null
             try {
-                val (result, saved) = withContext(Dispatchers.IO) {
-                    val id = UUID.randomUUID().toString()
-                    val file = if (save) repository.importOutput(id)
-                        else File.createTempFile("mix-preview-", ".wav", context.cacheDir)
-                    output = file
-                    if (save) ImportActivePaths.beginOutput(file)
-                    try {
-                        val result = repository.renderMix(a, b, mix, file, cancel)
-                        val saved = if (save) repository.saveImported(
-                            id, file, result.sampleRate, result.channels, result.frames,
-                            "Mix " + SimpleDateFormat("MMM d HH:mm", Locale.getDefault()).format(Date())
-                        ) else null
-                        result to saved
-                    } finally {
-                        if (save) ImportActivePaths.finishOutput(file)
+                val saved = withContext(Dispatchers.IO) { repository.saveEditState(next) }
+                project = saved
+                onProjectChanged(saved)
+                missingSources = withContext(Dispatchers.IO) { repository.missingSources(saved) }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Throwable) {
+                error = failure.message ?: "Could not save this mix change."
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun preview() {
+        val current = project
+        if (missingSources.isNotEmpty()) return
+        stopPreview()
+        busy = true
+        error = null
+        scope.launch {
+            try {
+                val wav = withContext(Dispatchers.IO) { repository.playbackFile(current) }
+                player = WavPlayer(context, wav).also { it.play() }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Throwable) {
+                error = failure.message ?: "Could not prepare the mix preview."
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun shareMix() {
+        val current = project
+        if (missingSources.isNotEmpty()) return
+        stopPreview()
+        busy = true
+        error = null
+        scope.launch {
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    val selection = TrimRange(0L, current.totalFrames)
+                    val name = ExportFilename.wav("${current.name}-mix", current.name)
+                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, current.channels)
+                    repository.exportFile(current.id, name, estimatedBytes) { target ->
+                        repository.withTemporaryWav(current) { source ->
+                            WavExporter.export(source, target, selection)
+                        }
                     }
                 }
-                note = if (result.clippedSamples > 0) "Some peaks clipped: lower a level." else null
-                if (saved != null) onSaved(saved) else {
-                    previewFile = output
-                    player = WavPlayer(context, output!!).also { it.play() }
-                    output = null
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
+                shareExport(context, file, "Share mix")
+            } catch (failure: CancellationException) {
+                throw failure
             } catch (failure: Throwable) {
-                error = failure.message ?: "Could not build the mix."
+                error = exportFailureMessage(failure, "Could not prepare this mix for sharing.")
             } finally {
-                output?.delete()
-                activeRender = null
                 busy = false
             }
         }
     }
 
     DisposableEffect(Unit) {
-        onDispose {
-            activeRender?.set(true)
-            stopPreview()
-        }
+        onDispose { player?.release(); latestOnBusyChange.value(false) }
     }
 
-    val errText = error
-    val noteText = note
+    val current = project
+    val currentPlayer = player
+    val isPlaying = currentPlayer?.state?.collectAsState()?.value?.isPlaying == true
 
-    Box(Modifier.fillMaxSize()) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .safeDrawingPadding()
-            .padding(20.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(20.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        SynthTopBar("Mix", onBack)
+        // Leaving mid-save would refresh the library before the write lands.
+        BackHandler(enabled = busy) {}
+        SynthTopBar(
+            title = "Mix",
+            onBack = { if (!busy) { stopPreview(); onDone() } },
+            action = {
+                TextButton(enabled = !busy, onClick = { stopPreview(); onDone() }) { Text("Done") }
+            }
+        )
 
-        if (ordered.size < 2) {
-            Text("Record or import two takes first.")
-        }
-
-        SynthPanel {
-            Text("First take", style = MaterialTheme.typography.labelLarge)
-            TakePicker(takeA, ordered) { p -> update { idA = p.id } }
-            Slider(
-                value = gainA,
-                onValueChange = { v -> update { gainA = v } },
-                valueRange = 0f..1.5f,
-                modifier = Modifier.semantics { contentDescription = "First take level" },
+        Text(current.name, style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "${current.sampleRate} Hz · ${current.channels} channel${if (current.channels == 1) "" else "s"} · " +
+                RecordingCore.formatClock(RecordingCore.elapsedMillis(current.totalFrames, current.sampleRate), withMillis = true, hours = false),
+            color = Synth.muted,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        if (current.silent) Text("Silent recording · all captured samples are zero-valued", color = MaterialTheme.colorScheme.tertiary)
+        if (missingSources.isNotEmpty()) {
+            Text(
+                "Missing or changed source WAV: ${missingSources.joinToString()}. The project is saved; preview and sharing are paused until it is restored.",
+                color = MaterialTheme.colorScheme.error
             )
         }
 
         SynthPanel {
-            Text("Second take", style = MaterialTheme.typography.labelLarge)
-            TakePicker(takeB, ordered) { p -> update { idB = p.id } }
-            Slider(
-                value = gainB,
-                onValueChange = { v -> update { gainB = v } },
-                valueRange = 0f..1.5f,
-                modifier = Modifier.semantics { contentDescription = "Second take level" },
-            )
-            Stepper(
-                value = "$offsetMs ms",
-                onMinus = { update { offsetMs -= 10 } },
-                onPlus = { update { offsetMs += 10 } },
-                minusLabel = "Second take 10 ms earlier",
-                plusLabel = "Second take 10 ms later",
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                BigButton(
+                    text = if (isPlaying) "Stop preview" else "Preview",
+                    onClick = { if (isPlaying) stopPreview() else preview() },
+                    enabled = !busy && missingSources.isEmpty(),
+                    modifier = Modifier.weight(1f)
+                )
+                BigButton(
+                    text = if (busy) "Working…" else "Undo",
+                    onClick = { ProjectArrangementActions.undo(current)?.let(::persist) },
+                    enabled = !busy && current.undoHistory.isNotEmpty(),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        val canRemove = { track: ProjectTrack ->
+            val remaining = current.tracks.filterNot { it.id == track.id }.flatMap(ProjectTrack::clips)
+            current.tracks.size > 1 &&
+                remaining.any { it.source.channels == current.channels } &&
+                remaining.any { it.source.sampleRate == current.sampleRate }
+        }
+        current.tracks.forEach { track ->
+            TrackLane(
+                project = current,
+                track = track,
+                busy = busy,
+                canRemove = canRemove(track),
+                onTrimClip = onTrimClip,
+                onRequestRemove = { removingTrack = track },
+                onChange = ::persist
             )
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
+        if (current.tracks.size < Project.MAX_TRACKS) {
+            val existingSources = current.tracks.flatMap(ProjectTrack::clips).map { it.source.wav }.toSet()
+            val candidates = projects.filter { source ->
+                source.firstClip.source.wav !in existingSources &&
+                    source.firstClip.source.channels <= current.channels
+            }
+            // Only offer sources that still match their saved format; reading a WAV is not cheap enough for composition.
+            val availableSources by produceState(emptyList<Project>(), candidates) {
+                value = withContext(Dispatchers.IO) { candidates.filter { repository.missingSources(it).isEmpty() } }
+            }
+            if (availableSources.isNotEmpty()) {
+                SynthPanel {
+                    Text("Add recording", style = MaterialTheme.typography.titleMedium)
+                    availableSources.forEach { source ->
+                        FilterChip(
+                            selected = false,
+                            onClick = {
+                                val sourceClip = source.firstClip
+                                val track = ProjectTrack(
+                                    id = "track-${UUID.randomUUID()}",
+                                    name = source.name,
+                                    clips = listOf(
+                                        ProjectClip(
+                                            id = "clip-${UUID.randomUUID()}",
+                                            source = sourceClip.source,
+                                            positionFrames = 0L,
+                                            trim = sourceClip.trim
+                                        )
+                                    )
+                                )
+                                runCatching { ProjectArrangementActions.addTrack(current, track) }
+                                    .onSuccess(::persist)
+                                    .onFailure { error = it.message ?: "Could not add this recording." }
+                            },
+                            enabled = !busy,
+                            label = { Text("Add ${source.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        )
+                    }
+                }
+            }
+        }
+
+        SynthPanel {
             BigButton(
-                text = if (isPlaying) "Stop" else "Preview",
-                onClick = { if (isPlaying) stopPreview() else render(save = false) },
-                modifier = Modifier.weight(1f),
-                enabled = ready && !busy,
-            )
-            BigButton(
-                text = if (busy) "Working…" else "Save mix",
-                onClick = { render(save = true) },
-                modifier = Modifier.weight(1f),
+                text = if (busy) "Preparing…" else "Share mix",
+                onClick = ::shareMix,
                 primary = true,
-                enabled = ready && !busy,
+                enabled = !busy && missingSources.isEmpty()
             )
         }
 
-        if (errText != null) {
-            Text(errText, color = MaterialTheme.colorScheme.error)
-        }
-        if (noteText != null) {
-            Text(noteText)
-        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     }
+
+    removingTrack?.let { track ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) removingTrack = null },
+            title = { Text("Remove track?") },
+            text = { Text("“${track.name}” and its clips leave this mix. The recording stays in the Library.") },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        removingTrack = null
+                        runCatching { ProjectArrangementActions.removeTrack(current, track.id) }
+                            .onSuccess(::persist)
+                            .onFailure { error = it.message ?: "Could not remove this track." }
+                    }
+                ) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(enabled = !busy, onClick = { removingTrack = null }) { Text("Keep") }
+            }
+        )
     }
 }
 
 @Composable
-private fun TakePicker(selected: Project?, projects: List<Project>, onPick: (Project) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        OutlinedButton(
-            onClick = { open = true },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-        ) {
+private fun TrackLane(
+    project: Project,
+    track: ProjectTrack,
+    busy: Boolean,
+    canRemove: Boolean,
+    onTrimClip: (trackId: String, clipId: String) -> Unit,
+    onRequestRemove: () -> Unit,
+    onChange: (Project) -> Unit
+) {
+    var gainDraft by remember(track.id, track.gainPermille) { mutableStateOf(track.gainPermille / 1_000f) }
+    var dragPreview by remember(track.id) { mutableStateOf<DragPreview?>(null) }
+    val onChangeState = androidx.compose.runtime.rememberUpdatedState(onChange)
+    val laneSpan = project.totalFrames.coerceAtLeast(1L)
+
+    SynthPanel {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = selected?.name ?: "Select take",
+                track.name,
+                style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            IconSquare(
+                icon = SynthIcon.Delete,
+                label = "Remove ${track.name} track",
+                onClick = onRequestRemove,
+                enabled = !busy && canRemove
             )
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            projects.forEach { p ->
-                DropdownMenuItem(
-                    text = { Text(p.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    onClick = {
-                        open = false
-                        onPick(p)
-                    },
+        Canvas(
+            Modifier.fillMaxWidth().height(80.dp)
+                .semantics { contentDescription = "${track.name} timeline lane; drag a clip to move it" }
+                .pointerInput(project.id, track.id, laneSpan, busy) {
+                    var selectedClip: ProjectClip? = null
+                    var dragOriginX = 0f
+                    var dragOriginFrame = 0L
+                    if (!busy) detectDragGestures(
+                        onDragStart = { point ->
+                            val scale = size.width.toDouble() / laneSpan
+                            selectedClip = track.clips.lastOrNull { clip ->
+                                val startX = clip.positionFrames * scale
+                                val clipFrames = MultitrackRenderer.clipFrameCount(clip, project.sampleRate)
+                                val endX = (clip.positionFrames + clipFrames).coerceAtLeast(clip.positionFrames + 1L) * scale
+                                point.x >= startX && point.x <= endX
+                            }
+                            selectedClip?.let { clip ->
+                                dragOriginX = point.x
+                                dragOriginFrame = clip.positionFrames
+                                dragPreview = DragPreview(clip.id, clip.positionFrames)
+                            }
+                        },
+                        onDrag = { change, _ ->
+                            val clip = selectedClip ?: return@detectDragGestures
+                            val framesPerPixel = laneSpan.toDouble() / size.width.toDouble()
+                            val delta = ((change.position.x - dragOriginX) * framesPerPixel).roundToLong()
+                            val endBound = Long.MAX_VALUE - MultitrackRenderer.clipFrameCount(clip, project.sampleRate)
+                            val desired = runCatching { Math.addExact(dragOriginFrame, delta) }
+                                .getOrDefault(if (delta >= 0L) Long.MAX_VALUE else 0L)
+                            dragPreview = DragPreview(clip.id, desired.coerceIn(0L, endBound))
+                            change.consume()
+                        },
+                        onDragEnd = {
+                            val moving = dragPreview
+                            val clip = selectedClip
+                            if (moving != null && clip != null && moving.positionFrames != clip.positionFrames) {
+                                val next = ProjectArrangementActions.setPosition(project, track.id, clip.id, moving.positionFrames)
+                                onChangeState.value(next)
+                            }
+                            dragPreview = null
+                            selectedClip = null
+                        },
+                        onDragCancel = { dragPreview = null; selectedClip = null }
+                    )
+                }
+        ) {
+            drawRect(Synth.surfaceHi)
+            val scale = size.width / laneSpan.toFloat()
+            val center = size.height / 2f
+            drawLine(Synth.line, Offset(0f, center), Offset(size.width, center), strokeWidth = 1.dp.toPx())
+            track.clips.forEachIndexed { index, clip ->
+                val position = dragPreview?.takeIf { it.clipId == clip.id }?.positionFrames ?: clip.positionFrames
+                val frames = MultitrackRenderer.clipFrameCount(clip, project.sampleRate)
+                val minWidth = minOf(5.dp.toPx(), size.width)
+                val left = (position * scale).coerceIn(0f, (size.width - minWidth).coerceAtLeast(0f))
+                val right = ((position + frames).toFloat() * scale).coerceIn(left + minWidth, size.width)
+                drawRoundRect(
+                    color = if (track.muted || clip.muted) Synth.line else laneColor(index),
+                    topLeft = Offset(left, 12.dp.toPx()),
+                    size = Size((right - left).coerceAtLeast(5.dp.toPx()), size.height - 24.dp.toPx()),
+                    cornerRadius = CornerRadius(9.dp.toPx())
                 )
             }
         }
+        track.clips.forEach { clip ->
+            ClipControls(project, track, clip, busy, onTrimClip, onChange)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Gain ${(gainDraft * 100).roundToInt()}%", modifier = Modifier.weight(1f))
+            Switch(
+                checked = track.muted,
+                onCheckedChange = { muted -> onChange(ProjectArrangementActions.setTrackMuted(project, track.id, muted)) },
+                enabled = !busy,
+                modifier = Modifier.semantics { contentDescription = "Mute ${track.name}" }
+            )
+            Text("Mute")
+        }
+        Slider(
+            value = gainDraft,
+            onValueChange = { gainDraft = it },
+            onValueChangeFinished = {
+                if (!busy) onChange(ProjectArrangementActions.setTrackGain(project, track.id, (gainDraft * 1_000).roundToInt()))
+            },
+            valueRange = 0f..2f,
+            enabled = !busy,
+            modifier = Modifier.semantics { contentDescription = "${track.name} gain, 0 to 200 percent" }
+        )
+        FilterChip(
+            modifier = Modifier.semantics { contentDescription = "Solo ${track.name}" },
+            selected = track.solo,
+            onClick = { onChange(ProjectArrangementActions.setTrackSolo(project, track.id, !track.solo)) },
+            enabled = !busy,
+            label = { Text(if (track.solo) "Solo on" else "Solo") }
+        )
     }
+}
+
+@Composable
+private fun ClipControls(
+    project: Project,
+    track: ProjectTrack,
+    clip: ProjectClip,
+    busy: Boolean,
+    onTrimClip: (trackId: String, clipId: String) -> Unit,
+    onChange: (Project) -> Unit
+) {
+    var positionText by remember(project.id, clip.id, clip.positionFrames) { mutableStateOf(clip.positionFrames.toString()) }
+    var rateDraft by remember(clip.id, clip.rateCorrectionPpm) { mutableStateOf(clip.rateCorrectionPpm.toFloat()) }
+    val maxPosition = Long.MAX_VALUE - MultitrackRenderer.clipFrameCount(clip, project.sampleRate)
+    val correctedPosition = positionText.toLongOrNull()?.takeIf { it in 0L..maxPosition }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(clip.source.wav.substringAfterLast('/'), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("Source trim · ${clip.trim.startFrame}–${clip.trim.endFrame} · ${clip.source.sampleRate} Hz")
+        BigButton(
+            text = "Trim",
+            onClick = { onTrimClip(track.id, clip.id) },
+            modifier = Modifier.semantics {
+                contentDescription = "Trim ${clip.source.wav.substringAfterLast('/')}"
+            },
+            enabled = !busy,
+            icon = SynthIcon.Trim
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = positionText,
+                onValueChange = { value -> if (value.all(Char::isDigit) && value.length <= 19) positionText = value },
+                label = { Text("Start frame") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                enabled = !busy,
+                modifier = Modifier.weight(1f)
+            )
+            BigButton(
+                text = "Apply",
+                onClick = { correctedPosition?.let { onChange(ProjectArrangementActions.setPosition(project, track.id, clip.id, it)) } },
+                enabled = !busy && correctedPosition != null
+            )
+        }
+        Stepper(
+            value = "±1 frame",
+            onMinus = { if (!busy) onChange(ProjectArrangementActions.setPosition(project, track.id, clip.id, (clip.positionFrames - 1L).coerceAtLeast(0L))) },
+            onPlus = { if (!busy && clip.positionFrames < maxPosition) onChange(ProjectArrangementActions.setPosition(project, track.id, clip.id, clip.positionFrames + 1L)) },
+            minusLabel = "Move ${track.name} clip one frame earlier",
+            plusLabel = "Move ${track.name} clip one frame later"
+        )
+        if (correctedPosition == null) Text("Enter a nonnegative frame number.", color = MaterialTheme.colorScheme.error)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Rate ${rateDraft.roundToInt()} ppm", modifier = Modifier.weight(1f))
+            Switch(
+                checked = clip.muted,
+                onCheckedChange = { muted -> onChange(ProjectArrangementActions.updateTrack(project, track.id) { current ->
+                    current.copy(clips = current.clips.map { if (it.id == clip.id) it.copy(muted = muted) else it })
+                }) },
+                enabled = !busy,
+                modifier = Modifier.semantics { contentDescription = "Mute clip ${clip.source.wav.substringAfterLast('/')}" }
+            )
+            Text("Clip mute")
+        }
+        Slider(
+            value = rateDraft,
+            onValueChange = { rateDraft = it },
+            onValueChangeFinished = {
+                if (!busy) onChange(ProjectArrangementActions.setRateCorrection(project, track.id, clip.id, rateDraft.roundToInt()))
+            },
+            valueRange = -ProjectClip.MAX_RATE_CORRECTION_PPM.toFloat()..ProjectClip.MAX_RATE_CORRECTION_PPM.toFloat(),
+            enabled = !busy,
+            modifier = Modifier.semantics { contentDescription = "Clip rate correction, minus 2000 to plus 2000 parts per million" }
+        )
+    }
+}
+
+private fun laneColor(index: Int): Color = when (index % 4) {
+    0 -> Synth.pink
+    1 -> Synth.cyan
+    2 -> Synth.violet
+    else -> Synth.yellow
 }

@@ -1,6 +1,7 @@
 package com.ottomusic.sketch.ui
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -65,6 +66,8 @@ import com.ottomusic.sketch.core.Peak
 import com.ottomusic.sketch.core.PeakExtractor
 import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.ProjectArrangementActions
+import com.ottomusic.sketch.core.ProjectClip
+import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.TrimActions
 import com.ottomusic.sketch.core.TrimEdge
@@ -87,20 +90,23 @@ import kotlinx.coroutines.withContext
 @Composable
 fun TrimScreen(
     projectId: String,
+    trackId: String?,
+    clipId: String?,
     playbackAllowed: Boolean,
     onBack: () -> Unit,
     onProjectChanged: (Project) -> Unit = {}
 ) {
     val context = LocalContext.current
-    var loadState by remember(projectId, context) { mutableStateOf<TrimLoadState>(TrimLoadState.Loading) }
-    LaunchedEffect(projectId, context) {
+    var loadState by remember(projectId, trackId, clipId, context) { mutableStateOf<TrimLoadState>(TrimLoadState.Loading) }
+    LaunchedEffect(projectId, trackId, clipId, context) {
         loadState = TrimLoadState.Loading
         loadState = withContext(Dispatchers.IO) {
             try {
                 val repository = ProjectRepository(context)
                 val project = repository.get(projectId) ?: return@withContext TrimLoadState.MissingProject
-                val wav = repository.audioFile(project)
-                if (!wav.isFile) TrimLoadState.MissingAudio else TrimLoadState.Ready(repository, project, wav)
+                val target = project.trimTarget(trackId, clipId) ?: return@withContext TrimLoadState.MissingClip
+                val wav = repository.audioFile(target.clip.source)
+                if (!wav.isFile) TrimLoadState.MissingAudio else TrimLoadState.Ready(repository, project, target.track.id, target.clip.id, wav)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -118,6 +124,10 @@ fun TrimScreen(
             Text("This recording could not be found.")
             TextButton(onClick = onBack) { Text("Back") }
         }
+        TrimLoadState.MissingClip -> Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(24.dp), verticalArrangement = Arrangement.Center) {
+            Text("This clip could not be found.")
+            TextButton(onClick = onBack) { Text("Back") }
+        }
         TrimLoadState.MissingAudio -> Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(24.dp), verticalArrangement = Arrangement.Center) {
             Text("The WAV for this recording is missing. It remains in your library.")
             TextButton(onClick = onBack) { Text("Back") }
@@ -126,16 +136,36 @@ fun TrimScreen(
             Text(state.message)
             TextButton(onClick = onBack) { Text("Back") }
         }
-        is TrimLoadState.Ready -> TrimEditor(context, state.repository, state.project, state.wav, playbackAllowed, onBack, onProjectChanged)
+        is TrimLoadState.Ready -> TrimEditor(
+            context, state.repository, state.project, state.trackId, state.clipId, state.wav,
+            playbackAllowed, onBack, onProjectChanged
+        )
     }
+}
+
+private data class TrimTarget(val track: ProjectTrack, val clip: ProjectClip)
+
+/** Resolves an explicit clip, or the first clip for the original single-recording route. */
+private fun Project.trimTarget(trackId: String?, clipId: String?): TrimTarget? {
+    if (trackId == null && clipId == null) return TrimTarget(tracks.first(), firstClip)
+    val track = tracks.firstOrNull { it.id == trackId } ?: return null
+    val clip = track.clips.firstOrNull { it.id == clipId } ?: return null
+    return TrimTarget(track, clip)
 }
 
 private sealed interface TrimLoadState {
     object Loading : TrimLoadState
     object MissingProject : TrimLoadState
+    object MissingClip : TrimLoadState
     object MissingAudio : TrimLoadState
     data class Failed(val message: String) : TrimLoadState
-    data class Ready(val repository: ProjectRepository, val project: Project, val wav: File) : TrimLoadState
+    data class Ready(
+        val repository: ProjectRepository,
+        val project: Project,
+        val trackId: String,
+        val clipId: String,
+        val wav: File
+    ) : TrimLoadState
 }
 
 @Composable
@@ -143,6 +173,8 @@ private fun TrimEditor(
     context: Context,
     repository: ProjectRepository,
     initial: Project,
+    trackId: String,
+    clipId: String,
     wav: File,
     playbackAllowed: Boolean,
     onBack: () -> Unit,
@@ -176,7 +208,7 @@ private fun TrimEditor(
         }
         return
     }
-    TrimEditorLoaded(context, repository, initial, wav, loadedPlayer, playbackAllowed, onBack, onProjectChanged)
+    TrimEditorLoaded(context, repository, initial, trackId, clipId, wav, loadedPlayer, playbackAllowed, onBack, onProjectChanged)
 }
 
 @Composable
@@ -184,6 +216,8 @@ private fun TrimEditorLoaded(
     context: Context,
     repository: ProjectRepository,
     initial: Project,
+    trackId: String,
+    clipId: String,
     wav: File,
     player: WavPlayer,
     playbackAllowed: Boolean,
@@ -196,10 +230,19 @@ private fun TrimEditorLoaded(
     val view = LocalView.current
     var project by remember(initial.id) { mutableStateOf(initial) }
     var persistedProject by remember(initial.id) { mutableStateOf(initial) }
-    val firstClip = project.firstClip
-    val total = firstClip.source.totalFrames
-    val sampleRate = firstClip.source.sampleRate
-    val trim = firstClip.trim
+    val targetTrack = project.tracks.firstOrNull { it.id == trackId }
+    val targetClip = targetTrack?.clips?.firstOrNull { it.id == clipId }
+    // A clip can vanish under an edit made elsewhere (e.g. Undo in Mix); never silently edit another one.
+    if (targetTrack == null || targetClip == null) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(24.dp), verticalArrangement = Arrangement.Center) {
+            Text("This clip no longer exists.")
+            TextButton(onClick = onBack) { Text("Back") }
+        }
+        return
+    }
+    val total = targetClip.source.totalFrames
+    val sampleRate = targetClip.source.sampleRate
+    val trim = targetClip.trim
     val undoCount = project.undoHistory.size
     var activeEdge by remember(initial.id) { mutableStateOf(TrimEdge.Start) }
     var coarseStepSelected by remember(initial.id) { mutableStateOf(false) }
@@ -234,11 +277,11 @@ private fun TrimEditorLoaded(
     }
 
     fun edit(persist: Boolean = true, command: TrimActions.() -> TrimRange?) {
-        val clip = project.firstClip
+        val clip = targetClip
         val actions = TrimActions(clip.trim, clip.source.totalFrames, clip.source.sampleRate)
         val next = actions.command() ?: return
         if (next == clip.trim) return
-        val edited = ProjectArrangementActions.setClipTrim(project, project.tracks.first().id, clip.id, next)
+        val edited = ProjectArrangementActions.setClipTrim(project, targetTrack.id, clip.id, next)
         // One gesture is one undo step: later unsaved drag updates keep the snapshot taken at its start.
         val dragInProgress = !persist && project.undoHistory.size > persistedProject.undoHistory.size
         project = if (dragInProgress) edited.copy(undoHistory = project.undoHistory) else edited
@@ -293,7 +336,7 @@ private fun TrimEditorLoaded(
             try {
                 val file = withContext(Dispatchers.IO) {
                     val name = ExportFilename.wav("${project.name}-trim", project.name)
-                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, project.firstClip.source.channels)
+                    val estimatedBytes = WavFormat.outputBytes(selection.frameCount, targetClip.source.channels)
                     repository.exportFile(project.id, name, estimatedBytes) { target ->
                         WavExporter.export(wav, target, selection)
                     }
@@ -332,13 +375,15 @@ private fun TrimEditorLoaded(
     val waveDim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f)
     val overlay = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
 
+    // Sharing reads the selection from the same files an exit would tear down.
+    BackHandler(enabled = shareInProgress) {}
     Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
         Column(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { player.stop(); onBack() }) { Text("Back") }
+                TextButton(enabled = !shareInProgress, onClick = { player.stop(); onBack() }) { Text("Back") }
                 Text("Trim", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.weight(1f))
                 TextButton(enabled = undoCount > 0, onClick = ::undo) { Text("Undo") }

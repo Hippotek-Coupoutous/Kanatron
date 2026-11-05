@@ -2,6 +2,7 @@ package com.ottomusic.sketch.recording
 
 import android.content.Context
 import android.media.AudioRecord
+import android.os.Process
 import com.ottomusic.sketch.core.AudioClockPoint
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.RecordingLevel
@@ -144,6 +145,7 @@ class WavRecorder(
     }
 
     private fun recordLoop() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         var output: FileOutputStream? = null
         try {
             val input = recorder ?: return

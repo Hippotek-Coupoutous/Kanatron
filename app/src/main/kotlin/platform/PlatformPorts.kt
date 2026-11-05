@@ -40,6 +40,9 @@ fun interface PcmInputFactory {
 
 interface PcmOutput {
     val playedFrames: Long
+    val underruns: Int get() = 0
+    val bufferSizeInFrames: Int get() = 0
+    val bufferCapacityInFrames: Int get() = 0
     val routeKey: String get() = "System output"
     val routeName: String get() = routeKey
     fun timestamp(): AudioClockPoint? = null
@@ -51,7 +54,8 @@ interface PcmOutput {
 }
 
 fun interface PcmOutputFactory {
-    fun open(sampleRate: Int, channels: Int): PcmOutput?
+    /** [bufferBytes] = null keeps the platform minimum (raised to 16 KB) as the track buffer. */
+    fun open(sampleRate: Int, channels: Int, bufferBytes: Int?): PcmOutput?
 }
 
 interface RecordingFocus {
@@ -134,7 +138,7 @@ private class AndroidPcmInput(
 }
 
 private class AndroidPcmOutputFactory(private val context: Context) : PcmOutputFactory {
-    override fun open(sampleRate: Int, channels: Int): PcmOutput? {
+    override fun open(sampleRate: Int, channels: Int, bufferBytes: Int?): PcmOutput? {
         val channelMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val minimum = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
         if (minimum <= 0) return null
@@ -142,7 +146,7 @@ private class AndroidPcmOutputFactory(private val context: Context) : PcmOutputF
             AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(channelMask).build())
-                .setBufferSizeInBytes(maxOf(minimum, 16_384))
+                .setBufferSizeInBytes(bufferBytes ?: maxOf(minimum, 16_384))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
         }.getOrNull()
@@ -156,6 +160,9 @@ private class AndroidPcmOutputFactory(private val context: Context) : PcmOutputF
 
 private class AndroidPcmOutput(private val track: AudioTrack) : PcmOutput {
     override val playedFrames: Long get() = track.playbackHeadPosition.toLong() and 0xffff_ffffL
+    override val underruns: Int get() = track.underrunCount
+    override val bufferSizeInFrames: Int get() = track.bufferSizeInFrames
+    override val bufferCapacityInFrames: Int get() = track.bufferCapacityInFrames
     override val routeKey: String
         get() = track.routedDevice?.let { "${it.type}:${it.id}" } ?: "unknown-output"
     override val routeName: String

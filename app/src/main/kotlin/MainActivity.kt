@@ -33,7 +33,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,12 +44,13 @@ import androidx.lifecycle.ViewModelProvider
 import com.ottomusic.sketch.core.ExportFilename
 import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.ResumeStartGate
-import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.data.AppViewModel
 import com.ottomusic.sketch.data.ImportStage
+import com.ottomusic.sketch.data.MicrophoneAction
 import com.ottomusic.sketch.data.OverdubCalibrationStore
 import com.ottomusic.sketch.data.RecordingActivePath
+import com.ottomusic.sketch.data.Route
 import com.ottomusic.sketch.data.WavExporter
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
 import com.ottomusic.sketch.playback.ClickEngine
@@ -75,40 +75,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
-    private val microphoneGranted = mutableStateOf(false)
-    private val microphoneDenied = mutableStateOf(false)
-    private val notificationGranted = mutableStateOf(true)
-    private val startError = mutableStateOf<String?>(null)
-    private val importNotice = mutableStateOf<String?>(null)
-    private val microphoneRationale = mutableStateOf(false)
-    private val shortcutHint = mutableStateOf(false)
-    private val routeState = mutableStateOf(Route.LIBRARY)
-    private lateinit var appViewModel: AppViewModel
-    private lateinit var selectedProjectState: androidx.compose.runtime.MutableState<String?>
     private val recordingStartGate = ResumeStartGate()
     private var shortcutRequestPending = false
     private var shortcutRecordAction: (() -> Unit)? = null
-    private var pendingMicrophoneAction: MicrophoneAction? = null
-    private var pendingOverdubProjectId: String? = null
-    private var pendingClick: MonitorClick? = null
+    private lateinit var appViewModel: AppViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         appViewModel = ViewModelProvider(this)[AppViewModel::class.java]
-        selectedProjectState = appViewModel.selectedProjectState
-        routeState.value = savedInstanceState?.getString(STATE_ROUTE)?.let { runCatching { Route.valueOf(it) }.getOrNull() } ?: Route.LIBRARY
-        selectedProjectState.value = savedInstanceState?.getString(STATE_SELECTED_PROJECT)
-        pendingMicrophoneAction = savedInstanceState?.getString(STATE_PENDING_MIC_ACTION)
-            ?.let { runCatching { MicrophoneAction.valueOf(it) }.getOrNull() }
-        pendingOverdubProjectId = savedInstanceState?.getString(STATE_PENDING_OVERDUB_PROJECT)
-        val clickBpm = savedInstanceState?.getInt(STATE_PENDING_CLICK_BPM, 0) ?: 0
-        if (clickBpm in SUPPORTED_BPM) pendingClick = runCatching {
-            MonitorClick(
-                clickBpm,
-                savedInstanceState?.getInt(STATE_PENDING_CLICK_BEATS, 4) ?: 4,
-                savedInstanceState?.getInt(STATE_PENDING_COUNT_IN_BARS, 0) ?: 0
-            )
-        }.getOrNull()
         consumeRecordNowIntent(intent)
         appViewModel.initialize()
         savedInstanceState?.getString(STATE_PENDING_IMPORT_URI)?.let { savedUri ->
@@ -118,28 +92,19 @@ class MainActivity : ComponentActivity() {
         updatePermissionState()
 
         fun continueMicrophoneAction(action: MicrophoneAction) {
-            pendingMicrophoneAction = null
             if (action == MicrophoneAction.TUNER) {
-                pendingOverdubProjectId = null
-                routeState.value = Route.TUNER
-            }
-            else startRecordingService()
+                appViewModel.clearPendingRecord()
+                appViewModel.navigate(Route.TUNER)
+            } else startRecordingService()
         }
         lateinit var requestMicrophone: (MicrophoneAction) -> Unit
         val microphoneLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            microphoneGranted.value = granted
-            microphoneDenied.value = !granted
-            val action = pendingMicrophoneAction
-            pendingMicrophoneAction = null
-            if (granted) {
-                shortcutHint.value = false
-                action?.let(::continueMicrophoneAction)
-            }
+            appViewModel.onMicrophonePermissionResult(granted)?.let(::continueMicrophoneAction)
         }
         requestMicrophone = { action ->
-            pendingMicrophoneAction = action
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                microphoneGranted.value = true
+            appViewModel.awaitMicrophonePermission(action)
+            if (microphoneAllowed()) {
+                appViewModel.markMicrophoneGranted()
                 continueMicrophoneAction(action)
             } else microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -151,39 +116,36 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenDocument()
         ) { uri ->
             if (uri != null) {
-                importNotice.value = null
+                appViewModel.setImportNotice(null)
                 runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 appViewModel.startImport(uri)
             } else {
-                importNotice.value = "Import cancelled. No recording was added."
+                appViewModel.setImportNotice("Import cancelled. No recording was added.")
             }
         }
         val requestRecordPermissions = {
-            pendingMicrophoneAction = MicrophoneAction.RECORD
-            startError.value = null
-            if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            appViewModel.awaitMicrophonePermission(MicrophoneAction.RECORD)
+            appViewModel.setStartError(null)
+            if (!notificationsAllowed()) {
                 notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else requestMicrophone(MicrophoneAction.RECORD)
         }
         val askToRecord: (String?, MonitorClick?) -> Unit = { overdubProjectId, click ->
-            pendingOverdubProjectId = overdubProjectId
-            pendingClick = click
-            pendingMicrophoneAction = MicrophoneAction.RECORD
-            startError.value = null
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                microphoneGranted.value = true
+            appViewModel.setPendingRecord(overdubProjectId, click)
+            appViewModel.awaitMicrophonePermission(MicrophoneAction.RECORD)
+            appViewModel.setStartError(null)
+            if (microphoneAllowed()) {
+                appViewModel.markMicrophoneGranted()
                 requestRecordPermissions()
-            } else microphoneRationale.value = true
+            } else appViewModel.setMicrophoneRationale(true)
         }
         val askToTune = {
-            pendingOverdubProjectId = null
-            pendingClick = null
-            pendingMicrophoneAction = MicrophoneAction.TUNER
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                microphoneGranted.value = true
-                microphoneDenied.value = false
-                pendingMicrophoneAction = null
-            } else microphoneRationale.value = true
+            appViewModel.clearPendingRecord()
+            appViewModel.awaitMicrophonePermission(MicrophoneAction.TUNER)
+            if (microphoneAllowed()) {
+                appViewModel.markMicrophoneGranted()
+                appViewModel.awaitMicrophonePermission(null)
+            } else appViewModel.setMicrophoneRationale(true)
         }
         shortcutRecordAction = { askToRecord(null, null) }
 
@@ -191,36 +153,22 @@ class MainActivity : ComponentActivity() {
             AudioSketchTheme {
                 AudioSketchApp(
                     hostLifecycle = lifecycle,
-                    routeState = routeState,
-                    selectedProjectState = selectedProjectState,
                     appViewModel = appViewModel,
-                    microphoneGranted = microphoneGranted.value,
-                    microphoneDenied = microphoneDenied.value,
-                    notificationGranted = notificationGranted.value,
-                    startError = startError.value,
-                    importNotice = importNotice.value,
-                    shortcutRequested = shortcutHint.value,
-                    microphoneRationale = microphoneRationale.value,
-                    pendingMicrophoneAction = pendingMicrophoneAction,
                     onContinueMicrophoneRationale = {
-                        microphoneRationale.value = false
-                        when (pendingMicrophoneAction ?: MicrophoneAction.RECORD) {
+                        appViewModel.setMicrophoneRationale(false)
+                        when (appViewModel.state.value.pendingMicrophoneAction ?: MicrophoneAction.RECORD) {
                             MicrophoneAction.RECORD -> requestRecordPermissions()
                             MicrophoneAction.TUNER -> requestMicrophone(MicrophoneAction.TUNER)
                         }
                     },
-                    onDismissMicrophoneRationale = {
-                        microphoneRationale.value = false
-                        pendingMicrophoneAction = null
-                        pendingOverdubProjectId = null
-                        pendingClick = null
-                        shortcutHint.value = false
-                    },
+                    onDismissMicrophoneRationale = { appViewModel.dismissMicrophoneRationale() },
                     onRecordRequest = askToRecord,
                     onTunerMicRequest = askToTune,
                     onOpenSettings = { openAppSettings() },
-                    onImportRequest = { importNotice.value = null; openAudioDocument.launch(arrayOf("audio/*")) },
-                    onImportNoticeHandled = { importNotice.value = null }
+                    onImportRequest = {
+                        appViewModel.setImportNotice(null)
+                        openAudioDocument.launch(arrayOf("audio/*"))
+                    }
                 )
             }
         }
@@ -230,7 +178,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         updatePermissionState()
-        if (recordingStartGate.onResume(microphoneGranted.value)) startRecordingServiceNow()
+        if (recordingStartGate.onResume(appViewModel.state.value.microphoneGranted)) startRecordingServiceNow()
         if (shortcutRequestPending) window.decorView.post { dispatchShortcutRecordRequest() }
     }
 
@@ -242,22 +190,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         appViewModel.state.value.importUri?.let { outState.putString(STATE_PENDING_IMPORT_URI, it.toString()) }
-        outState.putString(STATE_ROUTE, routeState.value.name)
-        selectedProjectState.value?.let { outState.putString(STATE_SELECTED_PROJECT, it) }
-        pendingMicrophoneAction?.let { outState.putString(STATE_PENDING_MIC_ACTION, it.name) }
-        pendingOverdubProjectId?.let { outState.putString(STATE_PENDING_OVERDUB_PROJECT, it) }
-        pendingClick?.let {
-            outState.putInt(STATE_PENDING_CLICK_BPM, it.bpm)
-            outState.putInt(STATE_PENDING_CLICK_BEATS, it.beatsPerBar)
-            outState.putInt(STATE_PENDING_COUNT_IN_BARS, it.countInBars)
-        }
         super.onSaveInstanceState(outState)
     }
 
     private fun consumeRecordNowIntent(intent: Intent) {
         if (intent.action == ACTION_RECORD_NOW || intent.getBooleanExtra(EXTRA_RECORD_NOW, false)) {
-            routeState.value = Route.RECORD
-            shortcutHint.value = true
+            appViewModel.startShortcutRecord()
             shortcutRequestPending = true
             intent.removeExtra(EXTRA_RECORD_NOW)
             if (intent.action == ACTION_RECORD_NOW) intent.action = Intent.ACTION_MAIN
@@ -272,10 +210,15 @@ class MainActivity : ComponentActivity() {
         action()
     }
 
+    private fun microphoneAllowed() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun notificationsAllowed() =
+        Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
     private fun updatePermissionState() {
-        microphoneGranted.value = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        if (microphoneGranted.value) microphoneDenied.value = false
-        notificationGranted.value = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        appViewModel.updatePermissions(microphoneAllowed(), notificationsAllowed())
     }
 
     private fun startRecordingService() {
@@ -284,21 +227,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startRecordingServiceNow() {
-        shortcutHint.value = false
+        appViewModel.clearShortcutRequest()
+        val pending = appViewModel.state.value
         runCatching {
             val request = Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_START)
-            pendingOverdubProjectId?.let { request.putExtra(RecordingService.EXTRA_OVERDUB_PROJECT_ID, it) }
-            pendingClick?.let {
+            pending.pendingOverdubProjectId?.let { request.putExtra(RecordingService.EXTRA_OVERDUB_PROJECT_ID, it) }
+            pending.pendingClick?.let {
                 request.putExtra(RecordingService.EXTRA_OVERDUB_CLICK_BPM, it.bpm)
                 request.putExtra(RecordingService.EXTRA_OVERDUB_CLICK_BEATS, it.beatsPerBar)
                 request.putExtra(RecordingService.EXTRA_OVERDUB_COUNT_IN_BARS, it.countInBars)
             }
             ContextCompat.startForegroundService(this, request)
-            pendingOverdubProjectId = null
-            pendingClick = null
+            appViewModel.clearPendingRecord()
         }.onFailure {
-            startError.value = if (it is SecurityException) MICROPHONE_PERMISSION_ERROR
-            else it.message ?: "Could not start recording service"
+            appViewModel.setStartError(
+                if (it is SecurityException) MICROPHONE_PERMISSION_ERROR
+                else it.message ?: "Could not start recording service"
+            )
         }
     }
 
@@ -310,18 +255,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_RECORD_NOW = "com.ottomusic.sketch.extra.RECORD_NOW"
         const val ACTION_RECORD_NOW = "com.ottomusic.sketch.action.RECORD_NOW"
         private const val STATE_PENDING_IMPORT_URI = "pendingImportUri"
-        private const val STATE_ROUTE = "route"
-        private const val STATE_SELECTED_PROJECT = "selectedProjectId"
-        private const val STATE_PENDING_MIC_ACTION = "pendingMicrophoneAction"
-        private const val STATE_PENDING_OVERDUB_PROJECT = "pendingOverdubProjectId"
-        private const val STATE_PENDING_CLICK_BPM = "pendingClickBpm"
-        private const val STATE_PENDING_CLICK_BEATS = "pendingClickBeats"
-        private const val STATE_PENDING_COUNT_IN_BARS = "pendingCountInBars"
     }
 }
-
-private enum class Route { LIBRARY, RECORD, DETAIL, TRIM, MIX, TUNER, ARRANGE, OVERDUB_CALIBRATION }
-private enum class MicrophoneAction { RECORD, TUNER }
 
 private fun playbackAllowed(recordingPhase: RecordingPhase): Boolean =
     recordingPhase !in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
@@ -329,24 +264,13 @@ private fun playbackAllowed(recordingPhase: RecordingPhase): Boolean =
 @Composable
 private fun AudioSketchApp(
     hostLifecycle: Lifecycle,
-    routeState: androidx.compose.runtime.MutableState<Route>,
-    selectedProjectState: androidx.compose.runtime.MutableState<String?>,
     appViewModel: AppViewModel,
-    microphoneGranted: Boolean,
-    microphoneDenied: Boolean,
-    notificationGranted: Boolean,
-    startError: String?,
-    importNotice: String?,
-    shortcutRequested: Boolean,
-    microphoneRationale: Boolean,
-    pendingMicrophoneAction: MicrophoneAction?,
     onContinueMicrophoneRationale: () -> Unit,
     onDismissMicrophoneRationale: () -> Unit,
     onRecordRequest: (String?, MonitorClick?) -> Unit,
     onTunerMicRequest: () -> Unit,
     onOpenSettings: () -> Unit,
-    onImportRequest: () -> Unit,
-    onImportNoticeHandled: () -> Unit
+    onImportRequest: () -> Unit
 ) {
     val context = LocalContext.current
     val calibrationStore = remember(context) { OverdubCalibrationStore(context) }
@@ -356,8 +280,9 @@ private fun AudioSketchApp(
     val projects = appState.projects
     val libraryLoaded = appState.libraryLoaded
     val unreadableProjectCount = appState.unreadableProjectCount
-    var route by routeState
-    var selectedId by selectedProjectState
+    val route = appState.route
+    val selectedId = appState.selectedId
+    val homeId = appState.homeId
     val selected = appState.selectedProject
     var dismissedTakeError by remember { mutableStateOf<String?>(null) }
     val silentRecoveryFiles = appState.silentRecoveryFiles
@@ -367,14 +292,6 @@ private fun AudioSketchApp(
     val scope = rememberCoroutineScope()
     val click = remember { ClickEngine() }
     androidx.compose.runtime.DisposableEffect(click) { onDispose { click.release() } }
-    var layerOn by rememberSaveable { mutableStateOf(false) }
-    var layerBackingId by rememberSaveable { mutableStateOf<String?>(null) }
-    var layerClickBpm by rememberSaveable { mutableStateOf(0) }
-    var layerClickBeats by rememberSaveable { mutableStateOf(4) }
-    var layerCountInBars by rememberSaveable { mutableStateOf(0) }
-    var homeId by rememberSaveable { mutableStateOf<String?>(null) }
-    var arrangeProjectId by rememberSaveable { mutableStateOf<String?>(null) }
-    LaunchedEffect(selectedId) { appViewModel.selectProject(selectedId) }
 
     fun share(project: Project) {
         shareFailure = null
@@ -404,49 +321,36 @@ private fun AudioSketchApp(
 
     LaunchedEffect(recording.phase) {
         if (recording.phase != RecordingPhase.FAILED) dismissedTakeError = null
-        if (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED) {
-            layerBackingId = null
-            layerClickBpm = 0
-            layerClickBeats = 4
-            layerCountInBars = 0
-        }
+        if (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED) appViewModel.setLayerBacking(null, null)
     }
 
     LaunchedEffect(appState.startupComplete, recording.phase) {
-        if (appState.startupComplete && (recording.phase == RecordingPhase.RECORDING || recording.phase == RecordingPhase.PAUSED || recording.phase == RecordingPhase.STARTING)) route = Route.RECORD
+        if (appState.startupComplete && (recording.phase == RecordingPhase.RECORDING || recording.phase == RecordingPhase.PAUSED || recording.phase == RecordingPhase.STARTING)) {
+            appViewModel.navigate(Route.RECORD)
+        }
     }
     LaunchedEffect(recording.projectId, recording.phase, route) {
-        if (recording.projectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
-            appViewModel.refreshLibrary(recording.projectId.takeIf { route == Route.RECORD })
-            if (route == Route.RECORD) { selectedId = recording.projectId; homeId = recording.projectId }
+        val finishedProjectId = recording.projectId
+        if (finishedProjectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
+            appViewModel.refreshLibrary(finishedProjectId.takeIf { route == Route.RECORD })
+            if (route == Route.RECORD) appViewModel.setHome(finishedProjectId)
         }
     }
     LaunchedEffect(appState.importedProjectId) {
         appState.importedProjectId?.let { id ->
-            selectedId = id
-            route = Route.DETAIL
+            appViewModel.selectProject(id)
+            appViewModel.navigate(Route.DETAIL)
             appViewModel.consumeImportedProject(id)
         }
-    }
-    // One exit for editing screens so system Back refreshes exactly like on-screen Back.
-    fun leave(to: Route, changedProjectId: String? = null) {
-        if (changedProjectId != null) {
-            appViewModel.refreshLibrary(changedProjectId)
-            selectedId = changedProjectId
-            homeId = changedProjectId
-        } else if (to == Route.LIBRARY) {
-            appViewModel.refreshLibrary()
-        }
-        route = to
     }
 
     BackHandler(enabled = route != Route.LIBRARY) {
         when (route) {
-            Route.TRIM -> leave(Route.DETAIL, selected?.id ?: selectedId)
-            Route.DETAIL, Route.RECORD, Route.MIX -> leave(Route.LIBRARY)
-            Route.TUNER -> leave(Route.LIBRARY)
-            Route.ARRANGE -> leave(Route.LIBRARY, arrangeProjectId ?: homeId ?: selectedId)
-            Route.OVERDUB_CALIBRATION -> leave(Route.RECORD)
+            Route.TRIM -> appViewModel.leave(Route.DETAIL, selected?.id ?: selectedId)
+            Route.DETAIL, Route.RECORD, Route.MIX -> appViewModel.leave(Route.LIBRARY)
+            Route.TUNER -> appViewModel.leave(Route.LIBRARY)
+            Route.ARRANGE -> appViewModel.leave(Route.LIBRARY, appState.arrangeProjectId ?: homeId ?: selectedId)
+            Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.RECORD)
             Route.LIBRARY -> Unit
         }
     }
@@ -461,79 +365,89 @@ private fun AudioSketchApp(
                 currentWav = current?.let { appState.audioFiles[it.id] },
                 playbackAllowed = playbackAllowed(recording.phase),
                 click = click,
-                layerOn = layerOn,
-                onLayerToggle = { layerOn = !layerOn },
+                layerOn = appState.layerOn,
+                onLayerToggle = { appViewModel.setLayerEnabled(!appState.layerOn) },
                 onRecord = { clickSettings ->
-                    layerBackingId = if (layerOn) current?.id else null
-                    layerClickBpm = clickSettings?.bpm ?: 0
-                    layerClickBeats = clickSettings?.beatsPerBar ?: 4
-                    layerCountInBars = clickSettings?.countInBars ?: 0
-                    route = Route.RECORD
+                    appViewModel.setLayerBacking(if (appState.layerOn) current?.id else null, clickSettings)
+                    appViewModel.navigate(Route.RECORD)
                 },
-                onOpen = { selectedId = it.id; homeId = it.id; route = Route.DETAIL },
-                onSelect = { homeId = it.id },
+                onOpen = {
+                    appViewModel.selectProject(it.id)
+                    appViewModel.setHome(it.id)
+                    appViewModel.navigate(Route.DETAIL)
+                },
+                onSelect = { appViewModel.setHome(it.id) },
                 onShare = ::share,
-                onTrim = { selectedId = it.id; route = Route.TRIM },
-                onMix = { route = Route.MIX },
-                onTuner = { route = Route.TUNER },
-                onArrange = { arrangeProjectId = null; route = Route.ARRANGE },
+                onTrim = {
+                    appViewModel.selectProject(it.id)
+                    appViewModel.navigate(Route.TRIM)
+                },
+                onMix = { appViewModel.navigate(Route.MIX) },
+                onTuner = { appViewModel.navigate(Route.TUNER) },
+                onArrange = {
+                    appViewModel.setArrangeProject(null)
+                    appViewModel.navigate(Route.ARRANGE)
+                },
                 onImport = onImportRequest
             )
         }
         Route.MIX -> {
             MixScreen(
                 projects = projects, repository = repository,
-                onBack = { leave(Route.LIBRARY) },
-                onSaved = { appViewModel.invalidatePlayback(it.id); leave(Route.LIBRARY, it.id) }
+                onBack = { appViewModel.leave(Route.LIBRARY) },
+                onSaved = {
+                    appViewModel.invalidatePlayback(it.id)
+                    appViewModel.leave(Route.LIBRARY, it.id)
+                }
             )
         }
         Route.TUNER -> TunerScreen(
-            microphoneGranted = microphoneGranted,
-            microphoneDenied = microphoneDenied,
+            microphoneGranted = appState.microphoneGranted,
+            microphoneDenied = appState.microphoneDenied,
             lifecycle = hostLifecycle,
             microphoneBlockedReason = when {
                 recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || RecordingActivePath.path != null ->
                     "Stop the active recording before tuning."
-                layerOn -> "Turn Layer off before tuning."
+                appState.layerOn -> "Turn Layer off before tuning."
                 else -> null
             },
             onRequestMicrophone = onTunerMicRequest,
             onOpenSettings = onOpenSettings,
-            onBack = { leave(Route.LIBRARY) }
+            onBack = { appViewModel.leave(Route.LIBRARY) }
         )
         Route.ARRANGE -> ArrangeScreen(
             projects = projects,
             repository = repository,
             initialProjectId = homeId ?: selectedId,
-            onBack = { leave(Route.LIBRARY) },
-            onSaved = { leave(Route.LIBRARY, it.id) },
+            onBack = { appViewModel.leave(Route.LIBRARY) },
+            onSaved = { appViewModel.leave(Route.LIBRARY, it.id) },
             onProjectChanged = {
                 appViewModel.invalidatePlayback(it.id)
-                arrangeProjectId = it.id
+                appViewModel.setArrangeProject(it.id)
                 if (route == Route.LIBRARY) appViewModel.refreshLibrary(it.id)
             }
         )
         Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
             route = recording.overdubRoute ?: calibrationStore.lastRoute(),
-            onBack = { leave(Route.RECORD) }
+            onBack = { appViewModel.leave(Route.RECORD) }
         )
         Route.RECORD -> {
-            val clickSettings = layerClickBpm.takeIf { it > 0 }?.let {
-                runCatching { MonitorClick(it, layerClickBeats, layerCountInBars) }.getOrNull()
+            val clickSettings = appState.layerClickBpm.takeIf { it > 0 }?.let {
+                runCatching { MonitorClick(it, appState.layerClickBeats, appState.layerCountInBars) }.getOrNull()
             }
             RecordScreen(
                 recording = recording,
-                shortcutRequested = shortcutRequested,
-                microphoneGranted = microphoneGranted,
-                microphoneDenied = microphoneDenied,
-                notificationsGranted = notificationGranted,
-                startError = startError,
-                layering = layerBackingId != null,
+                shortcutRequested = appState.shortcutRequested,
+                microphoneGranted = appState.microphoneGranted,
+                microphoneDenied = appState.microphoneDenied,
+                notificationsGranted = appState.notificationGranted,
+                startError = appState.startError,
+                layering = appState.layerBackingId != null,
                 calibrationAvailable = recording.overdubRoute != null || calibrationStore.lastRoute() != null,
-                onBack = { leave(Route.LIBRARY) },
-                onCalibration = { route = Route.OVERDUB_CALIBRATION },
-                onRecord = { onRecordRequest(layerBackingId, clickSettings) },
-                onRequestMic = { onRecordRequest(layerBackingId, clickSettings) },
+                onBack = { appViewModel.leave(Route.LIBRARY) },
+                onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
+                onRecord = { onRecordRequest(appState.layerBackingId, clickSettings) },
+                onRequestMic = { onRecordRequest(appState.layerBackingId, clickSettings) },
                 onOpenSettings = onOpenSettings,
                 onPauseResume = {
                     val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
@@ -541,27 +455,35 @@ private fun AudioSketchApp(
                 },
                 onStop = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
                 onOpenRecording = {
-                    selectedId = recording.projectId
-                    if (selectedId != null) route = Route.DETAIL
+                    val projectId = recording.projectId
+                    if (projectId != null) {
+                        appViewModel.selectProject(projectId)
+                        appViewModel.navigate(Route.DETAIL)
+                    }
                 }
             )
         }
         Route.DETAIL -> if (selected != null && selected.id == selectedId) {
             val project = selected
             val wav = appState.audioFiles[project.id]
-            if (wav == null) MissingAudioScreen(project.name) { leave(Route.LIBRARY) }
+            if (wav == null) MissingAudioScreen(project.name) { appViewModel.leave(Route.LIBRARY) }
             else DetailScreen(
                 project = project,
                 wav = wav,
                 playbackAllowed = playbackAllowed(recording.phase),
-                onBack = { leave(Route.LIBRARY) },
-                onTrim = { route = Route.TRIM },
+                onBack = { appViewModel.leave(Route.LIBRARY) },
+                onTrim = { appViewModel.navigate(Route.TRIM) },
                 onShare = { share(project) },
                 onRename = { name -> appViewModel.renameProject(project.id, name) },
-                onDelete = { appViewModel.deleteProject(project.id); selectedId = null; homeId = null; route = Route.LIBRARY }
+                onDelete = {
+                    appViewModel.deleteProject(project.id)
+                    appViewModel.selectProject(null)
+                    appViewModel.setHome(null)
+                    appViewModel.navigate(Route.LIBRARY)
+                }
             )
         } else if (selectedId == null) {
-            if (libraryLoaded) route = Route.LIBRARY else Text("Loading recording…")
+            if (libraryLoaded) appViewModel.navigate(Route.LIBRARY) else Text("Loading recording…")
         } else Text("Loading recording…")
         Route.TRIM -> if (selected != null && selected.id == selectedId) {
             val project = selected
@@ -571,13 +493,13 @@ private fun AudioSketchApp(
                     TrimScreen(
                         projectId = project.id,
                         playbackAllowed = playbackAllowed(recording.phase),
-                        onBack = { leave(Route.DETAIL, project.id) },
+                        onBack = { appViewModel.leave(Route.DETAIL, project.id) },
                         onProjectChanged = { appViewModel.refreshLibrary(it.id) }
                     )
                 }
             }
         } else if (selectedId == null) {
-            if (libraryLoaded) route = Route.LIBRARY else Text("Loading recording…")
+            if (libraryLoaded) appViewModel.navigate(Route.LIBRARY) else Text("Loading recording…")
         } else Text("Loading recording…")
     }
     val takeErrorKey = "${recording.projectId ?: "no-project"}:${recording.error}"
@@ -610,13 +532,13 @@ private fun AudioSketchApp(
                 confirmButton = { TextButton(onClick = { appViewModel.cancelImport() }) { Text("Cancel import") } }
             )
         }
-        microphoneRationale -> {
+        appState.microphoneRationale -> {
             AlertDialog(
                 onDismissRequest = onDismissMicrophoneRationale,
-                title = { Text(if (pendingMicrophoneAction == MicrophoneAction.TUNER) "Before tuning" else "Before recording") },
+                title = { Text(if (appState.pendingMicrophoneAction == MicrophoneAction.TUNER) "Before tuning" else "Before recording") },
                 text = {
                     Text(
-                        if (pendingMicrophoneAction == MicrophoneAction.TUNER) {
+                        if (appState.pendingMicrophoneAction == MicrophoneAction.TUNER) {
                             "Audio Sketch uses microphone access to detect pitch while the tuner is open. It stops listening when you leave."
                         } else {
                             "Audio Sketch uses microphone access to record a take or record over a backing track. You can import, play, and manage recordings without it."
@@ -636,13 +558,13 @@ private fun AudioSketchApp(
                 confirmButton = { TextButton(onClick = { appViewModel.dismissImportFailure() }) { Text("OK") } }
             )
         }
-        importNotice != null -> {
-            val notice = importNotice
+        appState.importNotice != null -> {
+            val notice = appState.importNotice!!
             AlertDialog(
-                onDismissRequest = onImportNoticeHandled,
+                onDismissRequest = { appViewModel.setImportNotice(null) },
                 title = { Text("Import") },
                 text = { Text(notice) },
-                confirmButton = { TextButton(onClick = onImportNoticeHandled) { Text("OK") } }
+                confirmButton = { TextButton(onClick = { appViewModel.setImportNotice(null) }) { Text("OK") } }
             )
         }
         silentRecoveryFiles.isNotEmpty() -> {
@@ -715,7 +637,12 @@ private fun AudioSketchApp(
                 confirmButton = {
                     TextButton(onClick = { selectedId?.let { appViewModel.selectProject(it, force = true) } }) { Text("Retry") }
                 },
-                dismissButton = { TextButton(onClick = { selectedId = null; leave(Route.LIBRARY) }) { Text("Back to library") } }
+                dismissButton = {
+                    TextButton(onClick = {
+                        appViewModel.selectProject(null)
+                        appViewModel.leave(Route.LIBRARY)
+                    }) { Text("Back to library") }
+                }
             )
         }
         shareFailure != null -> {

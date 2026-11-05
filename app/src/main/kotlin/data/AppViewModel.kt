@@ -3,8 +3,11 @@ package com.ottomusic.sketch.data
 import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.ottomusic.sketch.core.Project
+import com.ottomusic.sketch.core.SUPPORTED_BPM
+import com.ottomusic.sketch.playback.MonitorClick
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -18,7 +21,31 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+internal enum class Route { LIBRARY, RECORD, DETAIL, TRIM, MIX, TUNER, ARRANGE, OVERDUB_CALIBRATION }
+
+/** What the Activity is about to do once the microphone permission is settled. */
+internal enum class MicrophoneAction { RECORD, TUNER }
+
 internal data class AppUiState(
+    val route: Route = Route.LIBRARY,
+    val selectedId: String? = null,
+    val homeId: String? = null,
+    val arrangeProjectId: String? = null,
+    val layerOn: Boolean = false,
+    val layerBackingId: String? = null,
+    val layerClickBpm: Int = 0,
+    val layerClickBeats: Int = 4,
+    val layerCountInBars: Int = 0,
+    val microphoneGranted: Boolean = false,
+    val microphoneDenied: Boolean = false,
+    val notificationGranted: Boolean = true,
+    val microphoneRationale: Boolean = false,
+    val pendingMicrophoneAction: MicrophoneAction? = null,
+    val pendingOverdubProjectId: String? = null,
+    val pendingClick: MonitorClick? = null,
+    val shortcutRequested: Boolean = false,
+    val startError: String? = null,
+    val importNotice: String? = null,
     val projects: List<Project> = emptyList(),
     val audioFiles: Map<String, File> = emptyMap(),
     val libraryLoaded: Boolean = false,
@@ -36,13 +63,17 @@ internal data class AppUiState(
     val importedProjectId: String? = null
 )
 
-/** Retains library reads and a single import across Activity recreation. */
-internal class AppViewModel(application: Application) : AndroidViewModel(application) {
+/**
+ * The one owner of app state: screens render it, Activity callbacks write through intents.
+ * Retains library reads, the route and a single import across Activity and process recreation.
+ */
+internal class AppViewModel(
+    application: Application,
+    private val savedStateHandle: SavedStateHandle
+) : AndroidViewModel(application) {
     val repository = ProjectRepository(application)
-    private val _state = MutableStateFlow(AppUiState())
+    private val _state = MutableStateFlow(restoredState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
-
-    val selectedProjectState = androidx.compose.runtime.mutableStateOf<String?>(null)
 
     private var initialization: Job? = null
     private var libraryGeneration = 0L
@@ -52,6 +83,93 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
     private var importJob: Job? = null
     private var importCancellation: ImportCancellation? = null
     private var lastFinishedImportUri: Uri? = null
+
+    init {
+        // A restored route can already point at a project; load it like the first selection would.
+        _state.value.selectedId?.let { selectProject(it) }
+    }
+
+    fun navigate(route: Route) = updateState { it.copy(route = route) }
+
+    fun setHome(id: String?) = updateState { it.copy(homeId = id) }
+
+    fun setArrangeProject(id: String?) = updateState { it.copy(arrangeProjectId = id) }
+
+    fun setLayerEnabled(on: Boolean) = updateState { it.copy(layerOn = on) }
+
+    /** Layer backing and click settings captured when a take starts. */
+    fun setLayerBacking(backingId: String?, click: MonitorClick?) = updateState {
+        it.copy(
+            layerBackingId = backingId,
+            layerClickBpm = click?.bpm ?: 0,
+            layerClickBeats = click?.beatsPerBar ?: 4,
+            layerCountInBars = click?.countInBars ?: 0
+        )
+    }
+
+    fun updatePermissions(granted: Boolean, notificationsGranted: Boolean) = updateState {
+        it.copy(
+            microphoneGranted = granted,
+            microphoneDenied = if (granted) false else it.microphoneDenied,
+            notificationGranted = notificationsGranted
+        )
+    }
+
+    fun markMicrophoneGranted() = updateState { it.copy(microphoneGranted = true, microphoneDenied = false) }
+
+    fun awaitMicrophonePermission(action: MicrophoneAction?) = updateState { it.copy(pendingMicrophoneAction = action) }
+
+    /** Applies a runtime prompt result and returns the action that was waiting on it. */
+    fun onMicrophonePermissionResult(granted: Boolean): MicrophoneAction? {
+        val pending = _state.value.pendingMicrophoneAction
+        updateState {
+            it.copy(
+                microphoneGranted = granted,
+                microphoneDenied = !granted,
+                pendingMicrophoneAction = null,
+                shortcutRequested = if (granted) false else it.shortcutRequested
+            )
+        }
+        return pending?.takeIf { granted }
+    }
+
+    fun setPendingRecord(projectId: String?, click: MonitorClick?) =
+        updateState { it.copy(pendingOverdubProjectId = projectId, pendingClick = click) }
+
+    fun clearPendingRecord() = setPendingRecord(null, null)
+
+    fun setMicrophoneRationale(visible: Boolean) = updateState { it.copy(microphoneRationale = visible) }
+
+    fun dismissMicrophoneRationale() = updateState {
+        it.copy(
+            microphoneRationale = false,
+            pendingMicrophoneAction = null,
+            pendingOverdubProjectId = null,
+            pendingClick = null,
+            shortcutRequested = false
+        )
+    }
+
+    fun setStartError(message: String?) = updateState { it.copy(startError = message) }
+
+    fun setImportNotice(notice: String?) = updateState { it.copy(importNotice = notice) }
+
+    fun clearShortcutRequest() = updateState { it.copy(shortcutRequested = false) }
+
+    /** A RECORD_NOW intent: show the recorder and let it ask for the microphone. */
+    fun startShortcutRecord() = updateState { it.copy(route = Route.RECORD, shortcutRequested = true) }
+
+    /** The single exit for editing screens so system Back refreshes exactly like on-screen Back. */
+    fun leave(to: Route, changedProjectId: String? = null) {
+        if (changedProjectId != null) {
+            // refreshLibrary selects the saved project, which is the id the screens should show.
+            refreshLibrary(changedProjectId)
+            updateState { it.copy(homeId = changedProjectId, route = to) }
+        } else {
+            if (to == Route.LIBRARY) refreshLibrary()
+            updateState { it.copy(route = to) }
+        }
+    }
 
     fun initialize() {
         if (initialization != null) return
@@ -118,7 +236,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
 
     fun selectProject(id: String?, force: Boolean = false) {
         val sameSelection = id != null && _state.value.selectedProject?.id == id
-        if (!sameSelection) selectedProjectState.value = id
+        if (!sameSelection) updateState { it.copy(selectedId = id) }
         if (!force && lastRequestedSelection == id) return
         lastRequestedSelection = id
         val generation = ++selectionGeneration
@@ -136,7 +254,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                     val loaded = repository.get(id) ?: return@withContext null to null
                     loaded to repository.playbackFile(loaded).takeIf(File::isFile)
                 }
-                if (generation == selectionGeneration && selectedProjectState.value == id) {
+                if (generation == selectionGeneration && _state.value.selectedId == id) {
                     _state.update {
                         it.copy(
                             selectedProject = project,
@@ -149,7 +267,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                if (generation == selectionGeneration && selectedProjectState.value == id) {
+                if (generation == selectionGeneration && _state.value.selectedId == id) {
                     _state.update {
                         it.copy(
                             selectionError = failure.message ?: "Could not open this recording.",
@@ -291,9 +409,77 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
         _state.update { it.copy(silentRecoveryFiles = it.silentRecoveryFiles.filterNot { candidate -> candidate == file }) }
     }
 
+    /** Every write goes through here so the process-death copy never drifts from the visible state. */
+    private fun updateState(transform: (AppUiState) -> AppUiState) {
+        _state.update(transform)
+        persist(_state.value)
+    }
+
+    private fun persist(state: AppUiState) {
+        savedStateHandle[KEY_ROUTE] = state.route.name
+        savedStateHandle[KEY_SELECTED] = state.selectedId
+        savedStateHandle[KEY_HOME] = state.homeId
+        savedStateHandle[KEY_ARRANGE] = state.arrangeProjectId
+        savedStateHandle[KEY_LAYER_ON] = state.layerOn
+        savedStateHandle[KEY_LAYER_BACKING] = state.layerBackingId
+        savedStateHandle[KEY_LAYER_CLICK_BPM] = state.layerClickBpm
+        savedStateHandle[KEY_LAYER_CLICK_BEATS] = state.layerClickBeats
+        savedStateHandle[KEY_LAYER_COUNT_IN] = state.layerCountInBars
+        savedStateHandle[KEY_PENDING_MIC] = state.pendingMicrophoneAction?.name
+        savedStateHandle[KEY_PENDING_OVERDUB] = state.pendingOverdubProjectId
+        savedStateHandle[KEY_CLICK_BPM] = state.pendingClick?.bpm
+        savedStateHandle[KEY_CLICK_BEATS] = state.pendingClick?.beatsPerBar
+        savedStateHandle[KEY_CLICK_COUNT_IN] = state.pendingClick?.countInBars
+    }
+
+    private fun restoredState(): AppUiState = AppUiState(
+        route = savedStateHandle.get<String>(KEY_ROUTE)?.let { stored -> runCatching { Route.valueOf(stored) }.getOrNull() } ?: Route.LIBRARY,
+        selectedId = savedStateHandle.get<String>(KEY_SELECTED),
+        homeId = savedStateHandle.get<String>(KEY_HOME),
+        arrangeProjectId = savedStateHandle.get<String>(KEY_ARRANGE),
+        layerOn = savedStateHandle.get<Boolean>(KEY_LAYER_ON) ?: false,
+        layerBackingId = savedStateHandle.get<String>(KEY_LAYER_BACKING),
+        layerClickBpm = savedStateHandle.get<Int>(KEY_LAYER_CLICK_BPM) ?: 0,
+        layerClickBeats = savedStateHandle.get<Int>(KEY_LAYER_CLICK_BEATS) ?: 4,
+        layerCountInBars = savedStateHandle.get<Int>(KEY_LAYER_COUNT_IN) ?: 0,
+        pendingMicrophoneAction = savedStateHandle.get<String>(KEY_PENDING_MIC)
+            ?.let { stored -> runCatching { MicrophoneAction.valueOf(stored) }.getOrNull() },
+        pendingOverdubProjectId = savedStateHandle.get<String>(KEY_PENDING_OVERDUB),
+        pendingClick = restoredClick()
+    )
+
+    private fun restoredClick(): MonitorClick? {
+        val bpm = savedStateHandle.get<Int>(KEY_CLICK_BPM) ?: return null
+        if (bpm !in SUPPORTED_BPM) return null
+        return runCatching {
+            MonitorClick(
+                bpm,
+                savedStateHandle.get<Int>(KEY_CLICK_BEATS) ?: 4,
+                savedStateHandle.get<Int>(KEY_CLICK_COUNT_IN) ?: 0
+            )
+        }.getOrNull()
+    }
+
     private data class LibrarySnapshot(
         val library: ProjectRepository.LibraryContents,
         val audioFiles: Map<String, File>,
         val silentFiles: List<File>
     )
+
+    private companion object {
+        const val KEY_ROUTE = "route"
+        const val KEY_SELECTED = "selectedProjectId"
+        const val KEY_HOME = "homeProjectId"
+        const val KEY_ARRANGE = "arrangeProjectId"
+        const val KEY_LAYER_ON = "layerOn"
+        const val KEY_LAYER_BACKING = "layerBackingId"
+        const val KEY_LAYER_CLICK_BPM = "layerClickBpm"
+        const val KEY_LAYER_CLICK_BEATS = "layerClickBeats"
+        const val KEY_LAYER_COUNT_IN = "layerCountInBars"
+        const val KEY_PENDING_MIC = "pendingMicrophoneAction"
+        const val KEY_PENDING_OVERDUB = "pendingOverdubProjectId"
+        const val KEY_CLICK_BPM = "pendingClickBpm"
+        const val KEY_CLICK_BEATS = "pendingClickBeats"
+        const val KEY_CLICK_COUNT_IN = "pendingCountInBars"
+    }
 }

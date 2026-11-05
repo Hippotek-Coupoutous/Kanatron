@@ -83,16 +83,22 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                     LibrarySnapshot(library, audioFiles, silentFiles)
                 }
                 if (generation == libraryGeneration) {
-                    _state.update {
-                        it.copy(
-                            projects = result.library.projects,
-                            audioFiles = result.audioFiles + it.audioFiles.filter { (id, file) ->
-                                result.library.projects.any { project -> project.id == id } && file.isFile
-                            },
-                            libraryLoaded = true,
-                            unreadableProjectCount = result.library.unreadableCount,
-                            libraryError = null
-                        )
+                    val existingAudioFiles = _state.value.audioFiles
+                    val existingLive = withContext(Dispatchers.IO) { existingAudioFiles.filterValues(File::isFile) }
+                    if (generation == libraryGeneration) {
+                        _state.update {
+                            it.copy(
+                                projects = result.library.projects,
+                                // Entries added or replaced during the IO check are fresh, so they are kept unchecked.
+                                audioFiles = result.audioFiles + it.audioFiles.filter { (id, file) ->
+                                    result.library.projects.any { project -> project.id == id } &&
+                                        (existingAudioFiles[id] != file || existingLive[id] == file)
+                                },
+                                libraryLoaded = true,
+                                unreadableProjectCount = result.library.unreadableCount,
+                                libraryError = null
+                            )
+                        }
                     }
                 }
                 if (startup) _state.update { it.copy(silentRecoveryFiles = result.silentFiles, startupComplete = true) }

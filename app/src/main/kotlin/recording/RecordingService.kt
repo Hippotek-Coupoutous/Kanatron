@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import com.ottomusic.sketch.MainActivity
 import com.ottomusic.sketch.R
 import com.ottomusic.sketch.core.AudioClockPoint
+import com.ottomusic.sketch.core.OverdubAlignment
 import com.ottomusic.sketch.core.OverdubRoute
 import com.ottomusic.sketch.core.OverdubTiming
 import com.ottomusic.sketch.core.ProjectArrangementActions
@@ -35,6 +36,8 @@ import com.ottomusic.sketch.platform.RecordingFocus
 import com.ottomusic.sketch.playback.ClickOnlyPlayer
 import com.ottomusic.sketch.playback.MonitorClick
 import com.ottomusic.sketch.playback.WavPlayer
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -73,6 +76,10 @@ class RecordingService : Service() {
     }
 
     private val main = Handler(Looper.getMainLooper())
+    private val background: ExecutorService = Executors.newSingleThreadExecutor()
+    private var startToken = 0
+    private var loadingBase = false
+    private var destroyed = false
     private lateinit var audioManager: AudioManager
     private lateinit var recordingFocus: RecordingFocus
     private var recorder: WavRecorder? = null
@@ -116,18 +123,22 @@ class RecordingService : Service() {
             ACTION_RESUME -> resumeTransport()
             ACTION_STOP -> stopTransport()
         }
-        if (recorder == null && action != ACTION_START) stopSelfResult(startId)
+        if (recorder == null && !loadingBase && action != ACTION_START) stopSelfResult(startId)
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        destroyed = true
+        startToken++
         unregisterRecordingCallback()
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
         recorder?.requestStop()
         abandonFocus()
+        // shutdown lets a take already being saved finish; dropping it would lose the recording.
+        background.shutdown()
         super.onDestroy()
     }
 
@@ -138,9 +149,43 @@ class RecordingService : Service() {
         lostFocusPermanently = false
         outputFailureNotice = null
         mutableState.value = RecordingServiceState(RecordingPhase.STARTING)
+        // startForegroundService allows only seconds before promotion, so it must not wait for the base project load.
         try {
-            loadOverdubBase(intent)
             promoteToForeground("Preparing microphone…")
+        } catch (failure: Throwable) {
+            finishWithoutTake(if (failure is SecurityException) MICROPHONE_PERMISSION_ERROR else failure.message ?: "Could not start microphone")
+            return
+        }
+        val token = ++startToken
+        val id = prepareOverdubBase(intent)
+        if (id == null) {
+            beginCapture()
+            return
+        }
+        // The base project comes from disk, so the capture waits for it: the backing player must start after it is known.
+        loadingBase = true
+        background.execute {
+            val loaded = runCatching { ProjectRepository(this).get(id) }
+            main.post {
+                if (token != startToken) return@post
+                loadingBase = false
+                val project = loaded.getOrNull()
+                when {
+                    loaded.isFailure -> finishWithoutTake(loaded.exceptionOrNull()?.message ?: "Could not start microphone")
+                    project == null -> finishWithoutTake("The backing recording could not be found.")
+                    else -> {
+                        overdubBaseProject = project
+                        // Arrangement previews are rendered at their project rate; single-source files use that same rate.
+                        overdubBackingRate = project.sampleRate
+                        beginCapture()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun beginCapture() {
+        try {
             if (!requestFocus()) {
                 finishWithoutTake("Microphone could not get audio focus")
                 return
@@ -203,7 +248,7 @@ class RecordingService : Service() {
         }
     }
 
-    private fun loadOverdubBase(intent: Intent?) {
+    private fun prepareOverdubBase(intent: Intent?): String? {
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
         overdubTimeline = null
@@ -231,12 +276,8 @@ class RecordingService : Service() {
         if (id == null) {
             overdubBaseProject = null
             overdubBackingRate = null
-            return
         }
-        overdubBaseProject = ProjectRepository(this).get(id)
-            ?: error("The backing recording could not be found.")
-        // Arrangement previews are rendered at their project rate; single-source files use that same rate.
-        overdubBackingRate = overdubBaseProject?.sampleRate
+        return id
     }
 
     private fun startBackingPlayback() {
@@ -417,6 +458,8 @@ class RecordingService : Service() {
     }
 
     private fun stopTransport() {
+        startToken++
+        loadingBase = false
         transportStopped = true
         snapshotOutputFailure()
         releaseBackingPlayer()
@@ -458,6 +501,22 @@ class RecordingService : Service() {
         recordingCallback = null
     }
 
+    private data class TakeSnapshot(
+        val base: com.ottomusic.sketch.core.Project?,
+        val alignment: OverdubAlignment?,
+        val routeInvalidated: Boolean,
+        val clockDiscontinuous: Boolean,
+        val route: OverdubRoute?,
+        val lostFocus: Boolean
+    )
+
+    private data class SavedTake(
+        val project: com.ottomusic.sketch.core.Project?,
+        val error: String?,
+        val interruptionNotice: String?,
+        val alignmentNotice: String?
+    )
+
     private fun completeTake(sourceRecorder: WavRecorder, take: RecordingTake) {
         if (recorder !== sourceRecorder || finalizing) return
         finalizing = true
@@ -466,19 +525,42 @@ class RecordingService : Service() {
         snapshotOutputFailure()
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
-        if (take.frames <= 0L) {
-            if (hasRecoverablePcm(take)) {
-                finishTake(sourceRecorder, take, null, take.error ?: "WAV header finalization failed; a recoverable partial was retained.")
-            } else {
-                take.file.delete()
-                finishTake(sourceRecorder, take, null, take.error ?: "No audio samples were captured. Nothing was saved.")
+        val snapshot = takeSnapshot()
+        val save = Runnable {
+            if (take.frames <= 0L) {
+                val recoverable = hasRecoverablePcm(take)
+                if (!recoverable) take.file.delete()
+                val notice = if (recoverable) {
+                    take.error ?: "WAV header finalization failed; a recoverable partial was retained."
+                } else {
+                    take.error ?: "No audio samples were captured. Nothing was saved."
+                }
+                main.post { finishTake(sourceRecorder, take, null, notice) }
+                return@Runnable
             }
-            return
+            val saved = persistTake(take, snapshot)
+            main.post {
+                finishTake(sourceRecorder, take, saved.project, saved.error, saved.interruptionNotice, saved.alignmentNotice)
+            }
         }
-        persistTake(sourceRecorder, take)
+        // onDestroy also runs here, so this check cannot race; a destroyed service has no saving thread left.
+        if (background.isShutdown) save.run() else background.execute(save)
     }
 
-    private fun persistTake(sourceRecorder: WavRecorder, take: RecordingTake) {
+    /** Everything the disk part of a finished take needs; read here so the saving thread touches no service state. */
+    private fun takeSnapshot(): TakeSnapshot = synchronized(clockLock) {
+        val timeline = overdubTimeline
+        TakeSnapshot(
+            base = overdubBaseProject,
+            alignment = timeline?.alignmentForFirstCapturedFrame(),
+            routeInvalidated = timeline?.routeInvalidated() == true,
+            clockDiscontinuous = timeline?.clockDiscontinuous() == true,
+            route = observedOverdubRoute,
+            lostFocus = lostFocusPermanently
+        )
+    }
+
+    private fun persistTake(take: RecordingTake, snapshot: TakeSnapshot): SavedTake {
         var project: com.ottomusic.sketch.core.Project? = null
         var alignmentNotice: String? = null
         var error = take.error
@@ -489,20 +571,19 @@ class RecordingService : Service() {
                 recovered = take.error != null, silent = take.allSamplesZero
             )
             project = savedTake
-            val base = overdubBaseProject
+            val base = snapshot.base
             if (savedTake != null && base != null) {
-                val alignment = overdubTimeline?.alignmentForFirstCapturedFrame()
-                val route = observedOverdubRoute?.takeIf {
-                    alignment != null && !overdubTimeline!!.routeInvalidated() && it.routeKey == alignment.routeKey
+                val alignment = snapshot.alignment
+                val route = snapshot.route?.takeIf {
+                    alignment != null && !snapshot.routeInvalidated && it.routeKey == alignment.routeKey
                 }
                 val calibration = route?.let { OverdubCalibrationStore(this).calibration(it) }
-                val clockDiscontinuous = overdubTimeline?.clockDiscontinuous() == true
                 val calibratedPlacement = OverdubTiming.placement(
                     alignment?.positionFrames ?: base.trim.startFrame,
                     calibration.takeIf { alignment != null }
                 )
                 val correction = OverdubTiming.driftCorrectionPpm(
-                    clockDiscontinuous,
+                    snapshot.clockDiscontinuous,
                     alignment?.rateCorrectionPpm
                 )
                 val safeCorrection = correction?.takeIf { it in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM } ?: 0
@@ -534,7 +615,7 @@ class RecordingService : Service() {
                     }
                     project = if (edited == arrangement) arrangement else repository.saveEditState(edited)
                     alignmentNotice = when {
-                        overdubTimeline?.routeInvalidated() == true ->
+                        snapshot.routeInvalidated ->
                             "The audio route changed. The take was saved at the backing start."
                         alignment == null ->
                             "Timestamps were unavailable. The take was saved at the backing start."
@@ -553,10 +634,10 @@ class RecordingService : Service() {
                 "The take was not saved in your library. Its retained partial will be checked for recovery at startup."
             }
         }
-        val interruptionNotice = if (lostFocusPermanently && project != null) {
+        val interruptionNotice = if (snapshot.lostFocus && project != null) {
             "Audio focus was lost. Your recording was saved."
         } else null
-        finishTake(sourceRecorder, take, project, error, interruptionNotice, alignmentNotice)
+        return SavedTake(project, error, interruptionNotice, alignmentNotice)
     }
 
     private fun finishTake(
@@ -580,6 +661,8 @@ class RecordingService : Service() {
             alignmentNotice = terminalNotice,
             overdubRoute = observedOverdubRoute
         )
+        // A save can outlive the service; the result is still published, but a destroyed service has nothing to stop.
+        if (destroyed) return
         updateNotification()
         abandonFocus()
         stopForeground(STOP_FOREGROUND_REMOVE)

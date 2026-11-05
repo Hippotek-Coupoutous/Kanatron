@@ -91,6 +91,7 @@ internal fun SketchScreen(
     onLayerToggle: () -> Unit,
     onRecord: (MonitorClick?) -> Unit,
     onPauseResume: () -> Unit,
+    onPreview: () -> Unit,
     onSave: () -> Unit,
     onShare: (Project) -> Unit,
     onImport: () -> Unit,
@@ -118,6 +119,7 @@ internal fun SketchScreen(
     val active = recordingNow || paused
     val saved = phase == RecordingPhase.COMPLETE
     val canSave = phase == RecordingPhase.RECORDING || paused
+    val previewing = paused && recording.previewPlaying
     val status = when {
         recordingNow -> "Recording"
         paused -> "Paused"
@@ -125,6 +127,7 @@ internal fun SketchScreen(
         else -> "Ready"
     }
     val timerFrames = when {
+        previewing -> recording.previewFrame
         active -> recording.frames
         current == null -> 0L
         seekPreview != null || playing || playhead > 0L -> playhead
@@ -203,17 +206,38 @@ internal fun SketchScreen(
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 RoundButton(
-                    if (playing) SynthIcon.Pause else SynthIcon.Play, if (playing) "Pause" else "Play", Synth.cyan,
+                    if (previewing || (playing && !active)) SynthIcon.Pause else SynthIcon.Play,
+                    when {
+                        previewing -> "Stop"
+                        paused -> "Play take so far"
+                        playing && !active -> "Pause"
+                        else -> "Play"
+                    },
+                    Synth.cyan,
                     onClick = {
+                        if (paused) {
+                            onPreview()
+                            return@RoundButton
+                        }
                         val p = player ?: return@RoundButton
                         if (playing) p.pause() else {
                             if (playerState!!.positionFrames !in 0L until current!!.totalFrames) p.seek(0L)
                             p.play(current!!.totalFrames)
                         }
                     },
-                    size = 56.dp, enabled = player != null && current != null && !active,
-                    description = if (playing) "Pause playback" else "Play recording",
-                    state = if (playing) "Playing" else status
+                    size = 56.dp, enabled = paused || (player != null && current != null && !active),
+                    description = when {
+                        previewing -> "Stop"
+                        paused -> "Play take so far"
+                        playing -> "Pause playback"
+                        else -> "Play recording"
+                    },
+                    state = when {
+                        previewing -> "Playing take"
+                        paused -> "Paused"
+                        playing -> "Playing"
+                        else -> status
+                    }
                 )
                 RoundButton(
                     if (recordingNow) SynthIcon.Pause else SynthIcon.Rec, if (recordingNow) "Pause" else if (paused) "Resume" else "Record",

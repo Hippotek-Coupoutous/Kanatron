@@ -41,6 +41,14 @@ data class WavRecorderState(
     val inputSilenced: Boolean = false
 )
 
+/** The unfinalised take: its WAV header is still a placeholder, so its format comes from the recorder. */
+data class CapturedTake(
+    val file: File,
+    val sampleRate: Int,
+    val channels: Int,
+    val frames: Long
+)
+
 /** AudioRecord PCM16 recorder. UNPROCESSED is selected only when the platform advertises it; otherwise VOICE_RECOGNITION then MIC. */
 class WavRecorder(
     private val context: Context,
@@ -66,7 +74,7 @@ class WavRecorder(
     private var openedRate = 48_000
     private var openedChannels = 1
     private var inputDevice = "System microphone"
-    private var capturedFrames = 0L
+    @Volatile private var capturedFrames = 0L
     private var capturedBytes = 0L
     private var silentFrames = 0L
     private var allSamplesZero = true
@@ -126,6 +134,9 @@ class WavRecorder(
         requestStop()
         worker?.join(5_000L)
     }
+
+    /** Partial PCM range; pause first so the worker stops appending. */
+    fun captured(): CapturedTake = CapturedTake(file, openedRate, openedChannels, capturedFrames)
 
     fun requestStop() {
         stopRequested.set(true)

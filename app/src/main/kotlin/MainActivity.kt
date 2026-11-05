@@ -403,6 +403,7 @@ private fun AudioSketchApp(
                             val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
                             context.startService(Intent(context, RecordingService::class.java).setAction(action))
                         },
+                        onPreview = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_PREVIEW)) },
                         onSave = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
                         onShare = ::share,
                         onImport = onImportRequest,

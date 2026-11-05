@@ -50,7 +50,9 @@ data class RecordingServiceState(
     val silent: Boolean = false,
     val interruptionNotice: String? = null,
     val alignmentNotice: String? = null,
-    val overdubRoute: OverdubRoute? = null
+    val overdubRoute: OverdubRoute? = null,
+    val previewPlaying: Boolean = false,
+    val previewFrame: Long = 0L
 )
 
 class RecordingService : Service() {
@@ -59,12 +61,15 @@ class RecordingService : Service() {
         const val ACTION_PAUSE = "com.ottomusic.sketch.action.PAUSE_RECORDING"
         const val ACTION_RESUME = "com.ottomusic.sketch.action.RESUME_RECORDING"
         const val ACTION_STOP = "com.ottomusic.sketch.action.STOP_RECORDING"
+        /** Toggles listening to the paused take so far. Ignored outside [RecordingPhase.PAUSED]. */
+        const val ACTION_PREVIEW = "com.ottomusic.sketch.action.PREVIEW_TAKE"
         const val EXTRA_OVERDUB_PROJECT_ID = "com.ottomusic.sketch.extra.OVERDUB_PROJECT_ID"
         const val EXTRA_OVERDUB_CLICK_BPM = "com.ottomusic.sketch.extra.OVERDUB_CLICK_BPM"
         const val EXTRA_OVERDUB_CLICK_BEATS = "com.ottomusic.sketch.extra.OVERDUB_CLICK_BEATS"
         const val EXTRA_OVERDUB_COUNT_IN_BARS = "com.ottomusic.sketch.extra.OVERDUB_COUNT_IN_BARS"
         private const val CHANNEL_ID = "recording"
         private const val NOTIFICATION_ID = 42
+        private const val PREVIEW_PUBLISH_MILLIS = 100L
         private val mutableState = MutableStateFlow(RecordingServiceState())
         val state = mutableState.asStateFlow()
     }
@@ -81,6 +86,7 @@ class RecordingService : Service() {
     private var latestStartId = 0
     private var recordingCallback: AudioManager.AudioRecordingCallback? = null
     private var backingPlayer: WavPlayer? = null
+    private var previewPlayer: WavPlayer? = null
     private var clickOnlyPlayer: ClickOnlyPlayer? = null
     private var monitorClick: MonitorClick? = null
     private var overdubBaseProject: Project? = null
@@ -105,6 +111,7 @@ class RecordingService : Service() {
             ACTION_PAUSE -> pauseTransport()
             ACTION_RESUME -> resumeTransport()
             ACTION_STOP -> stopTransport()
+            ACTION_PREVIEW -> if (previewPlayer != null) stopPreview() else startPreview()
         }
         if (recorder == null && !loadingBase && action != ACTION_START) stopSelfResult(startId)
         return START_NOT_STICKY
@@ -115,6 +122,7 @@ class RecordingService : Service() {
     override fun onDestroy() {
         destroyed = true
         startToken++
+        stopPreview()
         unregisterRecordingCallback()
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
@@ -186,7 +194,9 @@ class RecordingService : Service() {
                         silenceWarning = value.silenceWarning,
                         inputSilenced = value.inputSilenced,
                         alignmentNotice = mutableState.value.alignmentNotice,
-                        overdubRoute = clockTracker.route
+                        overdubRoute = clockTracker.route,
+                        previewPlaying = mutableState.value.previewPlaying,
+                        previewFrame = mutableState.value.previewFrame
                     )
                     if (phaseChanged) updateNotification()
                 } },
@@ -227,6 +237,8 @@ class RecordingService : Service() {
         // Audio focus is requested before AudioRecord starts so focus loss cannot silently corrupt a take.
         return recordingFocus.request {
             lostFocusPermanently = true
+            // Focus callbacks arrive on the main looper, so the preview is released before finalisation starts.
+            stopPreview()
             recorder?.requestStop()
         }
     }
@@ -343,6 +355,7 @@ class RecordingService : Service() {
     }
 
     private fun resumeTransport() {
+        stopPreview()
         clockTracker.timeline?.resume()
         recorder?.resume()
         overdubBaseProject?.let { backingPlayer?.play(it.totalFrames) }
@@ -353,6 +366,7 @@ class RecordingService : Service() {
         startToken++
         loadingBase = false
         transportStopped = true
+        stopPreview()
         snapshotOutputFailure()
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
@@ -372,6 +386,52 @@ class RecordingService : Service() {
     private fun releaseClickOnlyPlayer() {
         clickOnlyPlayer?.release()
         clickOnlyPlayer = null
+    }
+
+    /** Toggle target for ACTION_PREVIEW; only a paused take has a stable PCM range to hear. */
+    private fun startPreview() {
+        val source = recorder ?: return
+        if (mutableState.value.phase != RecordingPhase.PAUSED || finalizing || transportStopped) return
+        if (source.state.value.phase != RecordingPhase.PAUSED) return
+        val captured = source.captured()
+        if (captured.frames <= 0L) return
+        stopPreview()
+        val player = try {
+            // The service already holds recording focus, so the preview rides on it and requests none of its own.
+            WavPlayer.forCapturedRange(this, captured.file, captured.sampleRate, captured.channels, captured.frames)
+        } catch (_: Throwable) {
+            mutableState.value = mutableState.value.copy(
+                alignmentNotice = mergeNotices(mutableState.value.alignmentNotice, "Take preview is unavailable.")
+            )
+            return
+        }
+        previewPlayer = player
+        player.play(captured.frames)
+        mutableState.value = mutableState.value.copy(previewPlaying = true, previewFrame = 0L)
+        main.postDelayed(previewTick, PREVIEW_PUBLISH_MILLIS)
+    }
+
+    /** Must run before the recorder resumes or finalises: the player holds the partial WAV open. */
+    private fun stopPreview() {
+        main.removeCallbacks(previewTick)
+        previewPlayer?.release()
+        previewPlayer = null
+        if (mutableState.value.previewPlaying || mutableState.value.previewFrame != 0L) {
+            mutableState.value = mutableState.value.copy(previewPlaying = false, previewFrame = 0L)
+        }
+    }
+
+    private val previewTick = object : Runnable {
+        override fun run() {
+            val player = previewPlayer ?: return
+            val snapshot = player.state.value
+            if (!snapshot.isPlaying) {
+                stopPreview()
+                return
+            }
+            mutableState.value = mutableState.value.copy(previewPlaying = true, previewFrame = snapshot.positionFrames)
+            main.postDelayed(this, PREVIEW_PUBLISH_MILLIS)
+        }
     }
 
     private fun registerRecordingCallback(input: PcmInput) {
@@ -396,6 +456,7 @@ class RecordingService : Service() {
     private fun completeTake(sourceRecorder: WavRecorder, take: RecordingTake) {
         if (recorder !== sourceRecorder || finalizing) return
         finalizing = true
+        stopPreview()
         unregisterRecordingCallback()
         transportStopped = true
         snapshotOutputFailure()

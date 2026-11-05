@@ -21,7 +21,7 @@ private data class SeekRequest(val frame: Long, val revision: Long)
 
 /**
  * Streams PCM directly so seek positions are expressed in exact source frames.
- * [takesFocus] = false plays alongside an active recording (a layer backing track) without stealing its audio focus.
+ * [takesFocus] = false plays under an active recording (backing track or paused-take preview) without stealing its audio focus.
  */
 class WavPlayer(
     context: Context,
@@ -29,10 +29,28 @@ class WavPlayer(
     private val takesFocus: Boolean = true,
     private val onClock: (AudioClockPoint, String, String) -> Unit = { _, _, _ -> },
     private val monitorClick: MonitorClick? = null,
-    private val onRoute: (String, String) -> Unit = { _, _ -> }
+    private val onRoute: (String, String) -> Unit = { _, _ -> },
+    sourceFormat: WavFormat? = null
 ) {
+    companion object {
+        /** Streams PCM16 already written after the placeholder header of an unfinalised take. */
+        fun forCapturedRange(context: Context, file: File, sampleRate: Int, channels: Int, frames: Long): WavPlayer =
+            WavPlayer(
+                context = context,
+                wav = file,
+                takesFocus = false,
+                sourceFormat = WavFormat(
+                    channels = channels,
+                    sampleRate = sampleRate,
+                    bitsPerSample = 16,
+                    dataOffset = WavFormat.HEADER_BYTES.toLong(),
+                    dataSize = frames * channels * 2L
+                )
+            )
+    }
+
     private val appContext = context.applicationContext
-    private val format = wav.inputStream().use(WavFormat::read)
+    private val format = sourceFormat ?: wav.inputStream().use(WavFormat::read)
     private val align = format.blockAlign
     private val totalFrames = format.frameCount
     private val clickMixer = monitorClick?.let { ClickPcmMixer(format.sampleRate, format.channels, it) }

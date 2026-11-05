@@ -68,7 +68,6 @@ import com.ottomusic.sketch.ui.AudioSketchTheme
 import com.ottomusic.sketch.ui.LibraryScreen
 import com.ottomusic.sketch.ui.MixScreen
 import com.ottomusic.sketch.ui.OverdubCalibrationScreen
-import com.ottomusic.sketch.ui.RecordScreen
 import com.ottomusic.sketch.ui.SketchScreen
 import com.ottomusic.sketch.ui.Synth
 import com.ottomusic.sketch.ui.SynthGlyph
@@ -328,27 +327,15 @@ private fun AudioSketchApp(
 
     LaunchedEffect(recording.phase) {
         if (recording.phase != RecordingPhase.FAILED) dismissedTakeError = null
-        if (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED) appViewModel.setLayerBacking(null, null)
+        if (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED) appViewModel.setLayerBacking(null)
     }
 
-    LaunchedEffect(appState.startupComplete, recording.phase) {
-        if (appState.startupComplete && (recording.phase == RecordingPhase.RECORDING || recording.phase == RecordingPhase.PAUSED || recording.phase == RecordingPhase.STARTING)) {
-            appViewModel.navigate(Route.RECORD)
-        }
-    }
-    // A take keeps running after leaving the recorder, so Sketch leads back to its controls.
-    LaunchedEffect(route, recording.phase) {
-        if (route == Route.SKETCH && recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)) {
-            appViewModel.navigate(Route.RECORD)
-        }
-    }
-    LaunchedEffect(recording.projectId, recording.phase, route) {
+    LaunchedEffect(recording.projectId, recording.phase) {
         val finishedProjectId = recording.projectId
         if (finishedProjectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
-            // The backing project gained a track in place, so its cached playback is stale.
-            appViewModel.invalidatePlayback(finishedProjectId)
-            appViewModel.refreshLibrary(finishedProjectId.takeIf { route == Route.RECORD })
-            if (route == Route.RECORD) appViewModel.setHome(finishedProjectId)
+            // Refresh with selection: the backing project gained a track in place, so its cached playback is stale.
+            appViewModel.refreshLibrary(finishedProjectId)
+            appViewModel.setHome(finishedProjectId)
         }
     }
     LaunchedEffect(appState.importedProjectId) {
@@ -364,9 +351,8 @@ private fun AudioSketchApp(
         when (route) {
             Route.SKETCH, Route.TUNER -> appViewModel.leave(Route.LIBRARY)
             Route.MIX -> appViewModel.leave(Route.LIBRARY)
-            Route.RECORD -> appViewModel.leave(Route.SKETCH)
             Route.TRIM -> appViewModel.leave(Route.MIX, selected?.id ?: selectedId)
-            Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.RECORD)
+            Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.SKETCH)
             Route.LIBRARY -> Unit
         }
     }
@@ -396,18 +382,40 @@ private fun AudioSketchApp(
                     val current = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
                     LaunchedEffect(current?.id) { appViewModel.loadPlaybackFile(current?.id) }
                     SketchScreen(
+                        recording = recording,
+                        shortcutRequested = appState.shortcutRequested,
+                        microphoneGranted = appState.microphoneGranted,
+                        microphoneDenied = appState.microphoneDenied,
+                        notificationsGranted = appState.notificationGranted,
+                        startError = appState.startError,
                         current = current,
                         currentWav = current?.let { appState.audioFiles[it.id] },
-                        playbackAllowed = playbackAllowed(recording.phase),
+                        layering = appState.layerBackingId != null || appState.layerOn,
                         click = click,
                         layerOn = appState.layerOn,
                         onLayerToggle = { appViewModel.setLayerEnabled(!appState.layerOn) },
                         onRecord = { clickSettings ->
-                            appViewModel.setLayerBacking(if (appState.layerOn) current?.id else null, clickSettings)
-                            appViewModel.navigate(Route.RECORD)
+                            val backingId = current?.id?.takeIf { appState.layerOn }
+                            appViewModel.setLayerBacking(backingId)
+                            onRecordRequest(backingId, clickSettings)
                         },
+                        onPauseResume = {
+                            val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
+                            context.startService(Intent(context, RecordingService::class.java).setAction(action))
+                        },
+                        onSave = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
                         onShare = ::share,
-                        onImport = onImportRequest
+                        onImport = onImportRequest,
+                        onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
+                        onOpenSettings = onOpenSettings,
+                        onOpenInMix = {
+                            val projectId = recording.projectId ?: current?.id
+                            if (projectId != null) {
+                                appViewModel.selectProject(projectId)
+                                appViewModel.setHome(projectId)
+                                appViewModel.navigate(Route.MIX)
+                            }
+                        }
                     )
                 }
                 Route.MIX -> {
@@ -448,41 +456,8 @@ private fun AudioSketchApp(
                 )
                 Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
                     route = recording.overdubRoute ?: calibrationStore.lastRoute(),
-                    onBack = { appViewModel.leave(Route.RECORD) }
+                    onBack = { appViewModel.leave(Route.SKETCH) }
                 )
-                Route.RECORD -> {
-                    val clickSettings = appState.layerClickBpm.takeIf { it > 0 }?.let {
-                        runCatching { MonitorClick(it, appState.layerClickBeats, appState.layerCountInBars) }.getOrNull()
-                    }
-                    RecordScreen(
-                        recording = recording,
-                        shortcutRequested = appState.shortcutRequested,
-                        microphoneGranted = appState.microphoneGranted,
-                        microphoneDenied = appState.microphoneDenied,
-                        notificationsGranted = appState.notificationGranted,
-                        startError = appState.startError,
-                        layering = appState.layerBackingId != null,
-                        calibrationAvailable = recording.overdubRoute != null || calibrationStore.lastRoute() != null,
-                        onBack = { appViewModel.leave(Route.SKETCH) },
-                        onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
-                        onRecord = { onRecordRequest(appState.layerBackingId, clickSettings) },
-                        onRequestMic = { onRecordRequest(appState.layerBackingId, clickSettings) },
-                        onOpenSettings = onOpenSettings,
-                        onPauseResume = {
-                            val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
-                            context.startService(Intent(context, RecordingService::class.java).setAction(action))
-                        },
-                        onStop = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
-                        onOpenRecording = {
-                            val projectId = recording.projectId
-                            if (projectId != null) {
-                                appViewModel.selectProject(projectId)
-                                appViewModel.setHome(projectId)
-                                appViewModel.navigate(Route.MIX)
-                            }
-                        }
-                    )
-                }
                 Route.TRIM -> if (selected != null && selected.id == selectedId) {
                     val project = selected
                     // Trim keeps its own Material layout; it sits on a dark panel so its pink accents stay readable on orange.
@@ -503,7 +478,9 @@ private fun AudioSketchApp(
                 }
             }
         }
-        if (route.isTopLevel) TopLevelBar(route, itemsEnabled = !mixBusy) { destination ->
+        // A running take keeps its controls (and the microphone) on Sketch.
+        val takeRunning = recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
+        if (route.isTopLevel) TopLevelBar(route, itemsEnabled = !mixBusy && !takeRunning) { destination ->
             // Mix edits change the project's duration and metadata, so leaving it refreshes the library.
             if (route == Route.MIX) appViewModel.leave(destination, selected?.id ?: selectedId)
             else if (destination == Route.LIBRARY) appViewModel.leave(Route.LIBRARY)
@@ -512,7 +489,7 @@ private fun AudioSketchApp(
     }
     val takeErrorKey = "${recording.projectId ?: "no-project"}:${recording.error}"
     val hasTakeError = recording.phase == RecordingPhase.FAILED && recording.error != null &&
-        (recording.projectId != null || route != Route.RECORD) && dismissedTakeError != takeErrorKey
+        dismissedTakeError != takeErrorKey
     val activeSelectionError = appState.selectionError?.takeIf { appState.selectionErrorForId == selectedId }
     when {
         appState.importProgress != null -> {

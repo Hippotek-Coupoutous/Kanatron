@@ -22,8 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal enum class Route {
-    LIBRARY, SKETCH, MIX, TUNER,
-    RECORD, TRIM, OVERDUB_CALIBRATION;
+    LIBRARY, SKETCH, MIX, TUNER, TRIM, OVERDUB_CALIBRATION;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == MIX || this == TUNER
@@ -40,9 +39,6 @@ internal data class AppUiState(
     val trimClipId: String? = null,
     val layerOn: Boolean = false,
     val layerBackingId: String? = null,
-    val layerClickBpm: Int = 0,
-    val layerClickBeats: Int = 4,
-    val layerCountInBars: Int = 0,
     val microphoneGranted: Boolean = false,
     val microphoneDenied: Boolean = false,
     val notificationGranted: Boolean = true,
@@ -57,7 +53,6 @@ internal data class AppUiState(
     val audioFiles: Map<String, File> = emptyMap(),
     val unreadableProjectCount: Int = 0,
     val libraryError: String? = null,
-    val startupComplete: Boolean = false,
     val silentRecoveryFiles: List<File> = emptyList(),
     val selectedProject: Project? = null,
     val selectionError: String? = null,
@@ -104,15 +99,7 @@ internal class AppViewModel(
 
     fun setLayerEnabled(on: Boolean) = updateState { it.copy(layerOn = on) }
 
-    /** Layer backing and click settings captured when a take starts. */
-    fun setLayerBacking(backingId: String?, click: MonitorClick?) = updateState {
-        it.copy(
-            layerBackingId = backingId,
-            layerClickBpm = click?.bpm ?: 0,
-            layerClickBeats = click?.beatsPerBar ?: 4,
-            layerCountInBars = click?.countInBars ?: 0
-        )
-    }
+    fun setLayerBacking(backingId: String?) = updateState { it.copy(layerBackingId = backingId) }
 
     fun updatePermissions(granted: Boolean, notificationsGranted: Boolean) = updateState {
         it.copy(
@@ -229,7 +216,7 @@ internal class AppViewModel(
                         }
                     }
                 }
-                if (startup) _state.update { it.copy(silentRecoveryFiles = result.silentFiles, startupComplete = true) }
+                if (startup) _state.update { it.copy(silentRecoveryFiles = result.silentFiles) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -237,10 +224,7 @@ internal class AppViewModel(
                     _state.update { it.copy(libraryError = failure.message ?: "Could not read the library.") }
                 }
             }
-            if (startup) {
-                _state.update { it.copy(startupComplete = true) }
-                if (generation != libraryGeneration) refreshLibrary(startup = false).join()
-            }
+            if (startup && generation != libraryGeneration) refreshLibrary(startup = false).join()
         }
     }
 
@@ -433,9 +417,6 @@ internal class AppViewModel(
         savedStateHandle[KEY_TRIM_CLIP] = state.trimClipId
         savedStateHandle[KEY_LAYER_ON] = state.layerOn
         savedStateHandle[KEY_LAYER_BACKING] = state.layerBackingId
-        savedStateHandle[KEY_LAYER_CLICK_BPM] = state.layerClickBpm
-        savedStateHandle[KEY_LAYER_CLICK_BEATS] = state.layerClickBeats
-        savedStateHandle[KEY_LAYER_COUNT_IN] = state.layerCountInBars
         savedStateHandle[KEY_PENDING_MIC] = state.pendingMicrophoneAction?.name
         savedStateHandle[KEY_PENDING_OVERDUB] = state.pendingOverdubProjectId
         savedStateHandle[KEY_CLICK_BPM] = state.pendingClick?.bpm
@@ -451,9 +432,6 @@ internal class AppViewModel(
         trimClipId = savedStateHandle.get<String>(KEY_TRIM_CLIP),
         layerOn = savedStateHandle.get<Boolean>(KEY_LAYER_ON) ?: false,
         layerBackingId = savedStateHandle.get<String>(KEY_LAYER_BACKING),
-        layerClickBpm = savedStateHandle.get<Int>(KEY_LAYER_CLICK_BPM) ?: 0,
-        layerClickBeats = savedStateHandle.get<Int>(KEY_LAYER_CLICK_BEATS) ?: 4,
-        layerCountInBars = savedStateHandle.get<Int>(KEY_LAYER_COUNT_IN) ?: 0,
         pendingMicrophoneAction = savedStateHandle.get<String>(KEY_PENDING_MIC)
             ?.let { stored -> runCatching { MicrophoneAction.valueOf(stored) }.getOrNull() },
         pendingOverdubProjectId = savedStateHandle.get<String>(KEY_PENDING_OVERDUB),
@@ -486,9 +464,6 @@ internal class AppViewModel(
         const val KEY_TRIM_CLIP = "trimClipId"
         const val KEY_LAYER_ON = "layerOn"
         const val KEY_LAYER_BACKING = "layerBackingId"
-        const val KEY_LAYER_CLICK_BPM = "layerClickBpm"
-        const val KEY_LAYER_CLICK_BEATS = "layerClickBeats"
-        const val KEY_LAYER_COUNT_IN = "layerCountInBars"
         const val KEY_PENDING_MIC = "pendingMicrophoneAction"
         const val KEY_PENDING_OVERDUB = "pendingOverdubProjectId"
         const val KEY_CLICK_BPM = "pendingClickBpm"

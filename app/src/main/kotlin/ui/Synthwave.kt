@@ -90,9 +90,24 @@ private fun DrawScope.drawGlyph(icon: SynthIcon, tint: Color) {
 
 /** Big circular transport button (record, play) with its short label underneath; the whole column is the target. */
 @Composable
-fun RoundButton(icon: SynthIcon, label: String, color: Color, onClick: () -> Unit, size: Dp, enabled: Boolean = true, contentColor: Color = Synth.night) {
+fun RoundButton(
+    icon: SynthIcon,
+    label: String,
+    color: Color,
+    onClick: () -> Unit,
+    size: Dp,
+    enabled: Boolean = true,
+    contentColor: Color = Synth.night,
+    description: String = label,
+    state: String? = null
+) {
     Column(
-        Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = enabled, role = Role.Button, onClick = onClick).padding(4.dp),
+        Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics {
+                contentDescription = description
+                state?.let { stateDescription = it }
+            }
+            .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(

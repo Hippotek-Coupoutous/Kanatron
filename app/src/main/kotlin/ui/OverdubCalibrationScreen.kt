@@ -49,7 +49,7 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
         Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        SynthTopBar("Timing calibration", onBack, backLabel = "Record")
+        SynthTopBar("Timing calibration", onBack, backLabel = "Sketch")
         SynthPanel {
             if (route == null) {
                 Text("No identified Layer route yet.", color = Synth.text, style = MaterialTheme.typography.titleMedium)

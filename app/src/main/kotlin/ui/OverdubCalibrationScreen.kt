@@ -41,10 +41,7 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
     val saved = remember(route) { route?.let(store::calibration) }
     val scope = rememberCoroutineScope()
     val routeKey = route?.let { "${it.routeKey}|${it.captureSampleRate}|${it.backingSampleRate}|${it.projectSampleRate}" } ?: "no-route"
-    var lagText by rememberSaveable(routeKey) { mutableStateOf(saved?.let { millis(it.measuredLagFrames, it.projectSampleRate) } ?: "0") }
-    var uncertaintyText by rememberSaveable(routeKey) { mutableStateOf(saved?.let { millis(it.uncertaintyFrames, it.projectSampleRate) } ?: "1") }
-    var nudgeText by rememberSaveable(routeKey) { mutableStateOf(saved?.let { millis(it.manualNudgeFrames, it.projectSampleRate) } ?: "0") }
-    var driftText by rememberSaveable(routeKey) { mutableStateOf(saved?.measuredDriftCorrectionPpm?.toString().orEmpty()) }
+    var offsetText by rememberSaveable(routeKey) { mutableStateOf(saved?.let { millis(it.offsetFrames, it.projectSampleRate) } ?: "0") }
     var status by rememberSaveable(routeKey) { mutableStateOf<String?>(null) }
     var busy by rememberSaveable(routeKey) { mutableStateOf(false) }
 
@@ -61,49 +58,35 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
                 Text(route.displayName, color = Synth.text, style = MaterialTheme.typography.titleMedium)
                 Text("Capture ${route.captureSampleRate} Hz · backing ${route.backingSampleRate} Hz · project ${route.projectSampleRate} Hz", color = Synth.muted)
                 Text(
-                    "Play a known marker from the backing through a wired loopback, record it, then compare onset times in an editor. Enter the measured capture-minus-backing lag and uncertainty. If you measure early and late markers, enter their drift. Leave drift blank to use a valid clock estimate when available. Positive ppm speeds up the source. This stores your timing estimate; it does not detect markers. Check timing on your setup.",
+                    "Positive values move new takes later. Adjust by ear until overdubs line up.",
                     color = Synth.muted
                 )
-                MeasurementField("Measured capture lag (ms)", lagText, { lagText = it }, "Signed; positive means capture is late")
-                MeasurementField("Measurement uncertainty (ms)", uncertaintyText, { uncertaintyText = it }, "Enter a non-negative value")
-                MeasurementField("Manual nudge (ms)", nudgeText, { nudgeText = it }, "Positive moves the next overdub later")
-                MeasurementField("Measured drift correction (ppm)", driftText, { driftText = it }, "Optional measured override; blank uses a valid clock estimate when available")
+                MeasurementField("Timing offset (ms)", offsetText, { offsetText = it }, "Within ±5000 ms")
                 status?.let { Text(it, color = if (it.startsWith("Saved")) Synth.cyan else MaterialTheme.colorScheme.error) }
                 BigButton(
-                    "Save route measurement",
+                    "Save timing offset",
                     onClick = {
-                        val lag = lagText.toDoubleOrNull()
-                        val uncertainty = uncertaintyText.toDoubleOrNull()
-                        val nudge = nudgeText.toDoubleOrNull()
-                        val drift = driftText.trim().takeIf(String::isNotEmpty)?.toIntOrNull()
-                        if (lag == null || uncertainty == null || nudge == null ||
-                            !lag.isFinite() || !uncertainty.isFinite() || !nudge.isFinite() ||
-                            lag !in -5_000.0..5_000.0 || uncertainty !in 0.0..5_000.0 || nudge !in -5_000.0..5_000.0 ||
-                            (driftText.isNotBlank() && (drift == null || drift !in -2_000..2_000))
-                        ) {
-                            status = "Enter lag/nudge within ±5000 ms, uncertainty from 0 to 5000 ms, and optional drift within ±2000 ppm."
+                        val offset = offsetText.toDoubleOrNull()
+                        if (offset == null || !offset.isFinite() || offset !in -5_000.0..5_000.0) {
+                            status = "Enter a timing offset within ±5000 ms."
                         } else {
                             val calibration = OverdubCalibration(
                                 routeKey = route.routeKey,
                                 captureSampleRate = route.captureSampleRate,
                                 backingSampleRate = route.backingSampleRate,
                                 projectSampleRate = route.projectSampleRate,
-                                measuredLagFrames = OverdubTiming.framesFromMilliseconds(lag, route.projectSampleRate),
-                                uncertaintyFrames = OverdubTiming.framesFromMilliseconds(uncertainty, route.projectSampleRate).coerceAtLeast(0L),
-                                manualNudgeFrames = OverdubTiming.framesFromMilliseconds(nudge, route.projectSampleRate),
-                                measuredDriftCorrectionPpm = drift,
-                                measuredAtEpochMillis = System.currentTimeMillis()
+                                offsetFrames = OverdubTiming.framesFromMilliseconds(offset, route.projectSampleRate)
                             )
                             busy = true
                             scope.launch {
                                 try {
                                     val stored = withContext(Dispatchers.IO) { store.save(route, calibration) }
-                                    status = if (stored) "Saved for this exact route and rates. Check timing on your setup."
-                                    else "Could not save this route measurement."
+                                    status = if (stored) "Saved for this exact route and rates."
+                                    else "Could not save this timing offset."
                                 } catch (cancelled: CancellationException) {
                                     throw cancelled
                                 } catch (failure: Throwable) {
-                                    status = failure.message ?: "Could not save this route measurement."
+                                    status = failure.message ?: "Could not save this timing offset."
                                 } finally {
                                     busy = false
                                 }
@@ -112,22 +95,19 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
                     },
                     Modifier.fillMaxWidth(), primary = true, enabled = !busy
                 )
-                BigButton("Clear saved measurement", {
+                BigButton("Clear saved offset", {
                     busy = true
                     scope.launch {
                         try {
                             val cleared = withContext(Dispatchers.IO) { store.clear(route) }
                             if (cleared) {
-                                lagText = "0"
-                                uncertaintyText = "1"
-                                nudgeText = "0"
-                                driftText = ""
-                                status = "Saved route measurement cleared."
-                            } else status = "Could not clear the saved route measurement."
+                                offsetText = "0"
+                                status = "Saved timing offset cleared."
+                            } else status = "Could not clear the saved timing offset."
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (failure: Throwable) {
-                            status = failure.message ?: "Could not clear the saved route measurement."
+                            status = failure.message ?: "Could not clear the saved timing offset."
                         } finally {
                             busy = false
                         }

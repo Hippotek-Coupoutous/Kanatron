@@ -5,7 +5,7 @@ import com.ottomusic.sketch.core.OverdubCalibration
 import com.ottomusic.sketch.core.OverdubRoute
 import java.security.MessageDigest
 
-/** Device-local owner measurements, kept separate for each exact route and rate combination. */
+/** Device-local timing offsets, kept separate for each exact route and rate combination. */
 internal class OverdubCalibrationStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences("overdub-calibration", Context.MODE_PRIVATE)
 
@@ -41,13 +41,7 @@ internal class OverdubCalibrationStore(context: Context) {
                 captureSampleRate = preferences.getInt("$prefix.captureRate", 0),
                 backingSampleRate = preferences.getInt("$prefix.backingRate", 0),
                 projectSampleRate = preferences.getInt("$prefix.projectRate", 0),
-                measuredLagFrames = preferences.getLong("$prefix.lagFrames", 0L),
-                uncertaintyFrames = preferences.getLong("$prefix.uncertaintyFrames", 0L),
-                manualNudgeFrames = preferences.getLong("$prefix.nudgeFrames", 0L),
-                measuredDriftCorrectionPpm = if (preferences.getBoolean("$prefix.hasDrift", false)) {
-                    preferences.getInt("$prefix.driftPpm", 0)
-                } else null,
-                measuredAtEpochMillis = preferences.getLong("$prefix.measuredAt", 0L)
+                offsetFrames = preferences.getLong("$prefix.offsetFrames", 0L)
             ).takeIf { it.matches(route) }
         }.getOrNull()
     }
@@ -61,12 +55,7 @@ internal class OverdubCalibrationStore(context: Context) {
             .putInt("$prefix.captureRate", route.captureSampleRate)
             .putInt("$prefix.backingRate", route.backingSampleRate)
             .putInt("$prefix.projectRate", route.projectSampleRate)
-            .putLong("$prefix.lagFrames", calibration.measuredLagFrames)
-            .putLong("$prefix.uncertaintyFrames", calibration.uncertaintyFrames)
-            .putLong("$prefix.nudgeFrames", calibration.manualNudgeFrames)
-            .putBoolean("$prefix.hasDrift", calibration.measuredDriftCorrectionPpm != null)
-            .putInt("$prefix.driftPpm", calibration.measuredDriftCorrectionPpm ?: 0)
-            .putLong("$prefix.measuredAt", calibration.measuredAtEpochMillis)
+            .putLong("$prefix.offsetFrames", calibration.offsetFrames)
             .commit()
     }
 
@@ -78,12 +67,7 @@ internal class OverdubCalibrationStore(context: Context) {
             .remove("$prefix.captureRate")
             .remove("$prefix.backingRate")
             .remove("$prefix.projectRate")
-            .remove("$prefix.lagFrames")
-            .remove("$prefix.uncertaintyFrames")
-            .remove("$prefix.nudgeFrames")
-            .remove("$prefix.hasDrift")
-            .remove("$prefix.driftPpm")
-            .remove("$prefix.measuredAt")
+            .remove("$prefix.offsetFrames")
             .commit()
     }
 

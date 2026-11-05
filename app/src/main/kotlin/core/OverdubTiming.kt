@@ -18,25 +18,19 @@ data class OverdubRoute(
     }
 }
 
-/** Owner-entered result from the wired loopback marker protocol. Lag is capture minus backing. */
+/** Per-route timing offset in project frames; positive moves captured takes later. */
 data class OverdubCalibration(
     val routeKey: String,
     val captureSampleRate: Int,
     val backingSampleRate: Int,
     val projectSampleRate: Int,
-    val measuredLagFrames: Long,
-    val uncertaintyFrames: Long,
-    val manualNudgeFrames: Long,
-    val measuredDriftCorrectionPpm: Int?,
-    val measuredAtEpochMillis: Long
+    val offsetFrames: Long
 ) {
     init {
         require(routeKey.isNotBlank())
         require(captureSampleRate in 8_000..192_000)
         require(backingSampleRate in 8_000..192_000)
         require(projectSampleRate in 8_000..192_000)
-        require(uncertaintyFrames >= 0L)
-        require(measuredDriftCorrectionPpm == null || measuredDriftCorrectionPpm in -2_000..2_000)
     }
 
     fun matches(route: OverdubRoute): Boolean =
@@ -47,22 +41,17 @@ data class OverdubCalibration(
 data class OverdubPlacement(val positionFrames: Long, val leadInFrames: Long)
 
 object OverdubTiming {
-    /** Positive measured lag moves the captured clip earlier; positive manual nudge moves it later. */
+    /** Positive offset moves the captured clip later. */
     fun placement(timestampPositionFrames: Long, calibration: OverdubCalibration?): OverdubPlacement {
         val corrected = if (calibration == null) timestampPositionFrames else {
-            Math.addExact(Math.subtractExact(timestampPositionFrames, calibration.measuredLagFrames), calibration.manualNudgeFrames)
+            Math.addExact(timestampPositionFrames, calibration.offsetFrames)
         }
         return if (corrected < 0L) OverdubPlacement(0L, Math.negateExact(corrected))
         else OverdubPlacement(corrected, 0L)
     }
 
-    fun driftCorrectionPpm(clockDiscontinuous: Boolean, calibratedPpm: Int?, timestampPpm: Int?): Int? =
-        if (clockDiscontinuous) null else calibratedPpm ?: timestampPpm
-
-    fun exceedsStartUncertaintyCaution(uncertaintyFrames: Long, sampleRate: Int): Boolean {
-        require(uncertaintyFrames >= 0L && sampleRate in 8_000..192_000)
-        return uncertaintyFrames * 1_000.0 / sampleRate > 5.0
-    }
+    fun driftCorrectionPpm(clockDiscontinuous: Boolean, timestampPpm: Int?): Int? =
+        if (clockDiscontinuous) null else timestampPpm
 
     fun framesFromMilliseconds(milliseconds: Double, sampleRate: Int): Long {
         require(milliseconds.isFinite() && sampleRate in 8_000..192_000)

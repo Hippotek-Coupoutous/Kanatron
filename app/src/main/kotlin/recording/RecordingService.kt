@@ -32,7 +32,6 @@ import com.ottomusic.sketch.platform.RecordingFocus
 import com.ottomusic.sketch.playback.ClickOnlyPlayer
 import com.ottomusic.sketch.playback.MonitorClick
 import com.ottomusic.sketch.playback.WavPlayer
-import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -499,7 +498,6 @@ class RecordingService : Service() {
                 )
                 val correction = OverdubTiming.driftCorrectionPpm(
                     clockDiscontinuous,
-                    calibration?.measuredDriftCorrectionPpm,
                     alignment?.rateCorrectionPpm
                 )
                 val safeCorrection = correction?.takeIf { it in -2_000..2_000 } ?: 0
@@ -510,7 +508,7 @@ class RecordingService : Service() {
                 }
                 if (leadInTrim >= savedTake.totalFrames) {
                     project = savedTake
-                    alignmentNotice = "The measured start places this whole take before frame zero. Its original WAV was kept in the library without shifting its audio."
+                    alignmentNotice = "The take would start before frame zero. Its original WAV was kept in the library without shifting its audio."
                 } else {
                     val arrangement = repository.appendRecordedTake(base.id, savedTake.id, calibratedPlacement.positionFrames)
                     var edited = arrangement
@@ -530,33 +528,13 @@ class RecordingService : Service() {
                         }
                     }
                     project = if (edited == arrangement) arrangement else repository.saveEditState(edited)
-                    val uncertaintyMs = calibration?.let { it.uncertaintyFrames * 1_000.0 / base.sampleRate }
-                    val calibrationNote = calibration?.let {
-                        val formatted = "%.2f".format(Locale.US, uncertaintyMs ?: 0.0)
-                        if (OverdubTiming.exceedsStartUncertaintyCaution(it.uncertaintyFrames, base.sampleRate)) {
-                            "Owner-entered lag/nudge is a rough timing estimate (±$formatted ms uncertainty, over 5 ms); review and nudge the clip. Hardware sync is unverified."
-                        } else {
-                            "Owner-entered lag/nudge is a timing estimate (±$formatted ms uncertainty); review and nudge if needed. Hardware sync is unverified."
-                        }
-                    }
-                    val placementNote = when {
+                    alignmentNotice = when {
                         overdubTimeline?.routeInvalidated() == true ->
-                            "The audio route changed. The take was saved at the backing start without route calibration."
+                            "The audio route changed. The take was saved at the backing start."
                         alignment == null ->
-                            "Timestamps were unavailable. The take was saved at the backing start; timing is uncalibrated."
-                        clockDiscontinuous ->
-                            "An audio clock discontinuity was detected. Drift correction was disabled. The original WAV was kept${if (leadInTrim > 0L) "; clip trim preserves the measured start before frame zero" else ""}. Hardware timing is unverified."
-                        leadInTrim > 0L ->
-                            "The start measured before frame zero. The original take WAV is unchanged; clip trim preserves the remaining samples at frame zero."
-                        correction == null ->
-                            "Start placement is timestamp-based, but drift could not be measured or entered for this route. Hardware timing is unverified."
-                        correction !in -2_000..2_000 ->
-                            "Measured drift exceeds the correction range. The original take was kept without rate correction."
-                        calibration != null ->
-                            "Applied the exact-route owner-entered offset as clip metadata; start placement is an estimate."
-                        else -> "Start placement is timestamp-based with a reversible drift correction. Hardware timing is unverified."
+                            "Timestamps were unavailable. The take was saved at the backing start."
+                        else -> null
                     }
-                    alignmentNotice = mergeNotices(placementNote, calibrationNote)
                 }
             }
             if (project == null) error = error ?: "Could not save recording"

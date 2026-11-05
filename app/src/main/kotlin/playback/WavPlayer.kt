@@ -122,6 +122,10 @@ class WavPlayer(
             try {
             RandomAccessFile(wav, "r").use { input ->
             val buffer = ByteArray(maxOf(align, 8192 / align * align))
+            val routeCheckFrames = format.sampleRate / 4L
+            var routeFrames = routeCheckFrames
+            var routeKey = ""
+            var routeName = ""
             var appliedFrame = -1L
             var appliedRevision = -1L
             var headBase = output.playedFrames
@@ -219,6 +223,7 @@ class WavPlayer(
                     pendingOffset += written
                     val writtenFrames = pendingOffset / align - framesBeforeWrite
                     outputFramesSubmitted += writtenFrames
+                    routeFrames += writtenFrames
                     if (pendingIsBacking) submittedFrames += writtenFrames
                 }
                 synchronized(this) {
@@ -228,8 +233,13 @@ class WavPlayer(
                         mutableState.value = PlayerState(frame, totalFrames, true)
                     }
                 }
-                runCatching { onRoute(output.routeKey, output.routeName) }
-                output.timestamp()?.let { point -> runCatching { onClock(point, output.routeKey, output.routeName) } }
+                if (routeFrames >= routeCheckFrames) {
+                    routeFrames = 0L
+                    routeKey = output.routeKey
+                    routeName = output.routeName
+                    runCatching { onRoute(routeKey, routeName) }
+                }
+                output.timestamp()?.let { point -> runCatching { onClock(point, routeKey, routeName) } }
             }
             }
             } finally {

@@ -22,6 +22,7 @@ internal const val MICROPHONE_PERMISSION_ERROR =
 interface PcmInput {
     val sampleRate: Int
     val channels: Int
+    val readBufferBytes: Int get() = 8192
     val inputDevice: String get() = "System microphone"
     val routeKey: String get() = inputDevice
     val routeName: String get() = inputDevice
@@ -80,8 +81,12 @@ private class AndroidPcmInputFactory(private val context: Context) : PcmInputFac
         for (rate in rateCandidates) for (source in sources) {
             val minimum = AudioRecord.getMinBufferSize(rate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
             if (minimum <= 0) continue
+            // Internal buffer ~250 ms so a late read cannot overflow it; read chunk ~20 ms stays well below it.
+            val blockAlign = channels * 2
+            val bufferBytes = maxOf(minimum * 4, rate * blockAlign / 4)
+            val readBytes = maxOf(minimum, rate * blockAlign / 50)
             val candidate = try {
-                AudioRecord(source, rate, channelMask, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, 8192))
+                AudioRecord(source, rate, channelMask, AudioFormat.ENCODING_PCM_16BIT, bufferBytes)
             } catch (failure: SecurityException) {
                 // Permission can be revoked after the check; don't disguise it as format probing failure.
                 throw failure
@@ -90,7 +95,7 @@ private class AndroidPcmInputFactory(private val context: Context) : PcmInputFac
             } catch (_: IllegalStateException) {
                 continue
             }
-            if (candidate.state == AudioRecord.STATE_INITIALIZED) return AndroidPcmInput(candidate, rate, channels)
+            if (candidate.state == AudioRecord.STATE_INITIALIZED) return AndroidPcmInput(candidate, rate, channels, readBytes)
             candidate.release()
         }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -103,7 +108,8 @@ private class AndroidPcmInputFactory(private val context: Context) : PcmInputFac
 private class AndroidPcmInput(
     override val platformAudioRecord: AudioRecord,
     override val sampleRate: Int,
-    override val channels: Int
+    override val channels: Int,
+    override val readBufferBytes: Int
 ) : PcmInput {
     override val inputDevice: String
         get() = platformAudioRecord.routedDevice?.productName?.toString() ?: "System microphone"

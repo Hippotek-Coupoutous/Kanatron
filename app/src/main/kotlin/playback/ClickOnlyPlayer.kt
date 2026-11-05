@@ -65,6 +65,10 @@ internal class ClickOnlyPlayer(
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val frames = 480
         val block = ByteArray(frames * 2)
+        val routeCheckFrames = sampleRate / 4L
+        var routeFrames = routeCheckFrames
+        var routeKey = ""
+        var routeName = ""
         var startFrame = 0L
         try {
             while (!closed) {
@@ -82,8 +86,14 @@ internal class ClickOnlyPlayer(
                 }
                 if (offset < block.size) continue
                 startFrame += frames
-                runCatching { onRoute(output.routeKey, output.routeName) }
-                output.timestamp()?.let { point -> runCatching { onClock(point, output.routeKey, output.routeName) } }
+                routeFrames += frames
+                if (routeFrames >= routeCheckFrames) {
+                    routeFrames = 0L
+                    routeKey = output.routeKey
+                    routeName = output.routeName
+                    runCatching { onRoute(routeKey, routeName) }
+                }
+                output.timestamp()?.let { point -> runCatching { onClock(point, routeKey, routeName) } }
             }
         } catch (failure: Throwable) {
             error = failure.message ?: "Click monitor failed"

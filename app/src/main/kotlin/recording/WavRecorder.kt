@@ -1,7 +1,6 @@
 package com.ottomusic.sketch.recording
 
 import android.content.Context
-import android.media.AudioFormat
 import android.media.AudioRecord
 import com.ottomusic.sketch.core.AudioClockPoint
 import com.ottomusic.sketch.core.RecordingCore
@@ -147,29 +146,48 @@ class WavRecorder(
     private fun recordLoop() {
         var output: FileOutputStream? = null
         try {
+            val input = recorder ?: return
+            val blockAlign = openedChannels * 2
+            // StatFs and route IPCs are throttled by captured-audio count so the loop stays audio-only.
+            val spaceCheckBytes = openedRate.toLong() * blockAlign
+            var bytesSinceSpaceCheck = 0L
+            val routeCheckFrames = openedRate / 4L
+            var routeFrames = routeCheckFrames
+            var routeKey = ""
+            var routeName = ""
             // One reusable native PCM16 read buffer; paused samples are consumed and discarded.
-            val channelMask = if (openedChannels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
-            val minimum = AudioRecord.getMinBufferSize(openedRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
-            val buffer = ByteArray(maxOf(minimum, 8192))
-            val alignedBuffer = ByteArray(buffer.size + openedChannels * 2 - 1)
-            val frameAligner = FrameAligner(openedChannels * 2)
+            val buffer = ByteArray(input.readBufferBytes)
+            val alignedBuffer = ByteArray(buffer.size + blockAlign - 1)
+            val frameAligner = FrameAligner(blockAlign)
             var totalReadBytes = 0L
+            if (!spaceAvailable(RECORDING_RESERVE_BYTES)) throw IllegalStateException("Recording stopped because device storage is low")
             output = FileOutputStream(file, true)
             while (!stopRequested.get()) {
-                if (!spaceAvailable(RECORDING_RESERVE_BYTES)) throw IllegalStateException("Recording stopped because device storage is low")
-                val input = recorder ?: break
-                runCatching { onRoute(input.routeKey, input.routeName) }
-                val inputFrameCursor = totalReadBytes / (openedChannels * 2)
+                if (bytesSinceSpaceCheck >= spaceCheckBytes) {
+                    bytesSinceSpaceCheck = 0L
+                    if (!spaceAvailable(RECORDING_RESERVE_BYTES)) throw IllegalStateException("Recording stopped because device storage is low")
+                }
+                if (routeFrames >= routeCheckFrames) {
+                    routeFrames = 0L
+                    routeKey = input.routeKey
+                    routeName = input.routeName
+                    runCatching { onRoute(routeKey, routeName) }
+                }
+                val inputFrameCursor = totalReadBytes / blockAlign
                 val count = input.read(buffer)
                 if (count == AudioRecord.ERROR_DEAD_OBJECT) throw IllegalStateException("Microphone connection was lost")
                 if (count < 0) {
                     if (stopRequested.get()) break
                     throw IllegalStateException("Microphone read failed ($count)")
                 }
-                if (count > 0) totalReadBytes = Math.addExact(totalReadBytes, count.toLong())
-                if (count > 0) input.timestamp()?.let { point ->
-                    point.atFrame(inputFrameCursor, openedRate)?.let { startPoint ->
-                        runCatching { onClock(startPoint, input.routeKey, input.routeName) }
+                if (count > 0) {
+                    totalReadBytes = Math.addExact(totalReadBytes, count.toLong())
+                    bytesSinceSpaceCheck += count
+                    routeFrames += count / blockAlign
+                    input.timestamp()?.let { point ->
+                        point.atFrame(inputFrameCursor, openedRate)?.let { startPoint ->
+                            runCatching { onClock(startPoint, routeKey, routeName) }
+                        }
                     }
                 }
                 if (paused) {
@@ -188,7 +206,7 @@ class WavRecorder(
                     throw failure
                 }
                 capturedBytes = nextBytes
-                val frames = aligned / (openedChannels * 2)
+                val frames = aligned / blockAlign
                 capturedFrames += frames
                 allSamplesZero = allSamplesZero && RecordingCore.allSamplesZero(alignedBuffer, aligned)
                 val level = RecordingCore.level(alignedBuffer, aligned)

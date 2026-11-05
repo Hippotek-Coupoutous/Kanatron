@@ -5,6 +5,9 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 
+/** Sample rates accepted for project audio, imports and rendering. */
+val SUPPORTED_SAMPLE_RATES = 8_000..192_000
+
 class UnsupportedWavEncodingException(message: String) : IOException(message)
 
 data class WavFormat(
@@ -20,6 +23,7 @@ data class WavFormat(
 
     companion object {
         const val HEADER_BYTES = 44
+        const val MAX_WAV_BYTES = 0xFFFF_FFFFL - 36L
         private const val UINT32_MAX = 0xFFFF_FFFFL
 
         fun read(input: InputStream): WavFormat {
@@ -121,7 +125,7 @@ data class WavFormat(
             val align = channels * 2
             val rate = sampleRate.toLong() * align
             require(rate <= UINT32_MAX) { "Byte rate exceeds WAV limit" }
-            require(dataSize >= 0 && dataSize <= UINT32_MAX - 36L) { "Data exceeds RIFF/WAV size limit" }
+            require(dataSize >= 0 && dataSize <= MAX_WAV_BYTES) { "Data exceeds RIFF/WAV size limit" }
             require(dataSize % align == 0L) { "PCM data must contain complete frames" }
 
             output.write("RIFF".toByteArray(Charsets.US_ASCII))
@@ -137,6 +141,12 @@ data class WavFormat(
             output.write("data".toByteArray(Charsets.US_ASCII))
             writeUInt32(output, dataSize)
         }
+
+        /** PCM16 file size including the canonical header. */
+        fun outputBytes(frames: Long, channels: Int): Long = Math.addExact(
+            Math.multiplyExact(Math.multiplyExact(frames, channels.toLong()), 2L),
+            HEADER_BYTES.toLong()
+        )
 
         private fun readFully(input: InputStream, bytes: ByteArray) {
             var offset = 0

@@ -1,5 +1,6 @@
 package com.ottomusic.sketch.data
 
+import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
 import com.ottomusic.sketch.core.UnsupportedWavEncodingException
 import com.ottomusic.sketch.core.WavFormat
 import java.io.File
@@ -40,7 +41,7 @@ internal object WavFileImporter {
         } catch (malformed: IOException) {
             throw AudioImportException("Invalid WAV file: ${malformed.message ?: "malformed RIFF/WAVE data"}.", malformed)
         }
-        if (format.channels !in 1..2 || format.sampleRate !in 8_000..192_000) {
+        if (format.channels !in 1..2 || format.sampleRate !in SUPPORTED_SAMPLE_RATES) {
             throw AudioImportException("This WAV format is unsupported. Use mono or stereo PCM16 WAV at 8–192 kHz.")
         }
         if (format.dataSize == 0L) throw AudioImportException("This WAV contains no audio samples.")

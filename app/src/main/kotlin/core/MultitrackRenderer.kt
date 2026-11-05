@@ -23,7 +23,6 @@ class MultitrackRenderCancelledException : IOException("Mix render cancelled")
 /** Sequential PCM16 rendering; working sample memory is limited by one output block and one source block. */
 object MultitrackRenderer {
     const val BLOCK_FRAMES = 1_024
-    private const val MAX_WAV_DATA_BYTES = 0xFFFF_FFFFL - 36L
 
     fun twoTakeMix(a: Project, b: Project, offsetFrames: Long, gainA: Int, gainB: Int): Project {
         require(a.id != b.id) { "Choose two different recordings." }
@@ -51,7 +50,7 @@ object MultitrackRenderer {
     }
 
     fun frameCount(tracks: List<ProjectTrack>, sampleRate: Int): Long {
-        require(sampleRate in 8_000..192_000)
+        require(sampleRate in SUPPORTED_SAMPLE_RATES)
         return tracks.flatMap(ProjectTrack::clips).maxOfOrNull { clip ->
             Math.addExact(clip.positionFrames, clipFrameCount(clip, sampleRate))
         } ?: 0L
@@ -73,7 +72,7 @@ object MultitrackRenderer {
         val channels = project.tracks.flatMap(ProjectTrack::clips).maxOfOrNull { it.source.channels } ?: 1
         require(channels == project.channels) { "Arrangement channel count does not match its sources." }
         val dataBytes = Math.multiplyExact(Math.multiplyExact(frames, channels.toLong()), 2L)
-        if (dataBytes > MAX_WAV_DATA_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
+        if (dataBytes > WavFormat.MAX_WAV_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
 
         val target = destination.absoluteFile
         val parent = target.parentFile ?: throw IOException("No parent directory for the mix output.")
@@ -143,7 +142,7 @@ object MultitrackRenderer {
     private data class RateRatio(val numerator: Long, val denominator: Long)
 
     private fun rateRatio(sourceRate: Int, targetRate: Int, rateCorrectionPpm: Int): RateRatio {
-        require(sourceRate in 8_000..192_000 && targetRate in 8_000..192_000)
+        require(sourceRate in SUPPORTED_SAMPLE_RATES && targetRate in SUPPORTED_SAMPLE_RATES)
         require(rateCorrectionPpm in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM)
         val numerator = sourceRate.toLong() * (1_000_000L + rateCorrectionPpm)
         val denominator = targetRate.toLong() * 1_000_000L

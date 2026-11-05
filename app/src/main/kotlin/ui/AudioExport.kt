@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import com.ottomusic.sketch.data.isOutOfDiskSpace
 import java.io.File
 import java.io.FileNotFoundException
 import java.nio.file.AccessDeniedException
@@ -20,9 +21,7 @@ internal fun exportFailureMessage(failure: Throwable, fallback: String): String 
     if (causes.any(::isDestinationPermissionFailure)) {
         return "Export destination is not writable. Try again."
     }
-    if (causes.any {
-            it.message?.contains("ENOSPC", true) == true || it.message?.contains("no space", true) == true
-        }) {
+    if (causes.any(::isOutOfDiskSpace)) {
         return "Not enough storage to save this export."
     }
     return failure.message?.takeIf(String::isNotBlank) ?: fallback

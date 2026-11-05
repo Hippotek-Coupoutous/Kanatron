@@ -20,9 +20,12 @@ import com.ottomusic.sketch.core.AudioClockPoint
 import com.ottomusic.sketch.core.OverdubRoute
 import com.ottomusic.sketch.core.OverdubTiming
 import com.ottomusic.sketch.core.ProjectArrangementActions
+import com.ottomusic.sketch.core.ProjectClip
 import com.ottomusic.sketch.core.RecordingLevel
 import com.ottomusic.sketch.core.SharedAudioTimeline
+import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.TrimRange
+import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.data.OverdubCalibrationStore
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
@@ -216,7 +219,7 @@ class RecordingService : Service() {
         }
         val id = intent?.getStringExtra(EXTRA_OVERDUB_PROJECT_ID)?.takeIf(String::isNotBlank)
         val clickBpm = intent?.getIntExtra(EXTRA_OVERDUB_CLICK_BPM, 0) ?: 0
-        monitorClick = if (clickBpm in 30..300) runCatching {
+        monitorClick = if (clickBpm in SUPPORTED_BPM) runCatching {
             MonitorClick(
                 clickBpm,
                 intent?.getIntExtra(EXTRA_OVERDUB_CLICK_BEATS, 4) ?: 4,
@@ -500,7 +503,7 @@ class RecordingService : Service() {
                     clockDiscontinuous,
                     alignment?.rateCorrectionPpm
                 )
-                val safeCorrection = correction?.takeIf { it in -2_000..2_000 } ?: 0
+                val safeCorrection = correction?.takeIf { it in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM } ?: 0
                 val leadInTrim = if (alignment == null || calibratedPlacement.leadInFrames == 0L) 0L else {
                     OverdubTiming.sourceTrimForLeadIn(
                         calibratedPlacement.leadInFrames, savedTake.sampleRate, base.sampleRate, safeCorrection
@@ -517,7 +520,7 @@ class RecordingService : Service() {
                     }
                     val clip = track?.clips?.firstOrNull { it.source.wav == savedTake.sourceWav }
                     if (track != null && clip != null) {
-                        if (correction != null && correction in -2_000..2_000 && correction != 0) {
+                        if (correction != null && correction in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM && correction != 0) {
                             edited = ProjectArrangementActions.setRateCorrection(edited, track.id, clip.id, correction)
                         }
                         if (leadInTrim > 0L) {
@@ -590,7 +593,7 @@ class RecordingService : Service() {
     }
 
     private fun hasRecoverablePcm(take: RecordingTake): Boolean =
-        runCatching { take.file.isFile && take.file.length() >= 44L + take.channels * 2L }.getOrDefault(false)
+        runCatching { take.file.isFile && take.file.length() >= WavFormat.HEADER_BYTES + take.channels * 2L }.getOrDefault(false)
 
     private fun promoteToForeground(text: String) {
         val notification = notification(text)

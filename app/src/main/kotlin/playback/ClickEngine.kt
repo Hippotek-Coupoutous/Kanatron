@@ -3,6 +3,7 @@ package com.ottomusic.sketch.playback
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.frameAtBeat
 import com.ottomusic.sketch.core.mixClicks
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,8 +29,8 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
     /** Current metronome state, safe to collect from the UI. */
     val state: StateFlow<ClickState> = _state.asStateFlow()
 
-    private val accent = synthesizeClick(sampleRate, 1500.0, 0.6)
-    private val normal = synthesizeClick(sampleRate, 1000.0, 0.4)
+    private val accent = synthesizeClick(sampleRate, ACCENT_CLICK_HZ, ACCENT_CLICK_AMPLITUDE)
+    private val normal = synthesizeClick(sampleRate, NORMAL_CLICK_HZ, NORMAL_CLICK_AMPLITUDE)
     private val lock = Any()
     private var track: AudioTrack? = null
     private var thread: Thread? = null
@@ -87,7 +88,7 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
 
     /** Sets the tempo, clamped to 30..300 BPM; keeps the bar position when running. */
     fun setBpm(bpm: Int) {
-        val b = bpm.coerceIn(30, 300)
+        val b = bpm.coerceIn(SUPPORTED_BPM.first, SUPPORTED_BPM.last)
         synchronized(lock) {
             // Already waiting for an anchor beat (two quick changes): that beat simply takes the new tempo.
             if (running && framePosition >= anchorFrame) {

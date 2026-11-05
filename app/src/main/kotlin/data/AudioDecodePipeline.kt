@@ -4,6 +4,7 @@ import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
 import com.ottomusic.sketch.core.WavFormat
 import java.io.Closeable
 import java.io.File
@@ -121,7 +122,7 @@ internal class AudioDecodePipeline(
             throw cancelled
         } catch (failure: Throwable) {
             if (failure is AudioImportException) throw failure
-            if (isNoSpace(failure)) throw AudioImportException("Not enough storage to decode this audio file.", failure)
+            if (isOutOfDiskSpace(failure)) throw AudioImportException("Not enough storage to decode this audio file.", failure)
             throw AudioImportException("This audio file is unsupported or unreadable.", failure)
         } finally {
             if (!complete) output.delete()
@@ -129,7 +130,7 @@ internal class AudioDecodePipeline(
     }
 
     private fun validateFormat(format: DecoderFormat) {
-        if (format.sampleRate !in 8_000..192_000 || format.channels !in 1..2) {
+        if (format.sampleRate !in SUPPORTED_SAMPLE_RATES || format.channels !in 1..2) {
             throw AudioImportException("Only mono or stereo audio at 8–192 kHz is supported.")
         }
     }
@@ -148,9 +149,6 @@ internal class AudioDecodePipeline(
             }
         }
     }
-
-    private fun isNoSpace(failure: Throwable): Boolean = generateSequence(failure) { it.cause }
-        .any { it.message?.contains("ENOSPC", ignoreCase = true) == true || it.message?.contains("no space", ignoreCase = true) == true }
 
     private companion object {
         const val MAX_DURATION_MINUTES = 60L

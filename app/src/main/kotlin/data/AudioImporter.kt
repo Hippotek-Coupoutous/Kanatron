@@ -3,6 +3,8 @@ package com.ottomusic.sketch.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.system.ErrnoException
+import android.system.OsConstants
 import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
 import java.io.FileOutputStream
@@ -72,7 +74,7 @@ internal class AudioImporter(private val context: Context) {
             return result
         } catch (failure: Throwable) {
             if (failure is AudioImportException) throw failure
-            if (isNoSpace(failure)) throw AudioImportException("Not enough storage to import this audio file.", failure)
+            if (isOutOfDiskSpace(failure)) throw AudioImportException("Not enough storage to import this audio file.", failure)
             throw failure
         } finally {
             stagedFile?.delete()
@@ -101,7 +103,7 @@ internal class AudioImporter(private val context: Context) {
                     try {
                         target.write(buffer, 0, count)
                     } catch (failure: IOException) {
-                        if (isNoSpace(failure)) throw AudioImportException("Not enough storage to stage this audio file.", failure)
+                        if (isOutOfDiskSpace(failure)) throw AudioImportException("Not enough storage to stage this audio file.", failure)
                         throw failure
                     }
                     copied += count
@@ -143,10 +145,15 @@ internal class AudioImporter(private val context: Context) {
         if (requiredBytes > 0L && free < requiredBytes) throw AudioImportException("Not enough free storage to import this audio file.")
     }
 
-    private fun isNoSpace(failure: Throwable): Boolean = generateSequence(failure) { it.cause }
-        .any { it.message?.contains("ENOSPC", ignoreCase = true) == true || it.message?.contains("no space", ignoreCase = true) == true }
-
     internal companion object {
         const val COPY_BUFFER_BYTES = 64 * 1024
     }
 }
+
+/** True when any cause reports a full disk. errno is authoritative; the text check stays for wrapped messages. */
+internal fun isOutOfDiskSpace(failure: Throwable): Boolean =
+    generateSequence(failure) { it.cause }.any { cause ->
+        cause is ErrnoException && cause.errno == OsConstants.ENOSPC ||
+            cause.message?.contains("ENOSPC", ignoreCase = true) == true ||
+            cause.message?.contains("no space", ignoreCase = true) == true
+    }

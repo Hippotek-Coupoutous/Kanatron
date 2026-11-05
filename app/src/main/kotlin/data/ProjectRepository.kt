@@ -3,6 +3,8 @@ package com.ottomusic.sketch.data
 import android.content.Context
 import com.ottomusic.sketch.core.ExportPreflight
 import com.ottomusic.sketch.core.MultitrackRenderer
+import com.ottomusic.sketch.core.PROJECT_ID
+import com.ottomusic.sketch.core.PROJECT_ID_PATTERN
 import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.ProjectArrangementActions
 import com.ottomusic.sketch.core.ProjectArrangementSnapshot
@@ -10,6 +12,7 @@ import com.ottomusic.sketch.core.ProjectAudioSource
 import com.ottomusic.sketch.core.ProjectClip
 import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.RecordingCore
+import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.platform.PlatformPorts
@@ -49,15 +52,13 @@ class ProjectRepository(context: Context) {
     fun audioFile(project: Project): File {
         require(!project.isArrangement) { "Arranged projects use their rendered playback file." }
         val name = File(project.sourceWav).name
-        require(name.matches(Regex("(?:take-[A-Za-z0-9-]{1,80}(?:\\.partial)?|import-[A-Za-z0-9-]{1,80})\\.wav"))) { "Invalid recording path" }
+        require(name.matches(RECORDING_PATH)) { "Invalid recording path" }
         return File(recordings, name)
     }
 
     private fun sourceFile(source: ProjectAudioSource): File {
         val name = File(source.wav).name
-        require(source.wav == "recordings/$name" && name.matches(
-            Regex("(?:take-[A-Za-z0-9-]{1,80}(?:\\.partial)?|import-[A-Za-z0-9-]{1,80})\\.wav")
-        )) { "Invalid arrangement source path." }
+        require(source.wav == "recordings/$name" && RECORDING_PATH.matches(name)) { "Invalid arrangement source path." }
         return File(recordings, name)
     }
 
@@ -79,12 +80,12 @@ class ProjectRepository(context: Context) {
             cleanupPreviewRenderTemps()
             val expectedBytes = Math.addExact(
                 Math.multiplyExact(Math.multiplyExact(project.totalFrames, project.channels.toLong()), 2L),
-                44L
+                WavFormat.HEADER_BYTES.toLong()
             )
             if (expectedBytes > MAX_PREVIEW_BYTES) {
                 throw IOException("This arrangement is too large for the preview cache. Shorten its clips and try again.")
             }
-            val fingerprint = sha256("${project.sampleRate}|${project.channels}|${project.tracks}")
+            val fingerprint = sha256Hex("${project.sampleRate}|${project.channels}|${project.tracks}")
             val target = File(arrangementPreviews, "${project.id}.$fingerprint.wav")
             if (target.isFile && isValidPreview(target, project)) {
                 target.setLastModified(System.currentTimeMillis())
@@ -114,9 +115,9 @@ class ProjectRepository(context: Context) {
         cleanupArrangementWorkTemps()
         val expectedBytes = Math.addExact(
             Math.multiplyExact(Math.multiplyExact(project.totalFrames, project.channels.toLong()), 2L),
-            44L
+            WavFormat.HEADER_BYTES.toLong()
         )
-        if (expectedBytes > 0xFFFF_FFFFL - 36L) throw IOException("This WAV mix exceeds the supported file size.")
+        if (expectedBytes > WavFormat.MAX_WAV_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
         if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(arrangementWork), expectedBytes)) {
             throw IOException("Not enough free storage to prepare the arrangement for export.")
         }
@@ -134,7 +135,7 @@ class ProjectRepository(context: Context) {
         cancelled: AtomicBoolean
     ): com.ottomusic.sketch.core.MultitrackRenderResult {
         val sources = mapOf(a.id to playbackFile(a), b.id to playbackFile(b))
-        val bytes = Math.addExact(Math.multiplyExact(mix.totalFrames, mix.channels * 2L), 44L)
+        val bytes = Math.addExact(Math.multiplyExact(mix.totalFrames, mix.channels * 2L), WavFormat.HEADER_BYTES.toLong())
         val parent = destination.absoluteFile.parentFile ?: throw IOException("No mix output folder.")
         if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(parent), bytes)) {
             throw IOException("Not enough free storage to save this mix.")
@@ -143,7 +144,7 @@ class ProjectRepository(context: Context) {
     }
 
     fun createArrangement(id: String, name: String, sources: List<Project>): Project {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}"))) { "Invalid arrangement id" }
+        require(id.matches(PROJECT_ID)) { "Invalid arrangement id" }
         val cleanName = name.trim()
         require(cleanName.isNotEmpty()) { "An arrangement needs a name." }
         require(sources.size in 2..Project.MAX_TRACKS) { "Choose two to ${Project.MAX_TRACKS} recordings." }
@@ -246,7 +247,7 @@ class ProjectRepository(context: Context) {
     private fun cleanupPreviewCache(keep: File?) {
         cleanupPreviewRenderTemps()
         val previews = arrangementPreviews.listFiles { file ->
-            file.isFile && file.name.matches(Regex("[A-Za-z0-9-]{1,80}\\.[a-f0-9]{64}\\.wav"))
+            file.isFile && file.name.matches(PREVIEW_PATH)
         }.orEmpty()
         var total = previews.fold(0L) { sum, file ->
             runCatching { Math.addExact(sum, file.length()) }.getOrDefault(Long.MAX_VALUE)
@@ -265,7 +266,7 @@ class ProjectRepository(context: Context) {
     /** Caller holds PREVIEW_LOCK so no live renderer's scratch file can be removed. */
     private fun cleanupPreviewRenderTemps() {
         arrangementPreviews.listFiles { file ->
-            file.isFile && file.name.matches(Regex("mix-render-[A-Za-z0-9]+\\.tmp"))
+            file.isFile && file.name.matches(MIX_RENDER_TEMP)
         }.orEmpty().forEach { it.delete() }
     }
 
@@ -273,8 +274,8 @@ class ProjectRepository(context: Context) {
     private fun cleanupArrangementWorkTemps() {
         arrangementWork.listFiles { file ->
             file.isFile && (
-                file.name.matches(Regex("mix-source-[A-Za-z0-9]+\\.wav")) ||
-                    file.name.matches(Regex("mix-render-[A-Za-z0-9]+\\.tmp"))
+                file.name.matches(MIX_SOURCE_TEMP) ||
+                    file.name.matches(MIX_RENDER_TEMP)
                 )
         }.orEmpty().forEach { it.delete() }
     }
@@ -316,12 +317,12 @@ class ProjectRepository(context: Context) {
     }
 
     fun importOutput(id: String): File {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}"))) { "Invalid import id" }
+        require(id.matches(PROJECT_ID)) { "Invalid import id" }
         return File(recordings, "import-$id.decoding.wav")
     }
 
     fun saveImported(id: String, decodedWav: File, sampleRate: Int, channels: Int, frames: Long, sourceName: String): Project {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}"))) { "Invalid import id" }
+        require(id.matches(PROJECT_ID)) { "Invalid import id" }
         require(frames > 0L)
         val finalFile = File(recordings, "import-$id.wav")
         if (decodedWav.absoluteFile != finalFile.absoluteFile) {
@@ -394,20 +395,20 @@ class ProjectRepository(context: Context) {
 
     /** Repairs crash-left partial WAVs before exposing the library. */
     private fun recoverPartials(activePath: String? = null): List<Project> {
-        return recordings.listFiles { file -> file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.partial\\.wav")) }.orEmpty().mapNotNull { partial ->
+        return recordings.listFiles { file -> file.name.matches(TAKE_PARTIAL_PATH) }.orEmpty().mapNotNull { partial ->
             runCatching { recoverPartial(partial, activePath) }.getOrNull()
         }
     }
 
     /** Rebuilds missing project records from complete take WAVs left by a process death during save. */
     private fun recoverOrphanTakes(): List<Project> {
-        return recordings.listFiles { file -> file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.wav")) }
+        return recordings.listFiles { file -> file.name.matches(TAKE_PATH) }
             .orEmpty().mapNotNull { wav -> runCatching { recoverOrphan(wav) }.getOrNull() }
     }
 
     /** Rebuilds project records from imported WAVs committed before a process death. */
     fun recoverOrphanImports(): List<Project> = recordings.listFiles { file ->
-        file.name.matches(Regex("import-[A-Za-z0-9-]{1,80}\\.wav"))
+        file.name.matches(IMPORT_PATH)
     }.orEmpty().mapNotNull { wav ->
         val id = wav.name.removePrefix("import-").removeSuffix(".wav")
         if (projectFile(id).isFile) return@mapNotNull null
@@ -415,7 +416,7 @@ class ProjectRepository(context: Context) {
         if (!refs.fullyReadable || refs.referenced) return@mapNotNull null
         runCatching {
             val format = wav.inputStream().use(WavFormat::read)
-            require(format.channels in 1..2 && format.sampleRate in 8_000..192_000 && format.frameCount > 0L)
+            require(format.channels in 1..2 && format.sampleRate in SUPPORTED_SAMPLE_RATES && format.frameCount > 0L)
             createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered import")
         }.getOrNull()
     }
@@ -425,7 +426,7 @@ class ProjectRepository(context: Context) {
 
     fun silentRecoveryCandidates(activePath: String? = null): List<File> =
         recordings.listFiles {
-            it.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.partial\\.wav")) || it.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.wav"))
+            it.name.matches(TAKE_PARTIAL_PATH) || it.name.matches(TAKE_PATH)
         }
             .orEmpty().filter { file ->
                 file.absolutePath != activePath && runCatching {
@@ -437,25 +438,25 @@ class ProjectRepository(context: Context) {
     fun recoverSilentTake(file: File): Project {
         require(file.absoluteFile.parentFile == recordings.absoluteFile) { "Invalid recovered take path" }
         return when {
-            file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.partial\\.wav")) -> recoverPartial(file, null)
-            file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.wav")) -> recoverOrphan(file)
+            file.name.matches(TAKE_PARTIAL_PATH) -> recoverPartial(file, null)
+            file.name.matches(TAKE_PATH) -> recoverOrphan(file)
             else -> null
         } ?: error("Silent recording could not be recovered")
     }
 
     private fun recoverPartial(partial: File, activePath: String?): Project? {
         if (partial.absolutePath == activePath) return null
-        if (!partial.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.partial\\.wav"))) return null
+        if (!partial.name.matches(TAKE_PARTIAL_PATH)) return null
         val refs = scanSourceReferences("recordings/${partial.name}")
         if (!refs.fullyReadable || refs.referenced) return null
         val id = partial.name.removePrefix("take-").removeSuffix(".partial.wav")
-        if (!id.matches(Regex("[A-Za-z0-9-]{1,80}")) || get(id) != null) return null
+        if (!id.matches(PROJECT_ID) || get(id) != null) return null
         val dataBytes = RecordingCore.repairableDataBytes(partial.length(), channels = 1)
         if (dataBytes < 2L) return null
-        val allZero = RecordingCore.allSamplesZero(partial, RecordingCore.WAV_HEADER_BYTES, dataBytes)
+        val allZero = RecordingCore.allSamplesZero(partial, WavFormat.HEADER_BYTES.toLong(), dataBytes)
         val sampleRate = readRateFromPlaceholderOrDefault(partial)
         RandomAccessFile(partial, "rw").use { file ->
-            file.setLength(RecordingCore.WAV_HEADER_BYTES + dataBytes)
+            file.setLength(WavFormat.HEADER_BYTES + dataBytes)
             file.seek(0)
             file.write(RecordingCore.header(sampleRate = sampleRate, channels = 1, dataBytes = dataBytes))
             file.fd.sync()
@@ -474,7 +475,7 @@ class ProjectRepository(context: Context) {
         val refs = scanSourceReferences("recordings/${wav.name}")
         if (!refs.fullyReadable || refs.referenced) return null
         val id = wav.name.removePrefix("take-").removeSuffix(".wav")
-        if (!id.matches(Regex("[A-Za-z0-9-]{1,80}")) || get(id) != null) return null
+        if (!id.matches(PROJECT_ID) || get(id) != null) return null
         val format = wav.inputStream().use(WavFormat::read)
         require(format.channels == 1 && format.frameCount > 0L) { "Invalid recovered take format" }
         require(format.dataOffset + format.dataSize <= wav.length()) { "Truncated recovered take" }
@@ -483,15 +484,15 @@ class ProjectRepository(context: Context) {
     }
 
     private fun isSilentRecoveryCandidate(file: File): Boolean {
-        val partial = file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.partial\\.wav"))
-        val orphan = file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.wav"))
+        val partial = file.name.matches(TAKE_PARTIAL_PATH)
+        val orphan = file.name.matches(TAKE_PATH)
         if (!partial && !orphan) return false
         val id = if (partial) file.name.removePrefix("take-").removeSuffix(".partial.wav")
         else file.name.removePrefix("take-").removeSuffix(".wav")
-        if (!id.matches(Regex("[A-Za-z0-9-]{1,80}")) || get(id) != null) return false
+        if (!id.matches(PROJECT_ID) || get(id) != null) return false
         return if (partial) {
             val bytes = RecordingCore.repairableDataBytes(file.length(), channels = 1)
-            bytes >= 2L && RecordingCore.allSamplesZero(file, RecordingCore.WAV_HEADER_BYTES, bytes)
+            bytes >= 2L && RecordingCore.allSamplesZero(file, WavFormat.HEADER_BYTES.toLong(), bytes)
         } else {
             val format = file.inputStream().use(WavFormat::read)
             format.channels == 1 && format.frameCount > 0L &&
@@ -509,7 +510,7 @@ class ProjectRepository(context: Context) {
         silent: Boolean = false
     ): Project? {
         if (frames <= 0L) return null
-        require(takeId.matches(Regex("[A-Za-z0-9-]{1,80}"))) { "Invalid recording id" }
+        require(takeId.matches(PROJECT_ID)) { "Invalid recording id" }
         synchronized(PROJECT_LOCK) {
             val metadata = projectFile(takeId)
             if (metadata.exists() || File(metadata.path + ".bak").exists() || File(metadata.path + ".new").exists()) {
@@ -549,7 +550,7 @@ class ProjectRepository(context: Context) {
 
     private fun validateCompletedTake(wav: File, sampleRate: Int, channels: Int, frames: Long) {
         val message = "Recording WAV header does not match captured audio. The partial was kept for startup recovery."
-        if (!wav.isFile || sampleRate !in 8_000..192_000 || channels !in 1..2 || frames <= 0L) {
+        if (!wav.isFile || sampleRate !in SUPPORTED_SAMPLE_RATES || channels !in 1..2 || frames <= 0L) {
             throw IOException(message)
         }
         val format = try {
@@ -598,11 +599,8 @@ class ProjectRepository(context: Context) {
         return project
     }
 
-    private fun sha256(text: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-
     private fun projectFile(id: String): File {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}"))) { "Invalid recording id" }
+        require(id.matches(PROJECT_ID)) { "Invalid recording id" }
         return File(projects, "$id.json")
     }
 
@@ -619,11 +617,18 @@ class ProjectRepository(context: Context) {
                     ((header[25].toLong() and 0xFF) shl 8) or
                     ((header[26].toLong() and 0xFF) shl 16) or
                     ((header[27].toLong() and 0xFF) shl 24)
-                sampleRate.toInt().takeIf { sampleRate in 8_000L..192_000L } ?: 48_000
+                sampleRate.toInt().takeIf { sampleRate in SUPPORTED_SAMPLE_RATES.first.toLong()..SUPPORTED_SAMPLE_RATES.last.toLong() } ?: 48_000
             }
         }.getOrDefault(48_000)
 
     internal companion object {
+        private val RECORDING_PATH = Regex("(?:take-$PROJECT_ID_PATTERN(?:\\.partial)?|import-$PROJECT_ID_PATTERN)\\.wav")
+        private val TAKE_PARTIAL_PATH = Regex("take-$PROJECT_ID_PATTERN\\.partial\\.wav")
+        private val TAKE_PATH = Regex("take-$PROJECT_ID_PATTERN\\.wav")
+        private val IMPORT_PATH = Regex("import-$PROJECT_ID_PATTERN\\.wav")
+        private val PREVIEW_PATH = Regex("$PROJECT_ID_PATTERN\\.[a-f0-9]{64}\\.wav")
+        private val MIX_RENDER_TEMP = Regex("mix-render-[A-Za-z0-9]+\\.tmp")
+        private val MIX_SOURCE_TEMP = Regex("mix-source-[A-Za-z0-9]+\\.wav")
         private val PROJECT_LOCK = Any()
         private val PREVIEW_LOCK = Any()
         private val ARRANGEMENT_WORK_LOCK = Any()
@@ -631,3 +636,7 @@ class ProjectRepository(context: Context) {
         private const val MAX_PREVIEW_COUNT = 8
     }
 }
+
+/** Lowercase SHA-256 hex, shared by file fingerprints and retention metadata. */
+internal fun sha256Hex(text: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

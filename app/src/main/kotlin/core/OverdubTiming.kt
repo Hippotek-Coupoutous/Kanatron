@@ -12,9 +12,9 @@ data class OverdubRoute(
 ) {
     init {
         require(routeKey.isNotBlank() && displayName.isNotBlank())
-        require(captureSampleRate in 8_000..192_000)
-        require(backingSampleRate in 8_000..192_000)
-        require(projectSampleRate in 8_000..192_000)
+        require(captureSampleRate in SUPPORTED_SAMPLE_RATES)
+        require(backingSampleRate in SUPPORTED_SAMPLE_RATES)
+        require(projectSampleRate in SUPPORTED_SAMPLE_RATES)
     }
 }
 
@@ -28,9 +28,9 @@ data class OverdubCalibration(
 ) {
     init {
         require(routeKey.isNotBlank())
-        require(captureSampleRate in 8_000..192_000)
-        require(backingSampleRate in 8_000..192_000)
-        require(projectSampleRate in 8_000..192_000)
+        require(captureSampleRate in SUPPORTED_SAMPLE_RATES)
+        require(backingSampleRate in SUPPORTED_SAMPLE_RATES)
+        require(projectSampleRate in SUPPORTED_SAMPLE_RATES)
     }
 
     fun matches(route: OverdubRoute): Boolean =
@@ -54,7 +54,7 @@ object OverdubTiming {
         if (clockDiscontinuous) null else timestampPpm
 
     fun framesFromMilliseconds(milliseconds: Double, sampleRate: Int): Long {
-        require(milliseconds.isFinite() && sampleRate in 8_000..192_000)
+        require(milliseconds.isFinite() && sampleRate in SUPPORTED_SAMPLE_RATES)
         return BigDecimal.valueOf(milliseconds).multiply(BigDecimal.valueOf(sampleRate.toLong()))
             .divide(BigDecimal.valueOf(1_000L), 0, RoundingMode.HALF_UP).longValueExact()
     }
@@ -62,8 +62,8 @@ object OverdubTiming {
     /** Source frames to trim when the measured start falls before project frame zero. */
     fun sourceTrimForLeadIn(leadInFrames: Long, sourceRate: Int, projectRate: Int, rateCorrectionPpm: Int = 0): Long {
         require(leadInFrames >= 0L)
-        require(sourceRate in 8_000..192_000 && projectRate in 8_000..192_000)
-        require(rateCorrectionPpm in -2_000..2_000)
+        require(sourceRate in SUPPORTED_SAMPLE_RATES && projectRate in SUPPORTED_SAMPLE_RATES)
+        require(rateCorrectionPpm in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM)
         val numerator = BigDecimal.valueOf(leadInFrames)
             .multiply(BigDecimal.valueOf(sourceRate.toLong()))
             .multiply(BigDecimal.valueOf(1_000_000L + rateCorrectionPpm))

@@ -7,6 +7,7 @@ import com.ottomusic.sketch.core.AudioClockPoint
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.RecordingLevel
 import com.ottomusic.sketch.core.TakeFinalization
+import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.platform.PcmInput
 import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
@@ -179,7 +180,7 @@ class WavRecorder(
                 val aligned = frameAligner.align(buffer, count, alignedBuffer)
                 if (aligned == 0) continue
                 val nextBytes = capturedBytes + aligned
-                if (nextBytes > 0xFFFF_FFFFL - 36L) throw IllegalStateException("WAV size limit reached")
+                if (nextBytes > WavFormat.MAX_WAV_BYTES) throw IllegalStateException("WAV size limit reached")
                 try {
                     output.write(alignedBuffer, 0, aligned)
                 } catch (failure: IOException) {
@@ -211,7 +212,7 @@ class WavRecorder(
                         RandomAccessFile(file, "rw").use { outputFile ->
                             outputFile.seek(0)
                             outputFile.write(RecordingCore.header(openedRate, openedChannels, capturedBytes))
-                            outputFile.setLength(RecordingCore.WAV_HEADER_BYTES + capturedBytes)
+                            outputFile.setLength(WavFormat.HEADER_BYTES + capturedBytes)
                             outputFile.fd.sync()
                         }
                     }

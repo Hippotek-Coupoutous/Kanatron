@@ -12,15 +12,13 @@ data class RecordingLevel(val peak: Float, val rms: Float) {
 
 /** Pure recording arithmetic shared by the recorder. */
 object RecordingCore {
-    const val WAV_HEADER_BYTES = 44L
-
     fun header(sampleRate: Int, channels: Int, dataBytes: Long): ByteArray =
-        ByteArrayOutputStream(44).also { WavFormat.writeHeader(it, channels, sampleRate, dataBytes) }.toByteArray()
+        ByteArrayOutputStream(WavFormat.HEADER_BYTES).also { WavFormat.writeHeader(it, channels, sampleRate, dataBytes) }.toByteArray()
 
     fun repairableDataBytes(fileLength: Long, channels: Int = 1): Long {
         require(channels > 0)
         val align = channels * 2L
-        return ((fileLength - WAV_HEADER_BYTES).coerceAtLeast(0L) / align) * align
+        return ((fileLength - WavFormat.HEADER_BYTES).coerceAtLeast(0L) / align) * align
     }
 
     fun elapsedMillis(frames: Long, sampleRate: Int): Long {

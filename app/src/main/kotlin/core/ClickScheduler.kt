@@ -1,5 +1,8 @@
 package com.ottomusic.sketch.core
 
+/** Metronome tempo accepted by the UI, the service intents and the scheduler. */
+val SUPPORTED_BPM = 30..300
+
 /** Frame of [beat] at a fixed tempo, from the absolute beat index so rounding never accumulates. 120 BPM = 120_000 milli-BPM. */
 fun frameAtBeat(beat: Long, sampleRate: Int, milliBpm: Int): Long {
     require(beat >= 0 && sampleRate > 0 && milliBpm > 0)

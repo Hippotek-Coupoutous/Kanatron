@@ -1,14 +1,21 @@
 package com.ottomusic.sketch.playback
 
+import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.frameAtBeat
 import com.ottomusic.sketch.core.mixClicks
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin
 
+/** Accent and normal click voices shared by the engine and the in-service mixer. */
+internal const val ACCENT_CLICK_HZ = 1_500.0
+internal const val ACCENT_CLICK_AMPLITUDE = 0.6
+internal const val NORMAL_CLICK_HZ = 1_000.0
+internal const val NORMAL_CLICK_AMPLITUDE = 0.4
+
 data class MonitorClick(val bpm: Int, val beatsPerBar: Int, val countInBars: Int = 0) {
     init {
-        require(bpm in 30..300)
+        require(bpm in SUPPORTED_BPM)
         require(beatsPerBar in 1..12)
         require(countInBars in 0..2)
     }
@@ -23,8 +30,8 @@ internal class ClickPcmMixer(
     private val channels: Int,
     private val click: MonitorClick
 ) {
-    private val accent = synthesizeClick(sampleRate, 1_500.0, 0.6)
-    private val normal = synthesizeClick(sampleRate, 1_000.0, 0.4)
+    private val accent = synthesizeClick(sampleRate, ACCENT_CLICK_HZ, ACCENT_CLICK_AMPLITUDE)
+    private val normal = synthesizeClick(sampleRate, NORMAL_CLICK_HZ, NORMAL_CLICK_AMPLITUDE)
     private var mono = ShortArray(0)
 
     fun renderInto(bytes: ByteArray, offset: Int, frames: Int, outputStartFrame: Long) {

@@ -71,6 +71,7 @@ import com.ottomusic.sketch.core.TrimActions
 import com.ottomusic.sketch.core.TrimEdge
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavExporter
+import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.core.parseExactTimeMillis
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.playback.WavPlayer
@@ -313,10 +314,7 @@ private fun TrimEditorLoaded(
                 }
                 exportedFile = withContext(Dispatchers.IO) {
                     val estimatedBytes = when (selectedFormat) {
-                        ExportFormat.Wav -> Math.addExact(
-                            Math.multiplyExact(Math.multiplyExact(selectedRange.frameCount, project.channels.toLong()), 2L),
-                            RecordingCore.WAV_HEADER_BYTES
-                        )
+                        ExportFormat.Wav -> WavFormat.outputBytes(selectedRange.frameCount, project.channels)
                         ExportFormat.M4a -> AacM4aExporter.estimateOutputBytes(
                             selectedRange.frameCount, project.sampleRate, project.channels
                         )
@@ -567,7 +565,7 @@ private fun TrimEditorLoaded(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text("${formatFrame(trim.frameCount, sampleRate)} selected", style = MaterialTheme.typography.bodyMedium)
-                        Text("WAV · ${readableSize(wavOutputBytes(trim.frameCount, project.channels))}", style = MaterialTheme.typography.bodySmall)
+                        Text("WAV · ${readableSize(WavFormat.outputBytes(trim.frameCount, project.channels))}", style = MaterialTheme.typography.bodySmall)
                         Text(
                             "M4A (AAC) · ${readableSize(AacM4aExporter.estimateOutputBytes(trim.frameCount, sampleRate, project.channels))}",
                             style = MaterialTheme.typography.bodySmall
@@ -703,7 +701,6 @@ private fun DrawScope.drawTrimWaveform(
 private fun fineStep(sampleRate: Int): Long = (sampleRate / 100).coerceAtLeast(1).toLong()
 private fun coarseStep(sampleRate: Int): Long = (sampleRate / 10).coerceAtLeast(1).toLong()
 private fun stepFrames(sampleRate: Int, coarse: Boolean): Long = if (coarse) coarseStep(sampleRate) else fineStep(sampleRate)
-private fun wavOutputBytes(frames: Long, channels: Int): Long = 44L + frames * channels * 2L
 private fun readableSize(bytes: Long): String = if (bytes < 1024L * 1024L) "${(bytes + 1023L) / 1024L} KB" else "%.1f MB".format(bytes / (1024.0 * 1024.0))
 
 private fun formatFrame(frame: Long, sampleRate: Int): String {

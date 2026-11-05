@@ -3,7 +3,6 @@ package com.ottomusic.sketch.data
 import android.content.Context
 import com.ottomusic.sketch.core.OverdubCalibration
 import com.ottomusic.sketch.core.OverdubRoute
-import java.security.MessageDigest
 
 /** Device-local timing offsets, kept separate for each exact route and rate combination. */
 internal class OverdubCalibrationStore(context: Context) {
@@ -71,7 +70,6 @@ internal class OverdubCalibrationStore(context: Context) {
             .commit()
     }
 
-    private fun routeId(route: OverdubRoute): String = MessageDigest.getInstance("SHA-256")
-        .digest("${route.routeKey}|${route.captureSampleRate}|${route.backingSampleRate}|${route.projectSampleRate}".toByteArray())
-        .take(12).joinToString("") { "%02x".format(it) }
+    private fun routeId(route: OverdubRoute): String =
+        sha256Hex("${route.routeKey}|${route.captureSampleRate}|${route.backingSampleRate}|${route.projectSampleRate}").take(24)
 }

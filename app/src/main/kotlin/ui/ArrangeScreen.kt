@@ -55,6 +55,7 @@ import com.ottomusic.sketch.core.ProjectTrack
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavExporter
+import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.playback.WavPlayer
 import java.util.UUID
@@ -197,9 +198,7 @@ fun ArrangeScreen(
                 val file = withContext(Dispatchers.IO) {
                     val selected = current.trim
                     val estimated = when (format) {
-                        ArrangeExportFormat.Wav -> Math.addExact(
-                            Math.multiplyExact(Math.multiplyExact(selected.frameCount, current.channels.toLong()), 2L), 44L
-                        )
+                        ArrangeExportFormat.Wav -> WavFormat.outputBytes(selected.frameCount, current.channels)
                         ArrangeExportFormat.M4a -> AacM4aExporter.estimateOutputBytes(selected.frameCount, current.sampleRate, current.channels)
                     }
                     val name = when (format) {

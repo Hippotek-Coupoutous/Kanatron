@@ -45,6 +45,7 @@ import androidx.lifecycle.ViewModelProvider
 import com.ottomusic.sketch.core.ExportFilename
 import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.ResumeStartGate
+import com.ottomusic.sketch.core.SUPPORTED_BPM
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavExporter
 import com.ottomusic.sketch.data.AppViewModel
@@ -101,7 +102,7 @@ class MainActivity : ComponentActivity() {
             ?.let { runCatching { MicrophoneAction.valueOf(it) }.getOrNull() }
         pendingOverdubProjectId = savedInstanceState?.getString(STATE_PENDING_OVERDUB_PROJECT)
         val clickBpm = savedInstanceState?.getInt(STATE_PENDING_CLICK_BPM, 0) ?: 0
-        if (clickBpm in 30..300) pendingClick = runCatching {
+        if (clickBpm in SUPPORTED_BPM) pendingClick = runCatching {
             MonitorClick(
                 clickBpm,
                 savedInstanceState?.getInt(STATE_PENDING_CLICK_BEATS, 4) ?: 4,

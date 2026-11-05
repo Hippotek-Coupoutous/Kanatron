@@ -1,11 +1,11 @@
 package com.ottomusic.sketch.data
 
+import com.ottomusic.sketch.core.PROJECT_ID
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 
 /** Bounded, ID-owned exports with a persisted share grace period. */
 internal class ExportRetention(
@@ -193,12 +193,9 @@ internal class ExportRetention(
         entry
     }.getOrNull()
 
-    private fun metadataFile(name: String): File = File(metadata, sha256(name) + ".owner")
+    private fun metadataFile(name: String): File = File(metadata, sha256Hex(name) + ".owner")
 
     private fun plus(value: Long, amount: Long): Long = runCatching { Math.addExact(value, amount) }.getOrDefault(Long.MAX_VALUE)
-
-    private fun sha256(text: String): String = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
 
     private data class Entry(
         val fileName: String,
@@ -211,7 +208,6 @@ internal class ExportRetention(
 
     private companion object {
         val LOCK = Any()
-        val PROJECT_ID = Regex("[A-Za-z0-9-]{1,80}")
         const val SHARE_GRACE_MS = 7L * 24 * 60 * 60 * 1000
         const val LEGACY_MAX_AGE_MS = 30L * 24 * 60 * 60 * 1000
         const val MAX_BYTES = 512L * 1024 * 1024

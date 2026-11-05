@@ -1,5 +1,9 @@
 package com.ottomusic.sketch.core
 
+/** Charset and length shared by project, track, clip and take ids. */
+const val PROJECT_ID_PATTERN = "[A-Za-z0-9-]{1,80}"
+val PROJECT_ID = Regex(PROJECT_ID_PATTERN)
+
 /** Immutable identity and format metadata for a stored source WAV. */
 data class ProjectAudioSource(
     val wav: String,
@@ -9,7 +13,7 @@ data class ProjectAudioSource(
 ) {
     init {
         require(wav.isNotBlank())
-        require(sampleRate in 8_000..192_000)
+        require(sampleRate in SUPPORTED_SAMPLE_RATES)
         require(channels in 1..2)
         require(totalFrames > 0L)
     }
@@ -26,7 +30,7 @@ data class ProjectClip(
     val rateCorrectionPpm: Int = 0
 ) {
     init {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}")))
+        require(id.matches(PROJECT_ID))
         require(positionFrames >= 0L)
         trim.requireValidFor(source.totalFrames)
         require(gainPermille in 0..2_000)
@@ -47,7 +51,7 @@ data class ProjectTrack(
     val solo: Boolean = false
 ) {
     init {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}")))
+        require(id.matches(PROJECT_ID))
         require(name.isNotBlank())
         require(clips.isNotEmpty())
         require(gainPermille in 0..2_000)
@@ -99,10 +103,10 @@ data class Project(
     internal val migrationPending: Boolean = false
 ) {
     init {
-        require(id.matches(Regex("[A-Za-z0-9-]{1,80}")))
+        require(id.matches(PROJECT_ID))
         require(name.isNotBlank())
         require(if (isArrangement) sourceWav.isEmpty() else sourceWav.isNotBlank())
-        require(sampleRate in 8_000..192_000)
+        require(sampleRate in SUPPORTED_SAMPLE_RATES)
         require(channels in 1..2)
         require(totalFrames > 0)
         trim.requireValidFor(totalFrames)

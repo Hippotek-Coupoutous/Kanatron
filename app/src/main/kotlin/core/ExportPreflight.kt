@@ -4,7 +4,7 @@ object ExportPreflight {
     const val STORAGE_RESERVE_BYTES = 10L * 1024 * 1024
 
     fun requiredBytes(payloadBytes: Long): Long = maxOf(
-        Math.addExact(payloadBytes, RecordingCore.WAV_HEADER_BYTES.toLong()),
+        Math.addExact(payloadBytes, WavFormat.HEADER_BYTES.toLong()),
         STORAGE_RESERVE_BYTES
     )
 

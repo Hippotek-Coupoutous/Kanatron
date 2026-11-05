@@ -6,7 +6,7 @@ import java.util.ArrayDeque
 
 enum class TrimEdge { Start, End }
 
-/** Frame-exact editing commands shared by the UI and host-side adapters. */
+/** Frame-exact editing commands. */
 class TrimActions(
     initialRange: TrimRange,
     private val totalFrames: Long,
@@ -18,7 +18,6 @@ class TrimActions(
 
     var range: TrimRange = initialRange
         private set
-    val undoCount: Int get() = history.size
 
     init {
         initialRange.requireValidFor(totalFrames)
@@ -37,9 +36,6 @@ class TrimActions(
         else endFrame.coerceIn(start + 1L, totalFrames)
         return apply(TrimRange(start, end))
     }
-
-    fun setRangeMs(startMs: Long, endMs: Long, editedEdge: TrimEdge? = null): TrimRange =
-        setRangeMs(BigDecimal.valueOf(startMs), BigDecimal.valueOf(endMs), editedEdge)
 
     fun setRangeMs(startMs: BigDecimal, endMs: BigDecimal, editedEdge: TrimEdge? = null): TrimRange = when (editedEdge) {
         TrimEdge.Start -> setStartAtFrame(millisecondsToFrames(startMs))

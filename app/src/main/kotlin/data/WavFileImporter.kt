@@ -35,20 +35,19 @@ internal object WavFileImporter {
         } catch (unsupported: UnsupportedWavEncodingException) {
             throw AudioImportException(
                 "This WAV format is unsupported. Use mono or stereo PCM16 WAV; 8-bit, 24-bit, and floating-point WAV must be converted first.",
-                unsupported,
-                "unsupportedWav"
+                unsupported
             )
         } catch (malformed: IOException) {
-            throw AudioImportException("Invalid WAV file: ${malformed.message ?: "malformed RIFF/WAVE data"}.", malformed, "invalidWav")
+            throw AudioImportException("Invalid WAV file: ${malformed.message ?: "malformed RIFF/WAVE data"}.", malformed)
         }
         if (format.channels !in 1..2 || format.sampleRate !in 8_000..192_000) {
-            throw AudioImportException("This WAV format is unsupported. Use mono or stereo PCM16 WAV at 8–192 kHz.", errorCode = "unsupportedWav")
+            throw AudioImportException("This WAV format is unsupported. Use mono or stereo PCM16 WAV at 8–192 kHz.")
         }
-        if (format.dataSize == 0L) throw AudioImportException("This WAV contains no audio samples.", errorCode = "invalidWav")
+        if (format.dataSize == 0L) throw AudioImportException("This WAV contains no audio samples.")
         val outputBytes = try {
             Math.addExact(WavFormat.HEADER_BYTES.toLong(), format.dataSize)
         } catch (failure: ArithmeticException) {
-            throw AudioImportException("This WAV is too large to import.", failure, "unsupportedWav")
+            throw AudioImportException("This WAV is too large to import.", failure)
         }
         checkFreeSpace(outputBytes)
 
@@ -77,7 +76,7 @@ internal object WavFileImporter {
             throw cancelled
         } catch (failure: Throwable) {
             if (failure is AudioImportException) throw failure
-            throw AudioImportException("Could not copy PCM samples from this WAV file.", failure, "invalidWav")
+            throw AudioImportException("Could not copy PCM samples from this WAV file.", failure)
         } finally {
             if (!complete) output.delete()
         }

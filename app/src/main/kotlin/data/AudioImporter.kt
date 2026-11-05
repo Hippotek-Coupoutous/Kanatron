@@ -9,7 +9,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
-internal enum class ImportStage { COPYING, DECODING, COMPLETE, CANCELLED, FAILED }
+internal enum class ImportStage { COPYING, DECODING, COMPLETE }
 
 internal data class ImportProgress(
     val stage: ImportStage,
@@ -29,22 +29,7 @@ internal class ImportCancellation {
 
 internal class ImportCancelledException : IOException("Import cancelled")
 
-internal class ImportStateMachine {
-    var stage: ImportStage = ImportStage.COPYING
-        private set
-
-    fun moveTo(next: ImportStage) {
-        val allowed = when (stage) {
-            ImportStage.COPYING -> setOf(ImportStage.DECODING, ImportStage.CANCELLED, ImportStage.FAILED)
-            ImportStage.DECODING -> setOf(ImportStage.COMPLETE, ImportStage.CANCELLED, ImportStage.FAILED)
-            else -> emptySet()
-        }
-        require(next in allowed) { "Invalid import transition: $stage -> $next" }
-        stage = next
-    }
-}
-
-internal class AudioImportException(message: String, cause: Throwable? = null, val errorCode: String? = null) : IOException(message, cause)
+internal class AudioImportException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 internal data class ImportedAudio(
     val sampleRate: Int,
@@ -63,7 +48,7 @@ internal class AudioImporter(private val context: Context) {
     ): ImportedAudio {
         ImportActivePaths.beginOutput(output)
         var stagedFile: File? = null
-        val state = ImportStateMachine()
+        var completed = false
         try {
             val staging = File(context.filesDir, "import-staging").apply { mkdirs() }
             val outputParent = output.parentFile ?: throw AudioImportException("Could not prepare private storage for import.")
@@ -79,25 +64,20 @@ internal class AudioImporter(private val context: Context) {
             copyToPrivate(uri, staged, sourceSize, cancellation) { copied, total ->
                 onProgress(ImportProgress(ImportStage.COPYING, copied, total))
             }
-            state.moveTo(ImportStage.DECODING)
             val result = decode(staged, output, sourceName, cancellation) { written, expected ->
                 onProgress(ImportProgress(ImportStage.DECODING, written, expected))
             }
-            state.moveTo(ImportStage.COMPLETE)
+            completed = true
             onProgress(ImportProgress(ImportStage.COMPLETE, result.totalFrames, result.totalFrames))
             return result
-        } catch (cancelled: ImportCancelledException) {
-            state.moveTo(ImportStage.CANCELLED)
-            throw cancelled
         } catch (failure: Throwable) {
-            if (state.stage == ImportStage.COPYING || state.stage == ImportStage.DECODING) state.moveTo(ImportStage.FAILED)
             if (failure is AudioImportException) throw failure
             if (isNoSpace(failure)) throw AudioImportException("Not enough storage to import this audio file.", failure)
             throw failure
         } finally {
             stagedFile?.delete()
-            if (state.stage != ImportStage.COMPLETE) output.delete()
-            ImportActivePaths.importerFinished(output, stagedFile, state.stage == ImportStage.COMPLETE)
+            if (!completed) output.delete()
+            ImportActivePaths.importerFinished(output, stagedFile, completed)
         }
     }
 
@@ -168,8 +148,5 @@ internal class AudioImporter(private val context: Context) {
 
     internal companion object {
         const val COPY_BUFFER_BYTES = 64 * 1024
-        val activeDecodePaths: Set<String> get() = ImportActivePaths.activeDecodePaths()
-        val activeStagingPaths: Set<String> get() = ImportActivePaths.activeStagingPaths()
-        fun finishActiveImport(output: File) = ImportActivePaths.finishOutput(output)
     }
 }

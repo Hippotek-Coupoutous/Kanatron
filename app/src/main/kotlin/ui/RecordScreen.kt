@@ -35,12 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.recording.RecordingServiceState
-import com.ottomusic.sketch.ui.BigButton
-import com.ottomusic.sketch.ui.RoundButton
-import com.ottomusic.sketch.ui.Synth
-import com.ottomusic.sketch.ui.SynthIcon
-import com.ottomusic.sketch.ui.SynthPanel
-import com.ottomusic.sketch.ui.SynthTopBar
 
 @Composable
 internal fun RecordScreen(

@@ -66,8 +66,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class ArrangeExportFormat(val extension: String, val label: String) {
-    Wav("wav", "WAV"), M4a("m4a", "M4A (AAC)")
+private enum class ArrangeExportFormat(val label: String) {
+    Wav("WAV"), M4a("M4A (AAC)")
 }
 
 private data class DragPreview(val clipId: String, val positionFrames: Long)

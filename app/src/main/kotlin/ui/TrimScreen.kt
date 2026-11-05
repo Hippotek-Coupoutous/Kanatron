@@ -84,8 +84,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class ExportFormat(val extension: String, val label: String) {
-    Wav("wav", "WAV"), M4a("m4a", "M4A (AAC)")
+private enum class ExportFormat(val label: String) {
+    Wav("WAV"), M4a("M4A (AAC)")
 }
 
 @Composable
@@ -541,7 +541,7 @@ private fun TrimEditorLoaded(
             ) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Format", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-                    ExportFormat.values().forEach { format ->
+                    ExportFormat.entries.forEach { format ->
                         if (exportFormat == format) {
                             Button(enabled = false, onClick = {}, modifier = Modifier.heightIn(min = 48.dp)) { Text(format.label) }
                         } else {

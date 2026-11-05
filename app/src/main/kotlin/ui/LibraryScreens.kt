@@ -60,15 +60,6 @@ import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.playback.ClickEngine
 import com.ottomusic.sketch.playback.MonitorClick
 import com.ottomusic.sketch.playback.WavPlayer
-import com.ottomusic.sketch.ui.BigButton
-import com.ottomusic.sketch.ui.IconSquare
-import com.ottomusic.sketch.ui.RoundButton
-import com.ottomusic.sketch.ui.Stepper
-import com.ottomusic.sketch.ui.Synth
-import com.ottomusic.sketch.ui.SynthIcon
-import com.ottomusic.sketch.ui.SynthPanel
-import com.ottomusic.sketch.ui.SynthTopBar
-import com.ottomusic.sketch.ui.Tile
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date

@@ -19,8 +19,10 @@ data class PlayerState(val positionFrames: Long = 0L, val totalFrames: Long = 0L
 
 private data class SeekRequest(val frame: Long, val revision: Long)
 
-/** Streams PCM directly so seek positions are expressed in exact source frames. */
-/** [takesFocus] = false plays alongside an active recording (a layer backing track) without stealing its audio focus. */
+/**
+ * Streams PCM directly so seek positions are expressed in exact source frames.
+ * [takesFocus] = false plays alongside an active recording (a layer backing track) without stealing its audio focus.
+ */
 class WavPlayer(
     context: Context,
     private val wav: File,
@@ -253,7 +255,6 @@ class WavPlayer(
         return PlatformPorts.pcmOutputFactory(appContext).open(format.sampleRate, format.channels)
     }
 
-    @Suppress("DEPRECATION")
     @Synchronized
     private fun requestFocus(): Boolean {
         if (focusRequest != null) return true

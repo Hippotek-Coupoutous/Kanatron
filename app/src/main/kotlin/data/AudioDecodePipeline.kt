@@ -51,7 +51,7 @@ internal fun interface PcmWavSinkFactory {
     fun open(output: File): PcmWavSink
 }
 
-/** The decode loop is platform independent; Android and JVM fakes feed the same events. */
+/** The decode loop only sees decoder events, so it stays platform independent. */
 internal class AudioDecodePipeline(
     private val decoderFactory: AudioDecoderFactory,
     private val sinkFactory: PcmWavSinkFactory,

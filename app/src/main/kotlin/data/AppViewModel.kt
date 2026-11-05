@@ -23,7 +23,6 @@ internal data class AppUiState(
     val projects: List<Project> = emptyList(),
     val audioFiles: Map<String, File> = emptyMap(),
     val libraryLoaded: Boolean = false,
-    val libraryLoading: Boolean = false,
     val unreadableProjectCount: Int = 0,
     val libraryError: String? = null,
     val startupComplete: Boolean = false,
@@ -31,7 +30,6 @@ internal data class AppUiState(
     val selectedProject: Project? = null,
     val selectionError: String? = null,
     val selectionErrorForId: String? = null,
-    val selectionLoading: Boolean = false,
     val importUri: Uri? = null,
     val importProgress: ImportProgress? = null,
     val importFailure: String? = null,
@@ -68,13 +66,13 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
     private fun refreshLibrary(startup: Boolean, selectId: String? = null): Job {
         if (selectId != null) selectProject(selectId, force = true)
         val generation = ++libraryGeneration
-        _state.update { it.copy(libraryLoading = true, libraryError = null) }
+        _state.update { it.copy(libraryError = null) }
         return viewModelScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
                     if (startup) {
                         val activePath = WavRecorder.activePath
-                        repository.sweepStartupOrphans(AudioImporter.activeDecodePaths, AudioImporter.activeStagingPaths)
+                        repository.sweepStartupOrphans(ImportActivePaths.activeDecodePaths(), ImportActivePaths.activeStagingPaths())
                         repository.recoverTakes(activePath)
                         repository.recoverOrphanImports()
                     }
@@ -93,7 +91,6 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                                 result.library.projects.any { project -> project.id == id } && file.isFile
                             },
                             libraryLoaded = true,
-                            libraryLoading = false,
                             unreadableProjectCount = result.library.unreadableCount,
                             libraryError = null
                         )
@@ -104,7 +101,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                 throw cancelled
             } catch (failure: Throwable) {
                 if (generation == libraryGeneration) {
-                    _state.update { it.copy(libraryLoading = false, libraryError = failure.message ?: "Could not read the library.") }
+                    _state.update { it.copy(libraryError = failure.message ?: "Could not read the library.") }
                 }
             }
             if (startup) {
@@ -124,8 +121,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
             it.copy(
                 selectedProject = if (sameSelection) it.selectedProject else null,
                 selectionError = null,
-                selectionErrorForId = null,
-                selectionLoading = id != null
+                selectionErrorForId = null
             )
         }
         if (id == null) return
@@ -140,7 +136,6 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                         it.copy(
                             selectedProject = project,
                             audioFiles = if (wav == null) it.audioFiles - id else it.audioFiles + (id to wav),
-                            selectionLoading = false,
                             selectionError = if (project == null) "Recording could not be found." else null,
                             selectionErrorForId = if (project == null) id else null
                         )
@@ -152,7 +147,6 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                 if (generation == selectionGeneration && selectedProjectState.value == id) {
                     _state.update {
                         it.copy(
-                            selectionLoading = false,
                             selectionError = failure.message ?: "Could not open this recording.",
                             selectionErrorForId = id
                         )
@@ -231,7 +225,7 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                 _state.update { it.copy(importProgress = null, importFailure = failure.message ?: "Could not import this audio file.", importUri = null) }
             } finally {
                 decoded.delete()
-                AudioImporter.finishActiveImport(decoded)
+                ImportActivePaths.finishOutput(decoded)
                 importCancellation = null
                 lastFinishedImportUri = uri
                 importJob = null

@@ -10,10 +10,9 @@ data class RecordingLevel(val peak: Float, val rms: Float) {
     val isLow: Boolean get() = peak < 0.015f
 }
 
-/** Pure recording arithmetic shared by the recorder and JVM tests. */
+/** Pure recording arithmetic shared by the recorder. */
 object RecordingCore {
     const val WAV_HEADER_BYTES = 44L
-    const val PCM16_MONO_BLOCK_ALIGN = 2
 
     fun header(sampleRate: Int, channels: Int, dataBytes: Long): ByteArray =
         ByteArrayOutputStream(44).also { WavFormat.writeHeader(it, channels, sampleRate, dataBytes) }.toByteArray()

@@ -48,7 +48,6 @@ data class RecordingServiceState(
     val inputSilenced: Boolean = false,
     val silent: Boolean = false,
     val interruptionNotice: String? = null,
-    val takeProjectId: String? = null,
     val alignmentNotice: String? = null,
     val overdubRoute: OverdubRoute? = null
 )
@@ -476,9 +475,7 @@ class RecordingService : Service() {
     }
 
     private fun persistTake(sourceRecorder: WavRecorder, take: RecordingTake) {
-        // completeTake() already set `finalizing`; guarding again here skipped saving entirely (E10).
         var project: com.ottomusic.sketch.core.Project? = null
-        var takeProjectId: String? = null
         var alignmentNotice: String? = null
         var error = take.error
         try {
@@ -488,7 +485,6 @@ class RecordingService : Service() {
                 recovered = take.error != null, silent = take.allSamplesZero
             )
             project = savedTake
-            takeProjectId = savedTake?.id
             val base = overdubBaseProject
             if (savedTake != null && base != null) {
                 val alignment = overdubTimeline?.alignmentForFirstCapturedFrame()
@@ -577,7 +573,7 @@ class RecordingService : Service() {
         val interruptionNotice = if (lostFocusPermanently && project != null) {
             "Audio focus was lost. Your recording was saved."
         } else null
-        finishTake(sourceRecorder, take, project, error, interruptionNotice, takeProjectId, alignmentNotice)
+        finishTake(sourceRecorder, take, project, error, interruptionNotice, alignmentNotice)
     }
 
     private fun finishTake(
@@ -586,7 +582,6 @@ class RecordingService : Service() {
         project: com.ottomusic.sketch.core.Project?,
         error: String?,
         interruptionNotice: String? = null,
-        takeProjectId: String? = null,
         alignmentNotice: String? = null
     ) {
         if (recorder === completedRecorder) recorder = null
@@ -599,7 +594,6 @@ class RecordingService : Service() {
             projectId = project?.id,
             silent = take.allSamplesZero,
             interruptionNotice = interruptionNotice,
-            takeProjectId = takeProjectId,
             alignmentNotice = terminalNotice,
             overdubRoute = observedOverdubRoute
         )

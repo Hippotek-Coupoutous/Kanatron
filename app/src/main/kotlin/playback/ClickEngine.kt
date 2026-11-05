@@ -133,7 +133,7 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
             val clickFor = { beat: Long -> if (perBar > 1 && (beat + beat0) % perBar == 0L) accent else normal }
             if (rel >= 0L) mixClicks(block, rel, sampleRate, tempo, clickFor)
             else if (rel > -BLOCK_FRAMES) {
-                // ponytail: the tail of the last old-tempo click is dropped here (< 30 ms, inaudible in practice).
+                // Drops the tail of the last old-tempo click (< 30 ms, inaudible).
                 val tail = ShortArray((BLOCK_FRAMES + rel).toInt())
                 mixClicks(tail, 0L, sampleRate, tempo, clickFor)
                 tail.copyInto(block, (-rel).toInt())

@@ -393,14 +393,14 @@ class ProjectRepository(context: Context) {
     }
 
     /** Repairs crash-left partial WAVs before exposing the library. */
-    fun recoverPartials(activePath: String? = null): List<Project> {
+    private fun recoverPartials(activePath: String? = null): List<Project> {
         return recordings.listFiles { file -> file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.partial\\.wav")) }.orEmpty().mapNotNull { partial ->
             runCatching { recoverPartial(partial, activePath) }.getOrNull()
         }
     }
 
     /** Rebuilds missing project records from complete take WAVs left by a process death during save. */
-    fun recoverOrphanTakes(): List<Project> {
+    private fun recoverOrphanTakes(): List<Project> {
         return recordings.listFiles { file -> file.name.matches(Regex("take-[A-Za-z0-9-]{1,80}\\.wav")) }
             .orEmpty().mapNotNull { wav -> runCatching { recoverOrphan(wav) }.getOrNull() }
     }

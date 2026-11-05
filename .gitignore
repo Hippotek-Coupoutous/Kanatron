@@ -18,5 +18,3 @@ node_modules/
 
 .android-user-home/
 *.iml
-
-!/releases/app-debug.apk

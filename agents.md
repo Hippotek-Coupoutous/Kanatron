@@ -1,4 +1,4 @@
-This is a Music recording, playing and editing application for android 8+ and PC with tuner and a click and the ability to listen and record on top of it.
+This is a Music recording, playing and editing application for Android 8+ (tested on PC through the Android Emulator) with tuner and a click and the ability to listen and record on top of it.
 
 
 

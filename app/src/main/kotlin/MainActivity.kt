@@ -16,14 +16,20 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -59,13 +65,15 @@ import com.ottomusic.sketch.recording.RecordingPhase
 import com.ottomusic.sketch.recording.RecordingService
 import com.ottomusic.sketch.ui.ArrangeScreen
 import com.ottomusic.sketch.ui.AudioSketchTheme
-import com.ottomusic.sketch.ui.DetailScreen
-import com.ottomusic.sketch.ui.HomeScreen
-import com.ottomusic.sketch.ui.MissingAudioScreen
+import com.ottomusic.sketch.ui.LibraryScreen
+import com.ottomusic.sketch.ui.MixEntryScreen
 import com.ottomusic.sketch.ui.MixScreen
 import com.ottomusic.sketch.ui.OverdubCalibrationScreen
 import com.ottomusic.sketch.ui.RecordScreen
+import com.ottomusic.sketch.ui.SketchScreen
 import com.ottomusic.sketch.ui.Synth
+import com.ottomusic.sketch.ui.SynthGlyph
+import com.ottomusic.sketch.ui.SynthIcon
 import com.ottomusic.sketch.ui.TrimScreen
 import com.ottomusic.sketch.ui.TunerScreen
 import com.ottomusic.sketch.ui.shareExport
@@ -278,7 +286,6 @@ private fun AudioSketchApp(
     val appState by appViewModel.state.collectAsState()
     val recording by RecordingService.state.collectAsState()
     val projects = appState.projects
-    val libraryLoaded = appState.libraryLoaded
     val unreadableProjectCount = appState.unreadableProjectCount
     val route = appState.route
     val selectedId = appState.selectedId
@@ -329,6 +336,12 @@ private fun AudioSketchApp(
             appViewModel.navigate(Route.RECORD)
         }
     }
+    // A take keeps running after leaving the recorder, so Sketch leads back to its controls.
+    LaunchedEffect(route, recording.phase) {
+        if (route == Route.SKETCH && recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)) {
+            appViewModel.navigate(Route.RECORD)
+        }
+    }
     LaunchedEffect(recording.projectId, recording.phase, route) {
         val finishedProjectId = recording.projectId
         if (finishedProjectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
@@ -339,168 +352,169 @@ private fun AudioSketchApp(
     LaunchedEffect(appState.importedProjectId) {
         appState.importedProjectId?.let { id ->
             appViewModel.selectProject(id)
-            appViewModel.navigate(Route.DETAIL)
+            appViewModel.setHome(id)
+            appViewModel.navigate(Route.MIX)
             appViewModel.consumeImportedProject(id)
         }
     }
 
     BackHandler(enabled = route != Route.LIBRARY) {
         when (route) {
-            Route.TRIM -> appViewModel.leave(Route.DETAIL, selected?.id ?: selectedId)
-            Route.DETAIL, Route.RECORD, Route.MIX -> appViewModel.leave(Route.LIBRARY)
-            Route.TUNER -> appViewModel.leave(Route.LIBRARY)
-            Route.ARRANGE -> appViewModel.leave(Route.LIBRARY, appState.arrangeProjectId ?: homeId ?: selectedId)
+            Route.SKETCH, Route.MIX, Route.TUNER -> appViewModel.leave(Route.LIBRARY)
+            Route.RECORD -> appViewModel.leave(Route.SKETCH)
+            Route.TRIM -> appViewModel.leave(Route.MIX, selected?.id ?: selectedId)
+            Route.ARRANGE -> appViewModel.leave(Route.MIX, appState.arrangeProjectId ?: homeId ?: selectedId)
+            Route.MIX_TAKES -> appViewModel.leave(Route.MIX)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.RECORD)
             Route.LIBRARY -> Unit
         }
     }
 
-    when (route) {
-        Route.LIBRARY -> {
-            val current = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
-            LaunchedEffect(current?.id) { appViewModel.loadPlaybackFile(current?.id) }
-            HomeScreen(
-                projects = projects.sortedByDescending { it.createdAtEpochMillis },
-                current = current,
-                currentWav = current?.let { appState.audioFiles[it.id] },
-                playbackAllowed = playbackAllowed(recording.phase),
-                click = click,
-                layerOn = appState.layerOn,
-                onLayerToggle = { appViewModel.setLayerEnabled(!appState.layerOn) },
-                onRecord = { clickSettings ->
-                    appViewModel.setLayerBacking(if (appState.layerOn) current?.id else null, clickSettings)
-                    appViewModel.navigate(Route.RECORD)
-                },
-                onOpen = {
-                    appViewModel.selectProject(it.id)
-                    appViewModel.setHome(it.id)
-                    appViewModel.navigate(Route.DETAIL)
-                },
-                onSelect = { appViewModel.setHome(it.id) },
-                onShare = ::share,
-                onTrim = {
-                    appViewModel.selectProject(it.id)
-                    appViewModel.navigate(Route.TRIM)
-                },
-                onMix = { appViewModel.navigate(Route.MIX) },
-                onTuner = { appViewModel.navigate(Route.TUNER) },
-                onArrange = {
-                    appViewModel.setArrangeProject(null)
-                    appViewModel.navigate(Route.ARRANGE)
-                },
-                onImport = onImportRequest
+    Column(Modifier.fillMaxSize()) {
+        Box(
+            Modifier.weight(1f).then(
+                if (route.isTopLevel) Modifier.consumeWindowInsets(WindowInsets.navigationBars) else Modifier
             )
-        }
-        Route.MIX -> {
-            MixScreen(
-                projects = projects, repository = repository,
-                onBack = { appViewModel.leave(Route.LIBRARY) },
-                onSaved = {
-                    appViewModel.invalidatePlayback(it.id)
-                    appViewModel.leave(Route.LIBRARY, it.id)
-                }
-            )
-        }
-        Route.TUNER -> TunerScreen(
-            microphoneGranted = appState.microphoneGranted,
-            microphoneDenied = appState.microphoneDenied,
-            lifecycle = hostLifecycle,
-            microphoneBlockedReason = when {
-                recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || RecordingActivePath.path != null ->
-                    "Stop the active recording before tuning."
-                appState.layerOn -> "Turn Layer off before tuning."
-                else -> null
-            },
-            onRequestMicrophone = onTunerMicRequest,
-            onOpenSettings = onOpenSettings,
-            onBack = { appViewModel.leave(Route.LIBRARY) }
-        )
-        Route.ARRANGE -> ArrangeScreen(
-            projects = projects,
-            repository = repository,
-            initialProjectId = homeId ?: selectedId,
-            onBack = { appViewModel.leave(Route.LIBRARY) },
-            onSaved = { appViewModel.leave(Route.LIBRARY, it.id) },
-            onProjectChanged = {
-                appViewModel.invalidatePlayback(it.id)
-                appViewModel.setArrangeProject(it.id)
-                if (route == Route.LIBRARY) appViewModel.refreshLibrary(it.id)
-            }
-        )
-        Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
-            route = recording.overdubRoute ?: calibrationStore.lastRoute(),
-            onBack = { appViewModel.leave(Route.RECORD) }
-        )
-        Route.RECORD -> {
-            val clickSettings = appState.layerClickBpm.takeIf { it > 0 }?.let {
-                runCatching { MonitorClick(it, appState.layerClickBeats, appState.layerCountInBars) }.getOrNull()
-            }
-            RecordScreen(
-                recording = recording,
-                shortcutRequested = appState.shortcutRequested,
-                microphoneGranted = appState.microphoneGranted,
-                microphoneDenied = appState.microphoneDenied,
-                notificationsGranted = appState.notificationGranted,
-                startError = appState.startError,
-                layering = appState.layerBackingId != null,
-                calibrationAvailable = recording.overdubRoute != null || calibrationStore.lastRoute() != null,
-                onBack = { appViewModel.leave(Route.LIBRARY) },
-                onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
-                onRecord = { onRecordRequest(appState.layerBackingId, clickSettings) },
-                onRequestMic = { onRecordRequest(appState.layerBackingId, clickSettings) },
-                onOpenSettings = onOpenSettings,
-                onPauseResume = {
-                    val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
-                    context.startService(Intent(context, RecordingService::class.java).setAction(action))
-                },
-                onStop = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
-                onOpenRecording = {
-                    val projectId = recording.projectId
-                    if (projectId != null) {
-                        appViewModel.selectProject(projectId)
-                        appViewModel.navigate(Route.DETAIL)
+        ) {
+            when (route) {
+                Route.LIBRARY -> LibraryScreen(
+                    projects = projects,
+                    onOpen = {
+                        appViewModel.selectProject(it.id)
+                        appViewModel.setHome(it.id)
+                        appViewModel.navigate(Route.MIX)
+                    },
+                    onRename = { project, name -> appViewModel.renameProject(project.id, name) },
+                    onDelete = {
+                        appViewModel.deleteProject(it.id)
+                        if (it.id == selectedId) appViewModel.selectProject(null)
+                        if (it.id == homeId) appViewModel.setHome(null)
                     }
-                }
-            )
-        }
-        Route.DETAIL -> if (selected != null && selected.id == selectedId) {
-            val project = selected
-            val wav = appState.audioFiles[project.id]
-            if (wav == null) MissingAudioScreen(project.name) { appViewModel.leave(Route.LIBRARY) }
-            else DetailScreen(
-                project = project,
-                wav = wav,
-                playbackAllowed = playbackAllowed(recording.phase),
-                onBack = { appViewModel.leave(Route.LIBRARY) },
-                onTrim = { appViewModel.navigate(Route.TRIM) },
-                onShare = { share(project) },
-                onRename = { name -> appViewModel.renameProject(project.id, name) },
-                onDelete = {
-                    appViewModel.deleteProject(project.id)
-                    appViewModel.selectProject(null)
-                    appViewModel.setHome(null)
-                    appViewModel.navigate(Route.LIBRARY)
-                }
-            )
-        } else if (selectedId == null) {
-            if (libraryLoaded) appViewModel.navigate(Route.LIBRARY) else Text("Loading recording…")
-        } else Text("Loading recording…")
-        Route.TRIM -> if (selected != null && selected.id == selectedId) {
-            val project = selected
-            // Trim keeps its own Material layout; it sits on a dark panel so its pink accents stay readable on orange.
-            Box(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp).clip(RoundedCornerShape(22.dp)).background(Synth.surface)) {
-                androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Synth.text) {
-                    TrimScreen(
-                        projectId = project.id,
+                )
+                Route.SKETCH -> {
+                    val current = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
+                    LaunchedEffect(current?.id) { appViewModel.loadPlaybackFile(current?.id) }
+                    SketchScreen(
+                        current = current,
+                        currentWav = current?.let { appState.audioFiles[it.id] },
                         playbackAllowed = playbackAllowed(recording.phase),
-                        onBack = { appViewModel.leave(Route.DETAIL, project.id) },
-                        onProjectChanged = { appViewModel.refreshLibrary(it.id) }
+                        click = click,
+                        layerOn = appState.layerOn,
+                        onLayerToggle = { appViewModel.setLayerEnabled(!appState.layerOn) },
+                        onRecord = { clickSettings ->
+                            appViewModel.setLayerBacking(if (appState.layerOn) current?.id else null, clickSettings)
+                            appViewModel.navigate(Route.RECORD)
+                        },
+                        onShare = ::share,
+                        onImport = onImportRequest
                     )
                 }
+                Route.MIX -> {
+                    val project = selected?.takeIf { it.id == selectedId }
+                    if (selectedId != null && project == null) Text("Loading recording…")
+                    else MixEntryScreen(
+                        project = project,
+                        audioAvailable = project != null && appState.audioFiles[project.id] != null,
+                        takeCount = projects.size,
+                        onOpenLibrary = { appViewModel.navigate(Route.LIBRARY) },
+                        onTrim = { appViewModel.navigate(Route.TRIM) },
+                        onArrange = {
+                            appViewModel.setArrangeProject(null)
+                            appViewModel.navigate(Route.ARRANGE)
+                        },
+                        onMixTakes = { appViewModel.navigate(Route.MIX_TAKES) }
+                    )
+                }
+                Route.TUNER -> TunerScreen(
+                    microphoneGranted = appState.microphoneGranted,
+                    microphoneDenied = appState.microphoneDenied,
+                    lifecycle = hostLifecycle,
+                    microphoneBlockedReason = when {
+                        recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || RecordingActivePath.path != null ->
+                            "Stop the active recording before tuning."
+                        appState.layerOn -> "Turn Layer off before tuning."
+                        else -> null
+                    },
+                    onRequestMicrophone = onTunerMicRequest,
+                    onOpenSettings = onOpenSettings,
+                    onBack = { appViewModel.leave(Route.LIBRARY) }
+                )
+                Route.MIX_TAKES -> MixScreen(
+                    projects = projects, repository = repository,
+                    onBack = { appViewModel.leave(Route.MIX) },
+                    onSaved = {
+                        appViewModel.invalidatePlayback(it.id)
+                        appViewModel.leave(Route.LIBRARY, it.id)
+                    }
+                )
+                Route.ARRANGE -> ArrangeScreen(
+                    projects = projects,
+                    repository = repository,
+                    initialProjectId = homeId ?: selectedId,
+                    onBack = { appViewModel.leave(Route.MIX) },
+                    onSaved = { appViewModel.leave(Route.MIX, it.id) },
+                    onProjectChanged = {
+                        appViewModel.invalidatePlayback(it.id)
+                        appViewModel.setArrangeProject(it.id)
+                        if (route == Route.LIBRARY) appViewModel.refreshLibrary(it.id)
+                    }
+                )
+                Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
+                    route = recording.overdubRoute ?: calibrationStore.lastRoute(),
+                    onBack = { appViewModel.leave(Route.RECORD) }
+                )
+                Route.RECORD -> {
+                    val clickSettings = appState.layerClickBpm.takeIf { it > 0 }?.let {
+                        runCatching { MonitorClick(it, appState.layerClickBeats, appState.layerCountInBars) }.getOrNull()
+                    }
+                    RecordScreen(
+                        recording = recording,
+                        shortcutRequested = appState.shortcutRequested,
+                        microphoneGranted = appState.microphoneGranted,
+                        microphoneDenied = appState.microphoneDenied,
+                        notificationsGranted = appState.notificationGranted,
+                        startError = appState.startError,
+                        layering = appState.layerBackingId != null,
+                        calibrationAvailable = recording.overdubRoute != null || calibrationStore.lastRoute() != null,
+                        onBack = { appViewModel.leave(Route.SKETCH) },
+                        onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
+                        onRecord = { onRecordRequest(appState.layerBackingId, clickSettings) },
+                        onRequestMic = { onRecordRequest(appState.layerBackingId, clickSettings) },
+                        onOpenSettings = onOpenSettings,
+                        onPauseResume = {
+                            val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
+                            context.startService(Intent(context, RecordingService::class.java).setAction(action))
+                        },
+                        onStop = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
+                        onOpenRecording = {
+                            val projectId = recording.projectId
+                            if (projectId != null) {
+                                appViewModel.selectProject(projectId)
+                                appViewModel.setHome(projectId)
+                                appViewModel.navigate(Route.MIX)
+                            }
+                        }
+                    )
+                }
+                Route.TRIM -> if (selected != null && selected.id == selectedId) {
+                    val project = selected
+                    // Trim keeps its own Material layout; it sits on a dark panel so its pink accents stay readable on orange.
+                    Box(Modifier.fillMaxSize().safeDrawingPadding().padding(10.dp).clip(RoundedCornerShape(22.dp)).background(Synth.surface)) {
+                        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Synth.text) {
+                            TrimScreen(
+                                projectId = project.id,
+                                playbackAllowed = playbackAllowed(recording.phase),
+                                onBack = { appViewModel.leave(Route.MIX, project.id) },
+                                onProjectChanged = { appViewModel.refreshLibrary(it.id) }
+                            )
+                        }
+                    }
+                } else if (selectedId == null) {
+                    Text("Loading recording…")
+                } else Text("Loading recording…")
             }
-        } else if (selectedId == null) {
-            if (libraryLoaded) appViewModel.navigate(Route.LIBRARY) else Text("Loading recording…")
-        } else Text("Loading recording…")
+        }
+        if (route.isTopLevel) TopLevelBar(route) { appViewModel.navigate(it) }
     }
     val takeErrorKey = "${recording.projectId ?: "no-project"}:${recording.error}"
     val hasTakeError = recording.phase == RecordingPhase.FAILED && recording.error != null &&
@@ -666,6 +680,37 @@ private fun AudioSketchApp(
                     else recording.error.orEmpty())
                 },
                 confirmButton = { TextButton(onClick = { dismissedTakeError = takeErrorKey }) { Text("OK") } }
+            )
+        }
+    }
+}
+
+private data class TopDestination(val route: Route, val label: String, val icon: SynthIcon)
+
+private val TOP_DESTINATIONS = listOf(
+    TopDestination(Route.LIBRARY, "Library", SynthIcon.Library),
+    TopDestination(Route.SKETCH, "Sketch", SynthIcon.Sketch),
+    TopDestination(Route.MIX, "Mix", SynthIcon.Mix),
+    TopDestination(Route.TUNER, "Tuner", SynthIcon.Tuner)
+)
+
+@Composable
+private fun TopLevelBar(current: Route, onNavigate: (Route) -> Unit) {
+    NavigationBar(containerColor = Synth.night, contentColor = Synth.text) {
+        TOP_DESTINATIONS.forEach { destination ->
+            val selected = destination.route == current
+            NavigationBarItem(
+                selected = selected,
+                onClick = { if (!selected) onNavigate(destination.route) },
+                icon = { SynthGlyph(destination.icon, if (selected) Synth.cyan else Synth.muted) },
+                label = { Text(destination.label) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = Synth.cyan,
+                    selectedTextColor = Synth.cyan,
+                    indicatorColor = Synth.surfaceHi,
+                    unselectedIconColor = Synth.muted,
+                    unselectedTextColor = Synth.muted
+                )
             )
         }
     }

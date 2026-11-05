@@ -30,10 +30,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.ottomusic.sketch.core.MultitrackRenderer
 import com.ottomusic.sketch.core.Project
+import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.data.ImportActivePaths
 import com.ottomusic.sketch.playback.WavPlayer
@@ -49,6 +52,48 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Entry to the editing tools for one project; Trim/Arrange/Mix stay reachable as sub-routes. */
+@Composable
+internal fun MixEntryScreen(
+    project: Project?,
+    audioAvailable: Boolean,
+    takeCount: Int,
+    onOpenLibrary: () -> Unit,
+    onTrim: () -> Unit,
+    onArrange: () -> Unit,
+    onMixTakes: () -> Unit
+) {
+    if (project != null && !audioAvailable) {
+        MissingAudioScreen(project.name, onOpenLibrary)
+        return
+    }
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text("Mix", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+            if (project == null) {
+                SynthPanel { Text("Pick a recording in the Library", color = Synth.muted) }
+                BigButton("Open Library", onOpenLibrary, Modifier.fillMaxWidth(), primary = true)
+            } else {
+                SynthPanel {
+                    Text(project.name, color = Synth.text, style = MaterialTheme.typography.headlineSmall)
+                    if (project.silent) Text("Silent recording · all captured samples are zero-valued", color = MaterialTheme.colorScheme.tertiary)
+                    Text(
+                        "${RecordingCore.formatClock(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate))} · ${project.sampleRate} Hz",
+                        color = Synth.muted, style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                BigButton("Trim", onTrim, Modifier.fillMaxWidth())
+                BigButton("Arrange", onArrange, Modifier.fillMaxWidth())
+                BigButton("Mix two takes", onMixTakes, Modifier.fillMaxWidth(), enabled = takeCount >= 2)
+                if (takeCount < 2) Text("Record or import two takes first.", color = Synth.night)
+            }
+        }
+    }
+}
 
 @Composable
 fun MixScreen(

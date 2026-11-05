@@ -62,7 +62,7 @@ internal fun RecordScreen(
             Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            SynthTopBar("Record", onBack, backLabel = "Library")
+            SynthTopBar("Record", onBack, backLabel = "Sketch")
             SynthPanel {
                 val label = when (recording.phase) {
                     RecordingPhase.PAUSED -> "Paused"

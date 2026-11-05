@@ -21,7 +21,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-internal enum class Route { LIBRARY, RECORD, DETAIL, TRIM, MIX, TUNER, ARRANGE, OVERDUB_CALIBRATION }
+internal enum class Route {
+    LIBRARY, SKETCH, MIX, TUNER,
+    RECORD, TRIM, ARRANGE, MIX_TAKES, OVERDUB_CALIBRATION;
+
+    /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
+    val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == MIX || this == TUNER
+}
 
 /** What the Activity is about to do once the microphone permission is settled. */
 internal enum class MicrophoneAction { RECORD, TUNER }
@@ -48,7 +54,6 @@ internal data class AppUiState(
     val importNotice: String? = null,
     val projects: List<Project> = emptyList(),
     val audioFiles: Map<String, File> = emptyMap(),
-    val libraryLoaded: Boolean = false,
     val unreadableProjectCount: Int = 0,
     val libraryError: String? = null,
     val startupComplete: Boolean = false,
@@ -156,8 +161,8 @@ internal class AppViewModel(
 
     fun clearShortcutRequest() = updateState { it.copy(shortcutRequested = false) }
 
-    /** A RECORD_NOW intent: show the recorder and let it ask for the microphone. */
-    fun startShortcutRecord() = updateState { it.copy(route = Route.RECORD, shortcutRequested = true) }
+    /** A RECORD_NOW intent: show Sketch and let the recorder ask for the microphone. */
+    fun startShortcutRecord() = updateState { it.copy(route = Route.SKETCH, shortcutRequested = true) }
 
     /** The single exit for editing screens so system Back refreshes exactly like on-screen Back. */
     fun leave(to: Route, changedProjectId: String? = null) {
@@ -212,7 +217,6 @@ internal class AppViewModel(
                                     result.library.projects.any { project -> project.id == id } &&
                                         (existingAudioFiles[id] != file || existingLive[id] == file)
                                 } + result.audioFiles,
-                                libraryLoaded = true,
                                 unreadableProjectCount = result.library.unreadableCount,
                                 libraryError = null
                             )

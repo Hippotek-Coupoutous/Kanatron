@@ -9,24 +9,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -61,9 +59,6 @@ import com.ottomusic.sketch.playback.ClickEngine
 import com.ottomusic.sketch.playback.MonitorClick
 import com.ottomusic.sketch.playback.WavPlayer
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -72,8 +67,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun HomeScreen(
-    projects: List<Project>,
+internal fun SketchScreen(
     current: Project?,
     currentWav: File?,
     playbackAllowed: Boolean,
@@ -81,13 +75,7 @@ internal fun HomeScreen(
     layerOn: Boolean,
     onLayerToggle: () -> Unit,
     onRecord: (MonitorClick?) -> Unit,
-    onOpen: (Project) -> Unit,
-    onSelect: (Project) -> Unit,
     onShare: (Project) -> Unit,
-    onTrim: (Project) -> Unit,
-    onMix: () -> Unit,
-    onTuner: () -> Unit,
-    onArrange: () -> Unit,
     onImport: () -> Unit
 ) {
     val context = LocalContext.current
@@ -172,41 +160,89 @@ internal fun HomeScreen(
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Tile(SynthIcon.Trim, "Trim", { current?.let(onTrim) }, Modifier.weight(1f), enabled = current != null)
-                Tile(SynthIcon.Mix, "Mix", onMix, Modifier.weight(1f), enabled = projects.size >= 2)
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                BigButton("Tuner", { player?.stop(); click.stop(); onTuner() }, Modifier.weight(1f))
-                BigButton("Arrange", onArrange, Modifier.weight(1f))
-            }
-            if (projects.isEmpty()) Text("Your recordings live here", color = Synth.night, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
-            else projects.forEach { project ->
-                TakeRow(project, isCurrent = project.id == current?.id, onSelect = { player?.stop(); onSelect(project) }, onOpen = { player?.stop(); onOpen(project) })
-            }
         }
     }
 }
 
 @Composable
-private fun TakeRow(project: Project, isCurrent: Boolean, onSelect: () -> Unit, onOpen: () -> Unit) {
+internal fun LibraryScreen(
+    projects: List<Project>,
+    onOpen: (Project) -> Unit,
+    onRename: (Project, String) -> Unit,
+    onDelete: (Project) -> Unit
+) {
+    var renameTarget by remember { mutableStateOf<Project?>(null) }
+    var deleteTarget by remember { mutableStateOf<Project?>(null) }
+    var renameName by remember { mutableStateOf("") }
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "Library", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp
+            )
+            if (projects.isEmpty()) {
+                Text("Your recordings live here", color = Synth.night, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
+            } else projects.sortedByDescending { it.createdAtEpochMillis }.forEach { project ->
+                LibraryRow(
+                    project,
+                    onOpen = { onOpen(project) },
+                    onRename = { renameName = project.name; renameTarget = project },
+                    onDelete = { deleteTarget = project }
+                )
+            }
+        }
+    }
+    val rename = renameTarget
+    if (rename != null) {
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename recording") },
+            text = { OutlinedTextField(renameName, { renameName = it }, label = { Text("Name") }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { if (renameName.isNotBlank()) onRename(rename, renameName); renameTarget = null }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } }
+        )
+    }
+    val delete = deleteTarget
+    if (delete != null) {
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete recording?") },
+            text = { Text("${delete.name} and its original WAV will be removed.") },
+            confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete(delete) }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun LibraryRow(project: Project, onOpen: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Synth.surface)
-            .border(1.dp, if (isCurrent) Synth.cyan else Synth.line, RoundedCornerShape(16.dp)),
+            .border(1.dp, Synth.line, RoundedCornerShape(16.dp)),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(
-            Modifier.weight(1f).heightIn(min = 68.dp).clickable(onClick = onSelect).padding(horizontal = 16.dp, vertical = 10.dp)
+            Modifier.weight(1f).heightIn(min = 68.dp).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 10.dp)
                 .clearAndSetSemantics { contentDescription = "${project.name}, ${duration(project)}" },
             verticalArrangement = Arrangement.Center
         ) {
             Text(project.name, color = Synth.text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             Text(if (project.silent) "${duration(project)} · silent" else duration(project), color = Synth.muted, fontFamily = FontFamily.Monospace)
         }
-        Text(
-            "Open", color = Synth.cyan, fontWeight = FontWeight.Bold,
-            modifier = Modifier.heightIn(min = 68.dp).clickable(role = Role.Button, onClick = onOpen).padding(horizontal = 18.dp).wrapContentHeight()
-        )
+        Box {
+            Box(
+                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).clickable(role = Role.Button, onClick = { menuOpen = true })
+                    .semantics { contentDescription = "More options for ${project.name}" },
+                contentAlignment = Alignment.Center
+            ) { Text("⋮", color = Synth.text, fontSize = 26.sp) }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(text = { Text("Rename") }, onClick = { menuOpen = false; onRename() })
+                DropdownMenuItem(text = { Text("Delete") }, onClick = { menuOpen = false; onDelete() })
+            }
+        }
     }
 }
 
@@ -265,104 +301,6 @@ private fun rememberWavPlayer(context: Context, wav: File?, takesFocus: Boolean 
 }
 
 @Composable
-internal fun DetailScreen(
-    project: Project,
-    wav: File,
-    playbackAllowed: Boolean,
-    onBack: () -> Unit,
-    onTrim: () -> Unit,
-    onShare: () -> Unit,
-    onRename: (String) -> Unit,
-    onDelete: () -> Unit
-) {
-    val context = LocalContext.current
-    val player = rememberWavPlayer(context, wav)
-    if (player == null) {
-        Box(Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.Center) {
-            Text("Opening recording…", color = Synth.night)
-        }
-        return
-    }
-    val playerState by player.state.collectAsState()
-    var renameDialog by remember { mutableStateOf(false) }
-    var deleteDialog by remember { mutableStateOf(false) }
-    var name by remember(project.id) { mutableStateOf(project.name) }
-    val peaks by produceState(initialValue = emptyList<Peak>(), key1 = wav.absolutePath) {
-        val peakJob = currentCoroutineContext()[Job]
-        value = withContext(Dispatchers.IO) {
-            try { PeakExtractor.extractCached(wav, 160) { peakJob?.isActive == false } }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Throwable) { emptyList() }
-        }
-    }
-    Box(Modifier.fillMaxSize()) {
-        Column(
-            Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            SynthTopBar("Take", { player.stop(); onBack() }, backLabel = "Library") {
-                IconSquare(SynthIcon.Edit, "Rename", { renameDialog = true })
-                Spacer(Modifier.width(8.dp))
-                IconSquare(SynthIcon.Delete, "Delete", { deleteDialog = true })
-            }
-            SynthPanel {
-                Text(project.name, color = Synth.text, style = MaterialTheme.typography.headlineSmall)
-                if (project.silent) Text("Silent recording · all captured samples are zero-valued", color = MaterialTheme.colorScheme.tertiary)
-                playerState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (!playbackAllowed) Text("Playback is unavailable while recording.", color = MaterialTheme.colorScheme.error)
-                Text("${duration(project)} · ${project.sampleRate} Hz · ${date(project.createdAtEpochMillis)}", color = Synth.muted, style = MaterialTheme.typography.bodyMedium)
-                MiniWave(peaks, project, playerState.positionFrames, Modifier.fillMaxWidth().height(128.dp).semantics { contentDescription = "Waveform for ${project.name}" })
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(RecordingCore.formatClock(RecordingCore.elapsedMillis(playerState.positionFrames, project.sampleRate)), fontFamily = FontFamily.Monospace, color = Synth.cyan)
-                    Text(RecordingCore.formatClock(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate)), fontFamily = FontFamily.Monospace, color = Synth.muted)
-                }
-                val seekStart = project.trim.startFrame.toFloat()
-                val seekEnd = project.trim.endFrame.toFloat().coerceAtLeast(seekStart + 1f)
-                Slider(
-                    value = playerState.positionFrames.coerceIn(project.trim.startFrame, project.trim.endFrame).toFloat(),
-                    onValueChange = { player.seek(it.toLong()) },
-                    valueRange = seekStart..seekEnd,
-                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Seek ${project.name}" }
-                )
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                RoundButton(
-                    if (playerState.isPlaying) SynthIcon.Pause else SynthIcon.Play, if (playerState.isPlaying) "Pause" else "Play", Synth.cyan,
-                    onClick = {
-                        if (playerState.isPlaying) player.pause() else {
-                            if (playerState.positionFrames !in project.trim.startFrame until project.trim.endFrame) player.seek(project.trim.startFrame)
-                            player.play(project.trim.endFrame)
-                        }
-                    }, size = 96.dp, enabled = playbackAllowed
-                )
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Tile(SynthIcon.Trim, "Trim", { player.stop(); onTrim() }, Modifier.weight(1f))
-                Tile(SynthIcon.Share, "Share", onShare, Modifier.weight(1f))
-            }
-        }
-    }
-    if (renameDialog) {
-        AlertDialog(
-            onDismissRequest = { renameDialog = false },
-            title = { Text("Rename recording") },
-            text = { OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onRename(name); renameDialog = false }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { renameDialog = false }) { Text("Cancel") } }
-        )
-    }
-    if (deleteDialog) {
-        AlertDialog(
-            onDismissRequest = { deleteDialog = false },
-            title = { Text("Delete recording?") },
-            text = { Text("${project.name} and its original WAV will be removed.") },
-            confirmButton = { TextButton(onClick = { deleteDialog = false; player.stop(); onDelete() }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { deleteDialog = false }) { Text("Cancel") } }
-        )
-    }
-}
-
-@Composable
 internal fun MissingAudioScreen(projectName: String, onBack: () -> Unit) {
     Column(
         Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
@@ -376,5 +314,3 @@ internal fun MissingAudioScreen(projectName: String, onBack: () -> Unit) {
 }
 
 private fun duration(project: Project): String = RecordingCore.formatClock(RecordingCore.elapsedMillis(project.totalFrames, project.sampleRate))
-
-private fun date(time: Long): String = SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(time))

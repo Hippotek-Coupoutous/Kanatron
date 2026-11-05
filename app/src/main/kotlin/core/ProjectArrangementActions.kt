@@ -96,15 +96,22 @@ object ProjectArrangementActions {
             undoHistory = project.undoHistory.map { it.clampTo(totalFrames) },
             arrangementUndoHistory = history
         )
-        while (updated.toJson().toByteArray(Charsets.UTF_8).size > Project.MAX_JSON_CHARS && history.isNotEmpty()) {
-            history = history.drop(1)
-            updated = updated.copy(arrangementUndoHistory = history)
-        }
-        require(updated.toJson().toByteArray(Charsets.UTF_8).size <= Project.MAX_JSON_CHARS) {
-            "This arrangement edit is too large to save. The current project was kept."
+        // A normal edit measures one serialisation; only an oversized edit trims history and re-measures.
+        var size = updated.jsonBytes()
+        if (size > Project.MAX_JSON_BYTES) {
+            while (history.isNotEmpty() && size > Project.MAX_JSON_BYTES) {
+                history = history.drop(1)
+                updated = updated.copy(arrangementUndoHistory = history)
+                size = updated.jsonBytes()
+            }
+            require(size <= Project.MAX_JSON_BYTES) {
+                "This arrangement edit is too large to save. The current project was kept."
+            }
         }
         return updated
     }
+
+    private fun Project.jsonBytes(): Int = toJson().toByteArray(Charsets.UTF_8).size
 
     private fun TrimRange.clampTo(totalFrames: Long): TrimRange {
         val start = startFrame.coerceIn(0L, totalFrames - 1L)

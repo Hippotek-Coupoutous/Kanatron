@@ -29,7 +29,7 @@ internal class PreviewCache(private val directory: File) {
             if (expectedBytes > MAX_PREVIEW_BYTES) {
                 throw IOException("This arrangement is too large for the preview cache. Shorten its clips and try again.")
             }
-            val fingerprint = sha256Hex("${project.sampleRate}|${project.channels}|${project.tracks}")
+            val fingerprint = sha256Hex(renderKey(project))
             val target = File(directory, "${project.id}.$fingerprint.wav")
             if (target.isFile && isValid(target, project)) {
                 target.setLastModified(System.currentTimeMillis())
@@ -53,6 +53,21 @@ internal class PreviewCache(private val directory: File) {
     fun delete(projectId: String) = synchronized(PREVIEW_LOCK) {
         directory.listFiles { file -> file.name.startsWith("$projectId.") && file.name.endsWith(".wav") }
             .orEmpty().forEach { it.delete() }
+    }
+
+    /** Only the fields MultitrackRenderer reads: names and ids must not invalidate a cached render. */
+    private fun renderKey(project: Project): String = buildString {
+        append(project.sampleRate).append('|').append(project.channels).append('|').append(project.totalFrames)
+        project.tracks.forEach { track ->
+            append("|t").append(track.gainPermille).append(',').append(track.muted).append(',').append(track.solo)
+            track.clips.forEach { clip ->
+                append("|c").append(clip.source.wav).append(',')
+                    .append(clip.source.sampleRate).append(',').append(clip.source.channels).append(',')
+                    .append(clip.source.totalFrames).append(',').append(clip.positionFrames).append(',')
+                    .append(clip.trim.startFrame).append('-').append(clip.trim.endFrame).append(',')
+                    .append(clip.gainPermille).append(',').append(clip.muted).append(',').append(clip.rateCorrectionPpm)
+            }
+        }
     }
 
     private fun isValid(file: File, project: Project): Boolean = runCatching {

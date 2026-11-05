@@ -11,7 +11,7 @@ class ProjectStore(file: File) {
 
     fun save(project: Project) = synchronized(IO_LOCK) {
         val bytes = project.toJson().toByteArray(StandardCharsets.UTF_8)
-        require(bytes.size <= Project.MAX_JSON_CHARS) { "Project JSON is too large" }
+        require(bytes.size <= Project.MAX_JSON_BYTES) { "Project JSON is too large" }
         val stream = storage.startWrite()
         try {
             stream.write(bytes)
@@ -31,21 +31,12 @@ class ProjectStore(file: File) {
                 val count = input.read(buffer)
                 if (count < 0) break
                 total += count
-                require(total <= Project.MAX_JSON_CHARS) { "Project JSON is too large" }
+                require(total <= Project.MAX_JSON_BYTES) { "Project JSON is too large" }
                 bytes.write(buffer, 0, count)
             }
             String(bytes.toByteArray(), StandardCharsets.UTF_8)
         }
-        val project = Project.fromJson(json)
-        if (!project.migrationPending) return project
-        val migrated = project.copy(migrationPending = false)
-        return try {
-            save(migrated)
-            migrated
-        } catch (_: Exception) {
-            // A failed best-effort migration must not make a readable original unavailable.
-            project
-        }
+        Project.fromJson(json)
     }
 
     private companion object {

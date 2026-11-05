@@ -47,7 +47,16 @@ class ProjectRepository(context: Context) {
         return LibraryContents(loaded, unreadable)
     }
 
-    fun get(id: String): Project? = projectFile(id).takeIf(File::isFile)?.let { runCatching { ProjectStore(it).load() }.getOrNull() }
+    /** Returns null only when no project file exists; a present file that cannot be read is damage, not absence. */
+    fun get(id: String): Project? {
+        val file = projectFile(id)
+        if (!file.isFile) return null
+        return try {
+            ProjectStore(file).load()
+        } catch (failure: Exception) {
+            throw IOException("Recording data is damaged.", failure)
+        }
+    }
 
     fun audioFile(project: Project): File {
         require(!project.isArrangement) { "Arranged projects use their rendered playback file." }
@@ -160,9 +169,9 @@ class ProjectRepository(context: Context) {
         require(project.isArrangement)
         synchronized(PROJECT_LOCK) {
             require(!projectFile(project.id).exists()) { "An arrangement with this id already exists." }
-            ProjectStore(projectFile(project.id)).save(project.copy(migrationPending = false))
+            ProjectStore(projectFile(project.id)).save(project)
         }
-        return project.copy(migrationPending = false)
+        return project
     }
 
     /** Persists a completed mic-only take as a new, frame-positioned track. */
@@ -198,8 +207,8 @@ class ProjectRepository(context: Context) {
 
     fun saveEditState(project: Project): Project {
         synchronized(PROJECT_LOCK) {
-            ProjectStore(projectFile(project.id)).save(project.copy(migrationPending = false))
-            return project.copy(migrationPending = false)
+            ProjectStore(projectFile(project.id)).save(project)
+            return project
         }
     }
 
@@ -272,6 +281,8 @@ class ProjectRepository(context: Context) {
     }
 
     fun delete(id: String) {
+        // Damaged data must stop the delete before export retention prunes anything.
+        get(id)
         // Wait for any in-flight export and persist its share pin before removing its source.
         exportRetention.projectDeleted(id)
         synchronized(PROJECT_LOCK) {

@@ -105,8 +105,7 @@ data class Project(
     val undoHistory: List<TrimRange> = emptyList(),
     val tracks: List<ProjectTrack> = defaultProjectTracks(name, sourceWav, sampleRate, channels, totalFrames),
     val isArrangement: Boolean = false,
-    val arrangementUndoHistory: List<ProjectArrangementSnapshot> = emptyList(),
-    internal val migrationPending: Boolean = false
+    val arrangementUndoHistory: List<ProjectArrangementSnapshot> = emptyList()
 ) {
     init {
         require(id.matches(PROJECT_ID))
@@ -172,15 +171,15 @@ data class Project(
     }
 
     companion object {
-        const val MAX_JSON_CHARS = 64 * 1024
+        const val MAX_JSON_BYTES = 64 * 1024
         const val MAX_TRACKS = 4
         const val MAX_CLIPS = 16
 
         fun fromJson(json: String): Project {
-            require(json.length <= MAX_JSON_CHARS) { "Project JSON is too large" }
+            require(json.toByteArray(Charsets.UTF_8).size <= MAX_JSON_BYTES) { "Project JSON is too large" }
             val root = JsonReader(json).read() as? Map<*, *> ?: throw IllegalArgumentException("Project JSON must be an object")
             val version = root.long("schemaVersion")
-            require(version in 1L..2L) { "Unsupported project schema version: $version" }
+            require(version == 2L) { "Unsupported project schema version: $version" }
             val trim = root["trim"].asObject("trim").toTrimRange()
             val undoHistory = root["undoHistory"].asTrimHistory("undo history")
             val id = root.string("id")
@@ -189,13 +188,9 @@ data class Project(
             val sampleRate = root.long("sampleRate").toIntExact("sampleRate")
             val channels = root.long("channels").toIntExact("channels")
             val totalFrames = root.long("totalFrames")
-            val arrangement = version >= 2L && root.boolean("isArrangement")
-            val tracks = if (version == 1L) {
-                defaultProjectTracks(name, sourceWav, sampleRate, channels, totalFrames)
-            } else {
-                root["tracks"].asArray("tracks").map { it.asTrack() }
-            }
-            val history = if (version == 1L) emptyList() else root["arrangementUndoHistory"].asArray("arrangement undo history").map {
+            val arrangement = root.boolean("isArrangement")
+            val tracks = root["tracks"].asArray("tracks").map { it.asTrack() }
+            val history = root["arrangementUndoHistory"].asArray("arrangement undo history").map {
                 val entry = it.asObject("arrangement undo entry")
                 ProjectArrangementSnapshot(
                     trim = entry["trim"].asObject("arrangement undo trim").toTrimRange(),
@@ -217,8 +212,7 @@ data class Project(
                 undoHistory = undoHistory,
                 tracks = tracks,
                 isArrangement = arrangement,
-                arrangementUndoHistory = history,
-                migrationPending = version == 1L
+                arrangementUndoHistory = history
             )
         }
 

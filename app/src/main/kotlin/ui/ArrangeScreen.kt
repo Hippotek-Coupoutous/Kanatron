@@ -101,12 +101,20 @@ fun ArrangeScreen(
     LaunchedEffect(editingProjectId) {
         if (editingProjectId.isNotBlank()) {
             loading = true
-            val loaded = withContext(Dispatchers.IO) { repository.get(editingProjectId) }
-            if (loaded?.isArrangement == true) {
-                project = loaded
-                missingSources = withContext(Dispatchers.IO) { repository.missingSources(loaded) }
+            error = null
+            try {
+                val loaded = withContext(Dispatchers.IO) { repository.get(editingProjectId) }
+                if (loaded?.isArrangement == true) {
+                    project = loaded
+                    missingSources = withContext(Dispatchers.IO) { repository.missingSources(loaded) }
+                }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Throwable) {
+                error = failure.message ?: "Could not open this arrangement."
+            } finally {
+                loading = false
             }
-            loading = false
         } else {
             project = null
         }

@@ -38,14 +38,22 @@ class ProjectRepository(context: Context) {
     /** Repairs takes and rebuilds records at startup; each pass scans project metadata once. */
     internal val recovery = TakeRecovery(projects, recordings, ::projectFile, ::get, ::createProject)
 
-    data class LibraryContents(val projects: List<Project>, val unreadableCount: Int)
+    data class LibraryContents(
+        val projects: List<Project>,
+        val unreadableCount: Int,
+        val drafts: List<Project>
+    )
 
     fun readLibrary(): LibraryContents {
         var unreadable = 0
         val loaded = projects.listFiles { file -> file.extension == "json" }.orEmpty().mapNotNull { file ->
             try { ProjectStore(file).load() } catch (_: Exception) { unreadable++; null }
         }.sortedByDescending(Project::createdAtEpochMillis)
-        return LibraryContents(loaded, unreadable)
+        return LibraryContents(
+            projects = loaded.filterNot(Project::draft),
+            unreadableCount = unreadable,
+            drafts = loaded.filter(Project::draft)
+        )
     }
 
     /** Returns null only when no project file exists; a present file that cannot be read is damage, not absence. */
@@ -325,7 +333,8 @@ class ProjectRepository(context: Context) {
         channels: Int,
         frames: Long,
         name: String,
-        silent: Boolean = false
+        silent: Boolean = false,
+        draft: Boolean = false
     ): Project {
         val project = Project(
             id = id,
@@ -334,6 +343,7 @@ class ProjectRepository(context: Context) {
             channels = channels,
             createdAtEpochMillis = System.currentTimeMillis(),
             silent = silent,
+            draft = draft,
             tracks = listOf(
                 ProjectTrack(
                     id = "track-main",

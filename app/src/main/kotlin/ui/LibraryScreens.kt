@@ -85,11 +85,15 @@ internal fun SketchScreen(
     startError: String?,
     current: Project?,
     currentWav: File?,
+    draft: Project?,
     layering: Boolean,
     click: ClickEngine,
     layerOn: Boolean,
     onLayerToggle: () -> Unit,
     onRecord: (MonitorClick?) -> Unit,
+    onSaveDraft: (Project) -> Unit,
+    onDiscardDraft: (Project) -> Unit,
+    onDiscardAndRecord: (Project, MonitorClick?) -> Unit,
     onPauseResume: () -> Unit,
     onPreview: () -> Unit,
     onSave: () -> Unit,
@@ -106,6 +110,7 @@ internal fun SketchScreen(
     val clickState by click.state.collectAsState()
     var clickPanel by rememberSaveable { mutableStateOf(false) }
     var countInBars by rememberSaveable { mutableStateOf(0) }
+    var draftPrompt by remember(draft?.id) { mutableStateOf<DraftPrompt?>(null) }
     var seekPreview by remember(current?.id) { mutableStateOf<Long?>(null) }
     val tapTimes = remember { mutableListOf<Long>() }
     val peaks by produceState(initialValue = emptyList<Peak>(), key1 = wav?.absolutePath) {
@@ -125,6 +130,12 @@ internal fun SketchScreen(
         paused -> "Paused"
         saved -> "Saved"
         else -> "Ready"
+    }
+    fun startRecording() {
+        player?.stop()
+        val monitor = if (clickState.running) MonitorClick(clickState.bpm, clickState.beatsPerBar, countInBars) else null
+        click.stop()
+        onRecord(monitor)
     }
     val timerFrames = when {
         previewing -> recording.previewFrame
@@ -153,6 +164,52 @@ internal fun SketchScreen(
                     letterSpacing = 2.sp, modifier = Modifier.weight(1f).padding(end = 8.dp)
                 )
                 StatusWord(status, recordingNow, paused, saved)
+            }
+            val recovered = draft
+            if (recovered != null && !active) {
+                SynthPanel {
+                    Text(
+                        "Recovered unsaved take · ${draftClock(recovered)}",
+                        color = Synth.yellow,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextAction(
+                            "Save",
+                            {
+                                player?.stop()
+                                onSaveDraft(recovered)
+                            },
+                            Modifier.weight(1f),
+                            description = "Save recovered take",
+                            color = Synth.cyan
+                        )
+                        TextAction(
+                            if (playing) "Pause" else "Play",
+                            {
+                                val p = player ?: return@TextAction
+                                if (playing) {
+                                    p.pause()
+                                } else {
+                                    val position = playerState?.positionFrames ?: 0L
+                                    if (position !in 0L until recovered.totalFrames) p.seek(0L)
+                                    p.play(recovered.totalFrames)
+                                }
+                            },
+                            Modifier.weight(1f),
+                            enabled = player != null,
+                            description = if (playing) "Pause recovered take" else "Play recovered take",
+                            color = Synth.cyan
+                        )
+                        TextAction(
+                            "Discard",
+                            { draftPrompt = DraftPrompt.DISCARD },
+                            Modifier.weight(1f),
+                            description = "Discard recovered take",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
             }
             SynthPanel {
                 Text(current?.name ?: "No take yet", color = Synth.muted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
@@ -245,12 +302,8 @@ internal fun SketchScreen(
                     onClick = {
                         when {
                             active -> onPauseResume()
-                            else -> {
-                                player?.stop()
-                                val monitor = if (clickState.running) MonitorClick(clickState.bpm, clickState.beatsPerBar, countInBars) else null
-                                click.stop()
-                                onRecord(monitor)
-                            }
+                            draft != null -> draftPrompt = DraftPrompt.RECORD
+                            else -> startRecording()
                         }
                     },
                     // While a take is starting there is no recorder to pause yet.
@@ -278,7 +331,7 @@ internal fun SketchScreen(
                     selected = clickState.running, description = "Click ${clickState.bpm} BPM", enabled = !active
                 )
                 Tile(SynthIcon.Import, "Import", onImport, Modifier.weight(1f), description = "Import audio", enabled = !active)
-                Tile(SynthIcon.Share, "Share", { current?.let(onShare) }, Modifier.weight(1f), enabled = current != null && !active, description = "Share current take")
+                Tile(SynthIcon.Share, "Share", { current?.let(onShare) }, Modifier.weight(1f), enabled = current != null && !active && draft == null, description = "Share current take")
             }
             Row(Modifier.fillMaxWidth()) {
                 TextAction(if (clickPanel) "Hide click settings" else "Click settings", { clickPanel = !clickPanel }, Modifier.weight(1f), enabled = !active)
@@ -304,8 +357,44 @@ internal fun SketchScreen(
                 }
             }
         }
+        val prompt = draftPrompt
+        val promptedDraft = draft
+        if (prompt != null && promptedDraft != null) {
+            val recordingAfter = prompt == DraftPrompt.RECORD
+            AlertDialog(
+                onDismissRequest = { draftPrompt = null },
+                title = { Text("Discard unsaved take?") },
+                text = { Text("The recovered take (${draftClock(promptedDraft)}) will be deleted.") },
+                confirmButton = {
+                    TextButton(
+                        onClick = { draftPrompt = null },
+                        modifier = Modifier.semantics { contentDescription = "Keep unsaved take" }
+                    ) { Text("Keep") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            draftPrompt = null
+                            player?.stop()
+                            if (recordingAfter) {
+                                val monitor = if (clickState.running) MonitorClick(clickState.bpm, clickState.beatsPerBar, countInBars) else null
+                                click.stop()
+                                onDiscardAndRecord(promptedDraft, monitor)
+                            } else {
+                                onDiscardDraft(promptedDraft)
+                            }
+                        },
+                        modifier = Modifier.semantics {
+                            contentDescription = if (recordingAfter) "Discard unsaved take and record" else "Discard unsaved take"
+                        }
+                    ) { Text(if (recordingAfter) "Discard and record" else "Discard") }
+                }
+            )
+        }
     }
 }
+
+private enum class DraftPrompt { DISCARD, RECORD }
 
 @Composable
 private fun StatusWord(status: String, recording: Boolean, paused: Boolean, saved: Boolean) {
@@ -516,5 +605,7 @@ internal fun MissingAudioScreen(projectName: String, onBack: () -> Unit) {
 
 private fun duration(project: Project): String = clock(project.totalFrames, project.sampleRate)
 
-private fun clock(frames: Long, sampleRate: Int): String =
-    RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, sampleRate))
+private fun draftClock(project: Project): String = clock(project.totalFrames, project.sampleRate, hours = false)
+
+private fun clock(frames: Long, sampleRate: Int, hours: Boolean = true): String =
+    RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, sampleRate), hours = hours)

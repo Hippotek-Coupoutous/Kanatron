@@ -153,7 +153,10 @@ class MainActivity : ComponentActivity() {
                 appViewModel.awaitMicrophonePermission(null)
             } else appViewModel.setMicrophoneRationale(true)
         }
-        shortcutRecordAction = { askToRecord(null, null) }
+        shortcutRecordAction = {
+            // Sketch offers the recovered take first; another recording must not start over it.
+            if (appViewModel.state.value.drafts.isEmpty()) askToRecord(null, null) else appViewModel.clearShortcutRequest()
+        }
 
         setContent {
             AudioSketchTheme {
@@ -379,7 +382,10 @@ private fun AudioSketchApp(
                     }
                 )
                 Route.SKETCH -> {
-                    val current = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
+                    val visibleCurrent = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
+                    val draft = appState.drafts.firstOrNull()
+                    // An unsaved take is what Sketch shows and plays; Record still backs onto the visible project.
+                    val current = draft ?: visibleCurrent
                     LaunchedEffect(current?.id) { appViewModel.loadPlaybackFile(current?.id) }
                     SketchScreen(
                         recording = recording,
@@ -390,14 +396,24 @@ private fun AudioSketchApp(
                         startError = appState.startError,
                         current = current,
                         currentWav = current?.let { appState.audioFiles[it.id] },
+                        draft = draft,
                         layering = appState.layerBackingId != null || appState.layerOn,
                         click = click,
                         layerOn = appState.layerOn,
                         onLayerToggle = { appViewModel.setLayerEnabled(!appState.layerOn) },
                         onRecord = { clickSettings ->
-                            val backingId = current?.id?.takeIf { appState.layerOn }
+                            val backingId = visibleCurrent?.id?.takeIf { appState.layerOn }
                             appViewModel.setLayerBacking(backingId)
                             onRecordRequest(backingId, clickSettings)
+                        },
+                        onSaveDraft = { appViewModel.saveRecoveredDraft(it.id) },
+                        onDiscardDraft = { appViewModel.discardRecoveredDraft(it.id) },
+                        onDiscardAndRecord = { discarded, clickSettings ->
+                            appViewModel.discardRecoveredDraft(discarded.id) {
+                                val backingId = visibleCurrent?.id?.takeIf { appState.layerOn }
+                                appViewModel.setLayerBacking(backingId)
+                                onRecordRequest(backingId, clickSettings)
+                            }
                         },
                         onPauseResume = {
                             val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
@@ -410,7 +426,7 @@ private fun AudioSketchApp(
                         onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
                         onOpenSettings = onOpenSettings,
                         onOpenInMix = {
-                            val projectId = recording.projectId ?: current?.id
+                            val projectId = recording.projectId ?: visibleCurrent?.id
                             if (projectId != null) {
                                 appViewModel.selectProject(projectId)
                                 appViewModel.setHome(projectId)

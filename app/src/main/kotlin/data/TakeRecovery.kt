@@ -20,7 +20,7 @@ internal class TakeRecovery(
     private val recordings: File,
     private val projectFile: (String) -> File,
     private val loadProject: (String) -> Project?,
-    private val createProject: (String, File, Int, Int, Long, String, Boolean) -> Project
+    private val createProject: (String, File, Int, Int, Long, String, Boolean, Boolean) -> Project
 ) {
     /** Source paths referenced by project metadata, plus whether every JSON could be read at all. */
     class SourceReferences internal constructor(private val sources: Set<String>, private val fullyReadable: Boolean) {
@@ -69,7 +69,7 @@ internal class TakeRecovery(
             runCatching {
                 val format = wav.inputStream().use(WavFormat::read)
                 require(format.channels in 1..2 && format.sampleRate in SUPPORTED_SAMPLE_RATES && format.frameCount > 0L)
-                createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered import", false)
+                createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered import", false, false)
             }.getOrNull()
         }
     }
@@ -90,8 +90,8 @@ internal class TakeRecovery(
         require(file.absoluteFile.parentFile == recordings.absoluteFile) { "Invalid recovered take path" }
         val references = sourceReferences()
         return when {
-            file.name.matches(TAKE_PARTIAL_PATH) -> recoverPartial(file, null, references)
-            file.name.matches(TAKE_PATH) -> recoverOrphan(file, references)
+            file.name.matches(TAKE_PARTIAL_PATH) -> recoverPartial(file, null, references, draft = false)
+            file.name.matches(TAKE_PATH) -> recoverOrphan(file, references, draft = false)
             else -> null
         } ?: error("Silent recording could not be recovered")
     }
@@ -99,17 +99,17 @@ internal class TakeRecovery(
     /** Repairs crash-left partial WAVs before exposing the library. */
     private fun recoverPartials(references: SourceReferences, activePath: String?): List<Project> {
         return recordings.listFiles { file -> file.name.matches(TAKE_PARTIAL_PATH) }.orEmpty().mapNotNull { partial ->
-            runCatching { recoverPartial(partial, activePath, references) }.getOrNull()
+            runCatching { recoverPartial(partial, activePath, references, draft = true) }.getOrNull()
         }
     }
 
     /** Rebuilds missing project records from complete take WAVs left by a process death during save. */
     private fun recoverOrphanTakes(references: SourceReferences): List<Project> {
         return recordings.listFiles { file -> file.name.matches(TAKE_PATH) }
-            .orEmpty().mapNotNull { wav -> runCatching { recoverOrphan(wav, references) }.getOrNull() }
+            .orEmpty().mapNotNull { wav -> runCatching { recoverOrphan(wav, references, draft = true) }.getOrNull() }
     }
 
-    private fun recoverPartial(partial: File, activePath: String?, references: SourceReferences): Project? {
+    private fun recoverPartial(partial: File, activePath: String?, references: SourceReferences, draft: Boolean): Project? {
         if (partial.absolutePath == activePath) return null
         if (!partial.name.matches(TAKE_PARTIAL_PATH)) return null
         if (references.isReferenced("recordings/${partial.name}")) return null
@@ -128,14 +128,14 @@ internal class TakeRecovery(
         val finalFile = File(recordings, "take-$id.wav")
         if (!partial.renameTo(finalFile)) error("Could not recover partial recording")
         return try {
-            createProject(id, finalFile, sampleRate, 1, dataBytes / 2, "Recovered take", allZero)
+            createProject(id, finalFile, sampleRate, 1, dataBytes / 2, "Recovered take", allZero, draft)
         } catch (failure: Throwable) {
             finalFile.renameTo(partial)
             throw failure
         }
     }
 
-    private fun recoverOrphan(wav: File, references: SourceReferences): Project? {
+    private fun recoverOrphan(wav: File, references: SourceReferences, draft: Boolean): Project? {
         if (references.isReferenced("recordings/${wav.name}")) return null
         val id = wav.name.removePrefix("take-").removeSuffix(".wav")
         if (!id.matches(PROJECT_ID) || loadProject(id) != null) return null
@@ -143,7 +143,7 @@ internal class TakeRecovery(
         require(format.channels == 1 && format.frameCount > 0L) { "Invalid recovered take format" }
         require(format.dataOffset + format.dataSize <= wav.length()) { "Truncated recovered take" }
         val allZero = RecordingCore.allSamplesZero(wav, format.dataOffset, format.dataSize)
-        return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered take", allZero)
+        return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered take", allZero, draft)
     }
 
     private fun isSilentRecoveryCandidate(file: File): Boolean {

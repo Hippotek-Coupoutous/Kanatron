@@ -68,6 +68,9 @@ internal class TakePersister(private val context: Context) {
                     alignmentNotice = "The take would start before frame zero. Its original WAV was kept in the library without shifting its audio."
                 } else {
                     val arrangement = repository.appendRecordedTake(base.id, savedTake.id, calibratedPlacement.positionFrames)
+                    // The take now lives in the backing project; drop its duplicate Library entry and keep the WAV.
+                    runCatching { repository.delete(savedTake.id) }
+                    project = arrangement
                     var edited = arrangement
                     val takeSource = savedTake.firstClip.source.wav
                     val track = arrangement.tracks.firstOrNull { candidate ->

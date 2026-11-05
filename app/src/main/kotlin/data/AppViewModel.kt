@@ -50,6 +50,8 @@ internal data class AppUiState(
     val startError: String? = null,
     val importNotice: String? = null,
     val projects: List<Project> = emptyList(),
+    /** Recovered unsaved takes, newest first; hidden from the Library until saved. */
+    val drafts: List<Project> = emptyList(),
     val audioFiles: Map<String, File> = emptyMap(),
     val unreadableProjectCount: Int = 0,
     val libraryError: String? = null,
@@ -84,6 +86,7 @@ internal class AppViewModel(
     private var importJob: Job? = null
     private var importCancellation: ImportCancellation? = null
     private var lastFinishedImportUri: Uri? = null
+    private var draftActionInFlight = false
 
     init {
         // A restored route can already point at a project; load it like the first selection would.
@@ -192,7 +195,7 @@ internal class AppViewModel(
                         repository.recovery.recoverOrphanImports()
                     }
                     val library = repository.readLibrary()
-                    val audioFiles = library.projects.mapNotNull { project ->
+                    val audioFiles = (library.projects + library.drafts).mapNotNull { project ->
                         runCatching { repository.directPlaybackFile(project)?.let { project.id to it } }.getOrNull()
                     }.toMap()
                     val silentFiles = if (startup) repository.recovery.silentRecoveryCandidates(RecordingActivePath.path) else emptyList()
@@ -205,9 +208,11 @@ internal class AppViewModel(
                         _state.update {
                             it.copy(
                                 projects = result.library.projects,
+                                drafts = result.library.drafts,
                                 // Fresh results win; entries added during the IO check are kept unchecked.
                                 audioFiles = it.audioFiles.filter { (id, file) ->
-                                    result.library.projects.any { project -> project.id == id } &&
+                                    (result.library.projects.any { project -> project.id == id } ||
+                                        result.library.drafts.any { project -> project.id == id }) &&
                                         (existingAudioFiles[id] != file || existingLive[id] == file)
                                 } + result.audioFiles,
                                 unreadableProjectCount = result.library.unreadableCount,
@@ -290,7 +295,8 @@ internal class AppViewModel(
                     val project = repository.get(id) ?: return@withContext null
                     repository.playbackFile(project).takeIf(File::isFile)
                 }
-                if (wav != null && _state.value.projects.any { it.id == id }) {
+                val known = _state.value.projects.any { it.id == id } || _state.value.drafts.any { it.id == id }
+                if (wav != null && known) {
                     _state.update { it.copy(audioFiles = it.audioFiles + (id to wav), libraryError = null) }
                 }
             } catch (cancelled: CancellationException) {
@@ -391,6 +397,54 @@ internal class AppViewModel(
                 throw cancelled
             } catch (failure: Throwable) {
                 _state.update { it.copy(libraryError = failure.message ?: "Could not delete this recording.") }
+            }
+        }
+    }
+
+    /** Promotes a recovered take into the Library and makes it the current take. */
+    fun saveRecoveredDraft(id: String) {
+        if (draftActionInFlight) return
+        draftActionInFlight = true
+        viewModelScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    val draft = repository.get(id) ?: error("The recovered take could not be found.")
+                    require(draft.draft) { "This take is already in the library." }
+                    repository.saveEditState(draft.copy(draft = false))
+                }
+                _state.update { it.copy(drafts = it.drafts.filterNot { draft -> draft.id == id }) }
+                refreshLibrary(selectId = saved.id).join()
+                setHome(saved.id)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                _state.update { it.copy(libraryError = failure.message ?: "Could not save this take.") }
+            } finally {
+                draftActionInFlight = false
+            }
+        }
+    }
+
+    /** Deletes a recovered take; its WAV survives while another project references it. */
+    fun discardRecoveredDraft(id: String, onDeleted: () -> Unit = {}) {
+        // A stale banner must never delete a take that has since been saved into the Library.
+        if (draftActionInFlight || _state.value.drafts.none { it.id == id }) return
+        draftActionInFlight = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { repository.delete(id) }
+                _state.update { it.copy(drafts = it.drafts.filterNot { draft -> draft.id == id }) }
+                invalidatePlayback(id)
+                if (_state.value.selectedId == id) selectProject(null, force = true)
+                if (_state.value.homeId == id) setHome(null)
+                refreshLibrary().join()
+                onDeleted()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                _state.update { it.copy(libraryError = failure.message ?: "Could not discard this take.") }
+            } finally {
+                draftActionInFlight = false
             }
         }
     }

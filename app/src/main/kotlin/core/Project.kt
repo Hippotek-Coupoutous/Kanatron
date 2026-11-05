@@ -89,6 +89,8 @@ data class Project(
     val channels: Int,
     val createdAtEpochMillis: Long,
     val silent: Boolean = false,
+    /** A recovered, unsaved take: stored on disk but hidden from the Library until explicitly saved. */
+    val draft: Boolean = false,
     val tracks: List<ProjectTrack>,
     val undoHistory: List<ProjectArrangementSnapshot> = emptyList()
 ) {
@@ -115,6 +117,7 @@ data class Project(
         append("\"sampleRate\":").append(sampleRate).append(',')
         append("\"channels\":").append(channels).append(',')
         append("\"silent\":").append(silent).append(',')
+        append("\"draft\":").append(draft).append(',')
         append("\"tracks\":").append(tracks.tracksToJson()).append(',')
         append("\"undoHistory\":[")
         undoHistory.forEachIndexed { index, snapshot ->
@@ -149,6 +152,7 @@ data class Project(
                 channels = root.long("channels").toIntExact("channels"),
                 createdAtEpochMillis = root.long("createdAtEpochMillis"),
                 silent = if (root.containsKey("silent")) root.boolean("silent") else false,
+                draft = if (root.containsKey("draft")) root.boolean("draft") else false,
                 tracks = tracks,
                 undoHistory = history
             )

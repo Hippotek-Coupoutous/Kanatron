@@ -6,9 +6,9 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@mipmap/kana_launcher"
+        android:icon="@mipmap/kanatron_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/kana_launcher"
+        android:roundIcon="@mipmap/kanatron_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Kanatron">
         <activity

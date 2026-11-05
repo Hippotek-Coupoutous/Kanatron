@@ -1,11 +1,11 @@
-package com.ottomusic.sketch.playback
+package com.kanatron.app.playback
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import com.ottomusic.sketch.core.SUPPORTED_BPM
-import com.ottomusic.sketch.core.frameAtBeat
-import com.ottomusic.sketch.core.mixClicks
+import com.kanatron.app.core.SUPPORTED_BPM
+import com.kanatron.app.core.frameAtBeat
+import com.kanatron.app.core.mixClicks
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

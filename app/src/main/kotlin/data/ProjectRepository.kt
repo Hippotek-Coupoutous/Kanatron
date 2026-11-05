@@ -1,21 +1,21 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 import android.content.Context
-import com.ottomusic.sketch.core.ExportPreflight
-import com.ottomusic.sketch.core.MultitrackRenderer
-import com.ottomusic.sketch.core.PROJECT_ID
-import com.ottomusic.sketch.core.PROJECT_ID_PATTERN
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.ProjectArrangementActions
-import com.ottomusic.sketch.core.ProjectArrangementSnapshot
-import com.ottomusic.sketch.core.ProjectAudioSource
-import com.ottomusic.sketch.core.ProjectClip
-import com.ottomusic.sketch.core.ProjectTrack
-import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
-import com.ottomusic.sketch.core.TrimRange
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.core.firstClip
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.core.ExportPreflight
+import com.kanatron.app.core.MultitrackRenderer
+import com.kanatron.app.core.PROJECT_ID
+import com.kanatron.app.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.ProjectArrangementActions
+import com.kanatron.app.core.ProjectArrangementSnapshot
+import com.kanatron.app.core.ProjectAudioSource
+import com.kanatron.app.core.ProjectClip
+import com.kanatron.app.core.ProjectTrack
+import com.kanatron.app.core.SUPPORTED_SAMPLE_RATES
+import com.kanatron.app.core.TrimRange
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.core.firstClip
+import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -257,7 +257,6 @@ class ProjectRepository(context: Context) {
         sampleRate: Int,
         channels: Int,
         frames: Long,
-        recovered: Boolean = false,
         silent: Boolean = false
     ): Project? {
         if (frames <= 0L) return null
@@ -289,7 +288,7 @@ class ProjectRepository(context: Context) {
                 throw IOException("Could not finalize recording; the partial file was kept for startup recovery.")
             }
             return try {
-                createProject(takeId, finalFile, sampleRate, channels, frames, if (recovered) "Recovered take" else defaultName(), silent)
+                createProject(takeId, finalFile, sampleRate, channels, frames, takeName(finalFile.lastModified()), silent)
             } catch (failure: Throwable) {
                 if (!finalFile.renameTo(partialFile)) {
                     throw IOException("Project metadata could not be saved and the WAV could not be moved back to a partial recording.", failure)
@@ -368,8 +367,6 @@ class ProjectRepository(context: Context) {
         return File(projects, "$id.json")
     }
 
-    private fun defaultName(): String = "Recording " + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-
     internal companion object {
         private val RECORDING_PATH = Regex("(?:take-$PROJECT_ID_PATTERN(?:\\.partial)?|import-$PROJECT_ID_PATTERN)\\.wav")
         private val MIX_RENDER_TEMP = Regex("mix-render-[A-Za-z0-9]+\\.tmp")
@@ -377,4 +374,10 @@ class ProjectRepository(context: Context) {
         private val PROJECT_LOCK = Any()
         private val ARRANGEMENT_WORK_LOCK = Any()
     }
+}
+
+/** A take's display name, stamped with when its audio was written; recovered takes pass the WAV's timestamp. */
+internal fun takeName(writtenAtMillis: Long): String {
+    val at = writtenAtMillis.takeIf { it > 0L } ?: System.currentTimeMillis()
+    return "Recording " + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(at))
 }

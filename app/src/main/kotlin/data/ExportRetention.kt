@@ -1,7 +1,7 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
-import com.ottomusic.sketch.core.PROJECT_ID
-import com.ottomusic.sketch.core.sha256Hex
+import com.kanatron.app.core.PROJECT_ID
+import com.kanatron.app.core.sha256Hex
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException

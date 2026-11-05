@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 import java.io.ByteArrayOutputStream
 import java.io.EOFException

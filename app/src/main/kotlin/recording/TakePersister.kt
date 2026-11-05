@@ -1,16 +1,16 @@
-package com.ottomusic.sketch.recording
+package com.kanatron.app.recording
 
 import android.content.Context
-import com.ottomusic.sketch.core.OverdubAlignment
-import com.ottomusic.sketch.core.OverdubRoute
-import com.ottomusic.sketch.core.OverdubTiming
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.ProjectArrangementActions
-import com.ottomusic.sketch.core.ProjectClip
-import com.ottomusic.sketch.core.TrimRange
-import com.ottomusic.sketch.core.firstClip
-import com.ottomusic.sketch.data.OverdubCalibrationStore
-import com.ottomusic.sketch.data.ProjectRepository
+import com.kanatron.app.core.OverdubAlignment
+import com.kanatron.app.core.OverdubRoute
+import com.kanatron.app.core.OverdubTiming
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.ProjectArrangementActions
+import com.kanatron.app.core.ProjectClip
+import com.kanatron.app.core.TrimRange
+import com.kanatron.app.core.firstClip
+import com.kanatron.app.data.OverdubCalibrationStore
+import com.kanatron.app.data.ProjectRepository
 
 internal data class TakeSnapshot(
     val base: Project?,
@@ -39,7 +39,7 @@ internal class TakePersister(private val context: Context) {
             val repository = ProjectRepository(context)
             val savedTake = repository.saveTake(
                 take.id, take.file, take.sampleRate, take.channels, take.frames,
-                recovered = take.error != null, silent = take.allSamplesZero
+                silent = take.allSamplesZero
             )
             project = savedTake
             val base = snapshot.base

@@ -1,4 +1,4 @@
-package com.ottomusic.sketch
+package com.kanatron.app
 
 import android.Manifest
 import android.content.Intent
@@ -48,33 +48,33 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
-import com.ottomusic.sketch.core.ExportFilename
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.ResumeStartGate
-import com.ottomusic.sketch.core.TrimRange
-import com.ottomusic.sketch.data.AppViewModel
-import com.ottomusic.sketch.data.ImportStage
-import com.ottomusic.sketch.data.MicrophoneAction
-import com.ottomusic.sketch.data.OverdubCalibrationStore
-import com.ottomusic.sketch.data.RecordingActivePath
-import com.ottomusic.sketch.data.Route
-import com.ottomusic.sketch.data.WavExporter
-import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
-import com.ottomusic.sketch.playback.ClickEngine
-import com.ottomusic.sketch.playback.MonitorClick
-import com.ottomusic.sketch.recording.RecordingPhase
-import com.ottomusic.sketch.recording.RecordingService
-import com.ottomusic.sketch.ui.AudioSketchTheme
-import com.ottomusic.sketch.ui.LibraryScreen
-import com.ottomusic.sketch.ui.MixScreen
-import com.ottomusic.sketch.ui.OverdubCalibrationScreen
-import com.ottomusic.sketch.ui.SketchScreen
-import com.ottomusic.sketch.ui.Synth
-import com.ottomusic.sketch.ui.SynthGlyph
-import com.ottomusic.sketch.ui.SynthIcon
-import com.ottomusic.sketch.ui.TrimScreen
-import com.ottomusic.sketch.ui.TunerScreen
-import com.ottomusic.sketch.ui.shareExport
+import com.kanatron.app.core.ExportFilename
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.ResumeStartGate
+import com.kanatron.app.core.TrimRange
+import com.kanatron.app.data.AppViewModel
+import com.kanatron.app.data.ImportStage
+import com.kanatron.app.data.MicrophoneAction
+import com.kanatron.app.data.OverdubCalibrationStore
+import com.kanatron.app.data.RecordingActivePath
+import com.kanatron.app.data.Route
+import com.kanatron.app.data.WavExporter
+import com.kanatron.app.platform.MICROPHONE_PERMISSION_ERROR
+import com.kanatron.app.playback.ClickEngine
+import com.kanatron.app.playback.MonitorClick
+import com.kanatron.app.recording.RecordingPhase
+import com.kanatron.app.recording.RecordingService
+import com.kanatron.app.ui.KanatronTheme
+import com.kanatron.app.ui.LibraryScreen
+import com.kanatron.app.ui.MixScreen
+import com.kanatron.app.ui.OverdubCalibrationScreen
+import com.kanatron.app.ui.SketchScreen
+import com.kanatron.app.ui.Synth
+import com.kanatron.app.ui.SynthGlyph
+import com.kanatron.app.ui.SynthIcon
+import com.kanatron.app.ui.TrimScreen
+import com.kanatron.app.ui.TunerScreen
+import com.kanatron.app.ui.shareExport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -159,8 +159,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            AudioSketchTheme {
-                AudioSketchApp(
+            KanatronTheme {
+                KanatronApp(
                     hostLifecycle = lifecycle,
                     appViewModel = appViewModel,
                     onContinueMicrophoneRationale = {
@@ -261,8 +261,8 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        const val EXTRA_RECORD_NOW = "com.ottomusic.sketch.extra.RECORD_NOW"
-        const val ACTION_RECORD_NOW = "com.ottomusic.sketch.action.RECORD_NOW"
+        const val EXTRA_RECORD_NOW = "com.kanatron.app.extra.RECORD_NOW"
+        const val ACTION_RECORD_NOW = "com.kanatron.app.action.RECORD_NOW"
         private const val STATE_PENDING_IMPORT_URI = "pendingImportUri"
     }
 }
@@ -271,7 +271,7 @@ private fun playbackAllowed(recordingPhase: RecordingPhase): Boolean =
     recordingPhase !in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
 
 @Composable
-private fun AudioSketchApp(
+private fun KanatronApp(
     hostLifecycle: Lifecycle,
     appViewModel: AppViewModel,
     onContinueMicrophoneRationale: () -> Unit,
@@ -541,9 +541,9 @@ private fun AudioSketchApp(
                 text = {
                     Text(
                         if (appState.pendingMicrophoneAction == MicrophoneAction.TUNER) {
-                            "Audio Sketch uses microphone access to detect pitch while the tuner is open. It stops listening when you leave."
+                            "Kanatron uses microphone access to detect pitch while the tuner is open. It stops listening when you leave."
                         } else {
-                            "Audio Sketch uses microphone access to record a take or record over a backing track. You can import, play, and manage recordings without it."
+                            "Kanatron uses microphone access to record a take or record over a backing track. You can import, play, and manage recordings without it."
                         }
                     )
                 },

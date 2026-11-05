@@ -1,10 +1,10 @@
-package com.ottomusic.sketch.playback
+package com.kanatron.app.playback
 
 import android.content.Context
 import android.os.Process
-import com.ottomusic.sketch.core.AudioClockPoint
-import com.ottomusic.sketch.platform.PcmOutput
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.core.AudioClockPoint
+import com.kanatron.app.platform.PcmOutput
+import com.kanatron.app.platform.PlatformPorts
 
 /** Click-only monitor used while recording; it shares the service's focus and PCM output owner. */
 internal class ClickOnlyPlayer(

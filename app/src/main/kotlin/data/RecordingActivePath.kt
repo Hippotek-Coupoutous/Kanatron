@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 /** The in-flight recording file, shared so startup recovery leaves it alone. */
 internal object RecordingActivePath {

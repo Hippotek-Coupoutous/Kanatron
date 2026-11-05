@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream

@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 import kotlin.math.abs
 import kotlin.math.ceil

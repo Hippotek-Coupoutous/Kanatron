@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.platform
+package com.kanatron.app.platform
 
 import java.util.concurrent.atomic.AtomicBoolean
 

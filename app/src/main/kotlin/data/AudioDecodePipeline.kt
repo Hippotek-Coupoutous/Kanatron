@@ -1,12 +1,12 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
-import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.core.putPcm16
+import com.kanatron.app.core.SUPPORTED_SAMPLE_RATES
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.core.putPcm16
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream

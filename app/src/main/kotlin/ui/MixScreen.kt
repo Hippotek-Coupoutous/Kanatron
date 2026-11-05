@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -48,19 +48,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ottomusic.sketch.core.ExportFilename
-import com.ottomusic.sketch.core.MultitrackRenderer
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.ProjectArrangementActions
-import com.ottomusic.sketch.core.ProjectClip
-import com.ottomusic.sketch.core.ProjectTrack
-import com.ottomusic.sketch.core.RecordingCore
-import com.ottomusic.sketch.core.TrimRange
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.core.firstClip
-import com.ottomusic.sketch.data.ProjectRepository
-import com.ottomusic.sketch.data.WavExporter
-import com.ottomusic.sketch.playback.WavPlayer
+import com.kanatron.app.core.ExportFilename
+import com.kanatron.app.core.MultitrackRenderer
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.ProjectArrangementActions
+import com.kanatron.app.core.ProjectClip
+import com.kanatron.app.core.ProjectTrack
+import com.kanatron.app.core.RecordingCore
+import com.kanatron.app.core.TrimRange
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.core.firstClip
+import com.kanatron.app.data.ProjectRepository
+import com.kanatron.app.data.WavExporter
+import com.kanatron.app.playback.WavPlayer
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -282,6 +282,7 @@ private fun MixEditor(
             TrackLane(
                 project = current,
                 track = track,
+                projects = projects,
                 busy = busy,
                 canRemove = canRemove(track),
                 onTrimClip = onTrimClip,
@@ -371,12 +372,21 @@ private fun MixEditor(
 private fun TrackLane(
     project: Project,
     track: ProjectTrack,
+    projects: List<Project>,
     busy: Boolean,
     canRemove: Boolean,
     onTrimClip: (trackId: String, clipId: String) -> Unit,
     onRequestRemove: () -> Unit,
     onChange: (Project) -> Unit
 ) {
+    // Raw take file names are opaque, so clips are labelled by the Library project owning the WAV.
+    val ownerNames = remember(projects, project.id) {
+        buildMap {
+            projects.filter { it.id != project.id }.forEach { owner ->
+                owner.tracks.forEach { candidate -> candidate.clips.forEach { putIfAbsent(it.source.wav, owner.name) } }
+            }
+        }
+    }
     var gainDraft by remember(track.id, track.gainPermille) { mutableStateOf(track.gainPermille / 1_000f) }
     var dragPreview by remember(track.id) { mutableStateOf<DragPreview?>(null) }
     val onChangeState = androidx.compose.runtime.rememberUpdatedState(onChange)
@@ -463,7 +473,7 @@ private fun TrackLane(
             }
         }
         track.clips.forEach { clip ->
-            ClipControls(project, track, clip, busy, onTrimClip, onChange)
+            ClipControls(project, track, clip, ownerNames[clip.source.wav] ?: track.name.ifBlank { "Clip" }, busy, onTrimClip, onChange)
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Gain ${(gainDraft * 100).roundToInt()}%", modifier = Modifier.weight(1f))
@@ -500,6 +510,7 @@ private fun ClipControls(
     project: Project,
     track: ProjectTrack,
     clip: ProjectClip,
+    label: String,
     busy: Boolean,
     onTrimClip: (trackId: String, clipId: String) -> Unit,
     onChange: (Project) -> Unit
@@ -509,13 +520,13 @@ private fun ClipControls(
     val maxPosition = Long.MAX_VALUE - MultitrackRenderer.clipFrameCount(clip, project.sampleRate)
     val correctedPosition = positionText.toLongOrNull()?.takeIf { it in 0L..maxPosition }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(clip.source.wav.substringAfterLast('/'), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text("Source trim · ${clip.trim.startFrame}–${clip.trim.endFrame} · ${clip.source.sampleRate} Hz")
         BigButton(
             text = "Trim",
             onClick = { onTrimClip(track.id, clip.id) },
             modifier = Modifier.semantics {
-                contentDescription = "Trim ${clip.source.wav.substringAfterLast('/')}"
+                contentDescription = "Trim $label"
             },
             enabled = !busy,
             icon = SynthIcon.Trim
@@ -552,7 +563,7 @@ private fun ClipControls(
                     current.copy(clips = current.clips.map { if (it.id == clip.id) it.copy(muted = muted) else it })
                 }) },
                 enabled = !busy,
-                modifier = Modifier.semantics { contentDescription = "Mute clip ${clip.source.wav.substringAfterLast('/')}" }
+                modifier = Modifier.semantics { contentDescription = "Mute clip $label" }
             )
             Text("Clip mute")
         }

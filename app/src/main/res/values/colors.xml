@@ -1,0 +1,5 @@
+<resources>
+    <!-- Window background matches Synth.skyMid, the middle of the first screen's gradient, so the launch window and Compose meet without a flash. -->
+    <color name="kana_window_background">#FF7B1C</color>
+    <color name="kana_status_bar">#0D0221</color>
+</resources>

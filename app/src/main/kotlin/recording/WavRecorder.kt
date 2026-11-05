@@ -1,16 +1,16 @@
-package com.ottomusic.sketch.recording
+package com.kanatron.app.recording
 
 import android.content.Context
 import android.media.AudioRecord
-import com.ottomusic.sketch.core.AudioClockPoint
-import com.ottomusic.sketch.core.RecordingCore
-import com.ottomusic.sketch.core.RecordingLevel
-import com.ottomusic.sketch.core.TakeFinalization
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.data.RecordingActivePath
-import com.ottomusic.sketch.platform.MicrophoneOwnership
-import com.ottomusic.sketch.platform.PcmInput
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.core.AudioClockPoint
+import com.kanatron.app.core.RecordingCore
+import com.kanatron.app.core.RecordingLevel
+import com.kanatron.app.core.TakeFinalization
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.data.RecordingActivePath
+import com.kanatron.app.platform.MicrophoneOwnership
+import com.kanatron.app.platform.PcmInput
+import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException

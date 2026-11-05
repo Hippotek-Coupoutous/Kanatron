@@ -1,11 +1,11 @@
-package com.ottomusic.sketch.recording
+package com.kanatron.app.recording
 
 import android.content.Context
-import com.ottomusic.sketch.core.AudioClockPoint
-import com.ottomusic.sketch.core.OverdubRoute
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.SharedAudioTimeline
-import com.ottomusic.sketch.data.OverdubCalibrationStore
+import com.kanatron.app.core.AudioClockPoint
+import com.kanatron.app.core.OverdubRoute
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.SharedAudioTimeline
+import com.kanatron.app.data.OverdubCalibrationStore
 
 /**
  * Tracks the capture and backing routes and clocks of one take and feeds the shared timeline.

@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 object ExportPreflight {
     const val STORAGE_RESERVE_BYTES = 10L * 1024 * 1024

@@ -1,9 +1,9 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 import android.content.Context
-import com.ottomusic.sketch.core.OverdubCalibration
-import com.ottomusic.sketch.core.OverdubRoute
-import com.ottomusic.sketch.core.sha256Hex
+import com.kanatron.app.core.OverdubCalibration
+import com.kanatron.app.core.OverdubRoute
+import com.kanatron.app.core.sha256Hex
 
 /** Device-local timing offsets, kept separate for each exact route and rate combination. */
 internal class OverdubCalibrationStore(context: Context) {

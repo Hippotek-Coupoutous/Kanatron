@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.recording
+package com.kanatron.app.recording
 
 /** Carries incomplete PCM frames across reads without allocating per read. */
 internal class FrameAligner(private val frameBytes: Int) {

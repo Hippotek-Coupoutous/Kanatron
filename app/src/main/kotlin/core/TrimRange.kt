@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 data class TrimRange(val startFrame: Long, val endFrame: Long) {
     init {

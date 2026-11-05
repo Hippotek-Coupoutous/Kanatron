@@ -1,10 +1,10 @@
-package com.ottomusic.sketch.playback
+package com.kanatron.app.playback
 
-import com.ottomusic.sketch.core.SUPPORTED_BPM
-import com.ottomusic.sketch.core.frameAtBeat
-import com.ottomusic.sketch.core.mixClicks
-import com.ottomusic.sketch.core.pcm16At
-import com.ottomusic.sketch.core.putPcm16
+import com.kanatron.app.core.SUPPORTED_BPM
+import com.kanatron.app.core.frameAtBeat
+import com.kanatron.app.core.mixClicks
+import com.kanatron.app.core.pcm16At
+import com.kanatron.app.core.putPcm16
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.sin

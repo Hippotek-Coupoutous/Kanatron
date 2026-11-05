@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 /** Runs every finalization step and preserves the first storage or release failure. */
 object TakeFinalization {

@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MobileMusicEditingApplication"
+rootProject.name = "Kanatron"
 include(":app")

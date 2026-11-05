@@ -1,3 +1,9 @@
 <resources>
-    <style name="Theme.AudioSketch" parent="android:style/Theme.Material.Light.NoActionBar" />
+    <!-- Framework dark theme only paints the window before Compose draws; no library theme dependency. -->
+    <style name="Theme.Kanatron" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/kana_window_background</item>
+        <item name="android:statusBarColor">@color/kana_status_bar</item>
+        <item name="android:navigationBarColor">@color/kana_status_bar</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

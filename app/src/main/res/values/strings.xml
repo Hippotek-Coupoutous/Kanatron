@@ -1,3 +1,4 @@
 <resources>
+    <string name="app_name">Kanatron</string>
     <string name="shortcut_record_now">Record now</string>
 </resources>

@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.recording
+package com.kanatron.app.recording
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -14,22 +14,22 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
-import com.ottomusic.sketch.MainActivity
-import com.ottomusic.sketch.R
-import com.ottomusic.sketch.core.OverdubRoute
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.RecordingLevel
-import com.ottomusic.sketch.core.SharedAudioTimeline
-import com.ottomusic.sketch.core.SUPPORTED_BPM
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.data.ProjectRepository
-import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
-import com.ottomusic.sketch.platform.PcmInput
-import com.ottomusic.sketch.platform.PlatformPorts
-import com.ottomusic.sketch.platform.RecordingFocus
-import com.ottomusic.sketch.playback.ClickOnlyPlayer
-import com.ottomusic.sketch.playback.MonitorClick
-import com.ottomusic.sketch.playback.WavPlayer
+import com.kanatron.app.MainActivity
+import com.kanatron.app.R
+import com.kanatron.app.core.OverdubRoute
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.RecordingLevel
+import com.kanatron.app.core.SharedAudioTimeline
+import com.kanatron.app.core.SUPPORTED_BPM
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.data.ProjectRepository
+import com.kanatron.app.platform.MICROPHONE_PERMISSION_ERROR
+import com.kanatron.app.platform.PcmInput
+import com.kanatron.app.platform.PlatformPorts
+import com.kanatron.app.platform.RecordingFocus
+import com.kanatron.app.playback.ClickOnlyPlayer
+import com.kanatron.app.playback.MonitorClick
+import com.kanatron.app.playback.WavPlayer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,16 +57,16 @@ data class RecordingServiceState(
 
 class RecordingService : Service() {
     companion object {
-        const val ACTION_START = "com.ottomusic.sketch.action.START_RECORDING"
-        const val ACTION_PAUSE = "com.ottomusic.sketch.action.PAUSE_RECORDING"
-        const val ACTION_RESUME = "com.ottomusic.sketch.action.RESUME_RECORDING"
-        const val ACTION_STOP = "com.ottomusic.sketch.action.STOP_RECORDING"
+        const val ACTION_START = "com.kanatron.app.action.START_RECORDING"
+        const val ACTION_PAUSE = "com.kanatron.app.action.PAUSE_RECORDING"
+        const val ACTION_RESUME = "com.kanatron.app.action.RESUME_RECORDING"
+        const val ACTION_STOP = "com.kanatron.app.action.STOP_RECORDING"
         /** Toggles listening to the paused take so far. Ignored outside [RecordingPhase.PAUSED]. */
-        const val ACTION_PREVIEW = "com.ottomusic.sketch.action.PREVIEW_TAKE"
-        const val EXTRA_OVERDUB_PROJECT_ID = "com.ottomusic.sketch.extra.OVERDUB_PROJECT_ID"
-        const val EXTRA_OVERDUB_CLICK_BPM = "com.ottomusic.sketch.extra.OVERDUB_CLICK_BPM"
-        const val EXTRA_OVERDUB_CLICK_BEATS = "com.ottomusic.sketch.extra.OVERDUB_CLICK_BEATS"
-        const val EXTRA_OVERDUB_COUNT_IN_BARS = "com.ottomusic.sketch.extra.OVERDUB_COUNT_IN_BARS"
+        const val ACTION_PREVIEW = "com.kanatron.app.action.PREVIEW_TAKE"
+        const val EXTRA_OVERDUB_PROJECT_ID = "com.kanatron.app.extra.OVERDUB_PROJECT_ID"
+        const val EXTRA_OVERDUB_CLICK_BPM = "com.kanatron.app.extra.OVERDUB_CLICK_BPM"
+        const val EXTRA_OVERDUB_CLICK_BEATS = "com.kanatron.app.extra.OVERDUB_CLICK_BEATS"
+        const val EXTRA_OVERDUB_COUNT_IN_BARS = "com.kanatron.app.extra.OVERDUB_COUNT_IN_BARS"
         private const val CHANNEL_ID = "recording"
         private const val NOTIFICATION_ID = 42
         private const val PREVIEW_PUBLISH_MILLIS = 100L
@@ -547,7 +547,7 @@ class RecordingService : Service() {
         val pauseLabel = if (paused) "Resume" else "Pause"
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_mic_notification)
-            .setContentTitle("Audio Sketch")
+            .setContentTitle("Kanatron")
             .setContentText(text)
             .setContentIntent(launch)
             .setOngoing(true)

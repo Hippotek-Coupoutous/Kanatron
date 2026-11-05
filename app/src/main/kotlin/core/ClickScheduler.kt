@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 /** Metronome tempo accepted by the UI, the service intents and the scheduler. */
 val SUPPORTED_BPM = 30..300

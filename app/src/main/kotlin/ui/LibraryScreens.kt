@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import android.content.Context
 import android.os.Build
@@ -57,15 +57,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ottomusic.sketch.core.Peak
-import com.ottomusic.sketch.core.PeakExtractor
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.RecordingCore
-import com.ottomusic.sketch.playback.ClickEngine
-import com.ottomusic.sketch.playback.MonitorClick
-import com.ottomusic.sketch.playback.WavPlayer
-import com.ottomusic.sketch.recording.RecordingPhase
-import com.ottomusic.sketch.recording.RecordingServiceState
+import com.kanatron.app.core.Peak
+import com.kanatron.app.core.PeakExtractor
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.RecordingCore
+import com.kanatron.app.playback.ClickEngine
+import com.kanatron.app.playback.MonitorClick
+import com.kanatron.app.playback.WavPlayer
+import com.kanatron.app.recording.RecordingPhase
+import com.kanatron.app.recording.RecordingServiceState
 import java.io.File
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToLong
@@ -160,7 +160,7 @@ internal fun SketchScreen(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "Audio Sketch", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black,
+                    "Kanatron", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black,
                     letterSpacing = 2.sp, modifier = Modifier.weight(1f).padding(end = 8.dp)
                 )
                 StatusWord(status, recordingNow, paused, saved)
@@ -250,7 +250,7 @@ internal fun SketchScreen(
                     Notice("A recoverable take is in your library.")
                 }
                 if (!microphoneGranted && !active) {
-                    Notice(if (microphoneDenied) "Microphone access is off. The library remains available; allow access to record." else "Audio Sketch needs microphone access to record.")
+                    Notice(if (microphoneDenied) "Microphone access is off. The library remains available; allow access to record." else "Kanatron needs microphone access to record.")
                     if (microphoneDenied) TextAction("Open app settings", onOpenSettings, description = "Open app settings for microphone access", color = Synth.cyan)
                     if (shortcutRequested) Notice("On first use, Record now waits for microphone and notification permissions before recording.")
                 }

@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 /** A hardware frame position paired with Android's monotonic audio timestamp. */
 data class AudioClockPoint(val framePosition: Long, val monotonicNanos: Long) {

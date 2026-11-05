@@ -1,13 +1,13 @@
-package com.ottomusic.sketch.playback
+package com.kanatron.app.playback
 
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import com.ottomusic.sketch.core.AudioClockPoint
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.platform.PcmOutput
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.core.AudioClockPoint
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.platform.PcmOutput
+import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicReference

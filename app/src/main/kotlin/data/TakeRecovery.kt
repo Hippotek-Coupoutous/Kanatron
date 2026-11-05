@@ -1,13 +1,13 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
-import com.ottomusic.sketch.core.PROJECT_ID
-import com.ottomusic.sketch.core.PROJECT_ID_PATTERN
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.ProjectArrangementSnapshot
-import com.ottomusic.sketch.core.ProjectTrack
-import com.ottomusic.sketch.core.RecordingCore
-import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
-import com.ottomusic.sketch.core.WavFormat
+import com.kanatron.app.core.PROJECT_ID
+import com.kanatron.app.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.ProjectArrangementSnapshot
+import com.kanatron.app.core.ProjectTrack
+import com.kanatron.app.core.RecordingCore
+import com.kanatron.app.core.SUPPORTED_SAMPLE_RATES
+import com.kanatron.app.core.WavFormat
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -128,7 +128,7 @@ internal class TakeRecovery(
         val finalFile = File(recordings, "take-$id.wav")
         if (!partial.renameTo(finalFile)) error("Could not recover partial recording")
         return try {
-            createProject(id, finalFile, sampleRate, 1, dataBytes / 2, "Recovered take", allZero, draft)
+            createProject(id, finalFile, sampleRate, 1, dataBytes / 2, takeName(finalFile.lastModified()), allZero, draft)
         } catch (failure: Throwable) {
             finalFile.renameTo(partial)
             throw failure
@@ -143,7 +143,7 @@ internal class TakeRecovery(
         require(format.channels == 1 && format.frameCount > 0L) { "Invalid recovered take format" }
         require(format.dataOffset + format.dataSize <= wav.length()) { "Truncated recovered take" }
         val allZero = RecordingCore.allSamplesZero(wav, format.dataOffset, format.dataSize)
-        return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered take", allZero, draft)
+        return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, takeName(wav.lastModified()), allZero, draft)
     }
 
     private fun isSilentRecoveryCandidate(file: File): Boolean {

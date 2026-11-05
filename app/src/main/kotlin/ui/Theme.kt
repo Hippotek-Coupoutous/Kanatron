@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,7 +33,7 @@ internal object Synth {
 }
 
 @Composable
-fun AudioSketchTheme(content: @Composable () -> Unit) {
+fun KanatronTheme(content: @Composable () -> Unit) {
     // Always dark: the outrun look is the product's identity and it is used at night with music.
     val colors = darkColorScheme(
         primary = Synth.pink,

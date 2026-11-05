@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.ottomusic.sketch"
+    namespace = "com.kanatron.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.ottomusic.sketch"
+        applicationId = "com.kanatron.app"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

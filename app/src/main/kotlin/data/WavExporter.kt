@@ -1,9 +1,9 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
-import com.ottomusic.sketch.core.ExportPreflight
-import com.ottomusic.sketch.core.TrimRange
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.core.ExportPreflight
+import com.kanatron.app.core.TrimRange
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException

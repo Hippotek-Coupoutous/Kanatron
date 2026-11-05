@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas

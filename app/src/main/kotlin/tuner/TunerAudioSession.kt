@@ -1,13 +1,13 @@
-package com.ottomusic.sketch.tuner
+package com.kanatron.app.tuner
 
 import android.media.AudioRecord
-import com.ottomusic.sketch.core.TunerPitch
-import com.ottomusic.sketch.core.TunerPitchReading
-import com.ottomusic.sketch.core.pcm16At
-import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
-import com.ottomusic.sketch.platform.PcmInput
-import com.ottomusic.sketch.platform.PcmInputFactory
-import com.ottomusic.sketch.platform.MicrophoneOwnership
+import com.kanatron.app.core.TunerPitch
+import com.kanatron.app.core.TunerPitchReading
+import com.kanatron.app.core.pcm16At
+import com.kanatron.app.platform.MICROPHONE_PERMISSION_ERROR
+import com.kanatron.app.platform.PcmInput
+import com.kanatron.app.platform.PcmInputFactory
+import com.kanatron.app.platform.MicrophoneOwnership
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

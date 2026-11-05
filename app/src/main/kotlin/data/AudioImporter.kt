@@ -1,11 +1,11 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.system.ErrnoException
 import android.system.OsConstants
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException

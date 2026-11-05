@@ -1,7 +1,7 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 import android.util.AtomicFile
-import com.ottomusic.sketch.core.Project
+import com.kanatron.app.core.Project
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.StandardCharsets

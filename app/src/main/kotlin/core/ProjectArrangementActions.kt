@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 object ProjectArrangementActions {
     fun addTrack(project: Project, track: ProjectTrack): Project {

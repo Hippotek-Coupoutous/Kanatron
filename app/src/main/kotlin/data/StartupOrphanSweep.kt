@@ -1,6 +1,6 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
-import com.ottomusic.sketch.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.PROJECT_ID_PATTERN
 import java.io.File
 
 internal object StartupOrphanSweep {

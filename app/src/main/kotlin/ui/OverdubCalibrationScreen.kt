@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -24,10 +24,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.ottomusic.sketch.core.OverdubCalibration
-import com.ottomusic.sketch.core.OverdubRoute
-import com.ottomusic.sketch.core.OverdubTiming
-import com.ottomusic.sketch.data.OverdubCalibrationStore
+import com.kanatron.app.core.OverdubCalibration
+import com.kanatron.app.core.OverdubRoute
+import com.kanatron.app.core.OverdubTiming
+import com.kanatron.app.data.OverdubCalibrationStore
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -53,7 +53,7 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
         SynthPanel {
             if (route == null) {
                 Text("No identified Layer route yet.", color = Synth.text, style = MaterialTheme.typography.titleMedium)
-                Text("Run one Layer take with the wired route you intend to use. Audio Sketch will show its route and rates here. Bluetooth timing is not verified.", color = Synth.muted)
+                Text("Run one Layer take with the wired route you intend to use. Kanatron will show its route and rates here. Bluetooth timing is not verified.", color = Synth.muted)
             } else {
                 Text(route.displayName, color = Synth.text, style = MaterialTheme.typography.titleMedium)
                 Text("Capture ${route.captureSampleRate} Hz · backing ${route.backingSampleRate} Hz · project ${route.projectSampleRate} Hz", color = Synth.muted)

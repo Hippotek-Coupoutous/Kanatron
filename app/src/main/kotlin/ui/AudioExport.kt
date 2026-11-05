@@ -1,10 +1,10 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
-import com.ottomusic.sketch.data.isOutOfDiskSpace
+import com.kanatron.app.data.isOutOfDiskSpace
 import java.io.File
 import java.io.FileNotFoundException
 import java.nio.file.AccessDeniedException

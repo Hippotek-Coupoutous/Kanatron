@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 /** Defers a permission-result action until the host is visible again. */
 class ResumeStartGate {

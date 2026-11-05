@@ -1,13 +1,13 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
-import com.ottomusic.sketch.core.ExportPreflight
-import com.ottomusic.sketch.core.MultitrackRenderer
-import com.ottomusic.sketch.core.PROJECT_ID_PATTERN
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.ProjectAudioSource
-import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.core.sha256Hex
-import com.ottomusic.sketch.platform.PlatformPorts
+import com.kanatron.app.core.ExportPreflight
+import com.kanatron.app.core.MultitrackRenderer
+import com.kanatron.app.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.ProjectAudioSource
+import com.kanatron.app.core.WavFormat
+import com.kanatron.app.core.sha256Hex
+import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.IOException
 

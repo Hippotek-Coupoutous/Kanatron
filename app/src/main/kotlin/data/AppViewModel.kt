@@ -1,13 +1,13 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
 import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
-import com.ottomusic.sketch.core.Project
-import com.ottomusic.sketch.core.SUPPORTED_BPM
-import com.ottomusic.sketch.playback.MonitorClick
+import com.kanatron.app.core.Project
+import com.kanatron.app.core.SUPPORTED_BPM
+import com.kanatron.app.playback.MonitorClick
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException

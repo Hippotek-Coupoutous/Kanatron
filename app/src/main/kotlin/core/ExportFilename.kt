@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.core
+package com.kanatron.app.core
 
 object ExportFilename {
     private val unsupported = Regex("[^A-Za-z0-9 _().-]")

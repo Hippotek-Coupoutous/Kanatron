@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.ui
+package com.kanatron.app.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -35,9 +35,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.ottomusic.sketch.core.TunerPitchReading
-import com.ottomusic.sketch.platform.PlatformPorts
-import com.ottomusic.sketch.tuner.TunerAudioSession
+import com.kanatron.app.core.TunerPitchReading
+import com.kanatron.app.platform.PlatformPorts
+import com.kanatron.app.tuner.TunerAudioSession
 import kotlin.math.abs
 
 @Composable

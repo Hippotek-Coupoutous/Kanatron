@@ -1,4 +1,4 @@
-package com.ottomusic.sketch.platform
+package com.kanatron.app.platform
 
 import android.Manifest
 import android.content.Context
@@ -13,7 +13,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.StatFs
 import androidx.core.content.ContextCompat
-import com.ottomusic.sketch.core.AudioClockPoint
+import com.kanatron.app.core.AudioClockPoint
 import java.io.File
 
 internal const val MICROPHONE_PERMISSION_ERROR =

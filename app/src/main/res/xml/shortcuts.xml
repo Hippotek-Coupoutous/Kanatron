@@ -5,11 +5,11 @@
         android:icon="@drawable/ic_mic_notification"
         android:shortcutShortLabel="@string/shortcut_record_now">
         <intent
-            android:action="com.ottomusic.sketch.action.RECORD_NOW"
-            android:targetPackage="com.ottomusic.sketch"
-            android:targetClass="com.ottomusic.sketch.MainActivity">
+            android:action="com.kanatron.app.action.RECORD_NOW"
+            android:targetPackage="com.kanatron.app"
+            android:targetClass="com.kanatron.app.MainActivity">
             <extra
-                android:name="com.ottomusic.sketch.extra.RECORD_NOW"
+                android:name="com.kanatron.app.extra.RECORD_NOW"
                 android:value="true" />
         </intent>
     </shortcut>

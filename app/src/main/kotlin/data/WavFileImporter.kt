@@ -1,8 +1,8 @@
-package com.ottomusic.sketch.data
+package com.kanatron.app.data
 
-import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
-import com.ottomusic.sketch.core.UnsupportedWavEncodingException
-import com.ottomusic.sketch.core.WavFormat
+import com.kanatron.app.core.SUPPORTED_SAMPLE_RATES
+import com.kanatron.app.core.UnsupportedWavEncodingException
+import com.kanatron.app.core.WavFormat
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream

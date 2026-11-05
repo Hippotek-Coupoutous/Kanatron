@@ -11,17 +11,14 @@ import com.ottomusic.sketch.core.ProjectArrangementSnapshot
 import com.ottomusic.sketch.core.ProjectAudioSource
 import com.ottomusic.sketch.core.ProjectClip
 import com.ottomusic.sketch.core.ProjectTrack
-import com.ottomusic.sketch.core.RecordingCore
 import com.ottomusic.sketch.core.SUPPORTED_SAMPLE_RATES
 import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
 import com.ottomusic.sketch.platform.PlatformPorts
 import java.io.File
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -33,9 +30,12 @@ class ProjectRepository(context: Context) {
     private val rootDirectory = context.filesDir
     private val projects = File(rootDirectory, "projects").apply { mkdirs() }
     private val recordings = File(rootDirectory, "recordings").apply { mkdirs() }
-    private val arrangementPreviews = File(rootDirectory, "arrangement-previews")
     private val arrangementWork = File(rootDirectory, "arrangement-work")
+    private val previewCache = PreviewCache(File(rootDirectory, "arrangement-previews"))
     private val exportRetention = ExportRetention(rootDirectory)
+
+    /** Repairs takes and rebuilds records at startup; each pass scans project metadata once. */
+    internal val recovery = TakeRecovery(projects, recordings, ::projectFile, ::get, ::createProject)
 
     data class LibraryContents(val projects: List<Project>, val unreadableCount: Int)
 
@@ -70,35 +70,10 @@ class ProjectRepository(context: Context) {
     /** Lazily returns the immutable source or materializes an arrangement's bounded private preview. */
     fun playbackFile(project: Project): File {
         if (!project.isArrangement) return audioFile(project)
-        synchronized(PREVIEW_LOCK) {
+        return previewCache.render(project, ::sourceFile) {
             if (missingSources(project).isNotEmpty()) {
                 throw IOException("A source WAV is missing or no longer matches its saved format.")
             }
-            if (!arrangementPreviews.isDirectory && !arrangementPreviews.mkdirs()) {
-                throw IOException("Could not create the arrangement preview folder.")
-            }
-            cleanupPreviewRenderTemps()
-            val expectedBytes = Math.addExact(
-                Math.multiplyExact(Math.multiplyExact(project.totalFrames, project.channels.toLong()), 2L),
-                WavFormat.HEADER_BYTES.toLong()
-            )
-            if (expectedBytes > MAX_PREVIEW_BYTES) {
-                throw IOException("This arrangement is too large for the preview cache. Shorten its clips and try again.")
-            }
-            val fingerprint = sha256Hex("${project.sampleRate}|${project.channels}|${project.tracks}")
-            val target = File(arrangementPreviews, "${project.id}.$fingerprint.wav")
-            if (target.isFile && isValidPreview(target, project)) {
-                target.setLastModified(System.currentTimeMillis())
-                cleanupPreviewCache(target)
-                return target
-            }
-            if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(arrangementPreviews), expectedBytes)) {
-                throw IOException("Not enough free storage to prepare the arrangement preview.")
-            }
-            if (target.exists()) target.delete()
-            MultitrackRenderer.renderToWav(project, ::sourceFile, target)
-            cleanupPreviewCache(target)
-            return target
         }
     }
 
@@ -228,13 +203,6 @@ class ProjectRepository(context: Context) {
         }
     }
 
-    private fun isValidPreview(file: File, project: Project): Boolean = runCatching {
-        val format = file.inputStream().use(WavFormat::read)
-        format.bitsPerSample == 16 && format.sampleRate == project.sampleRate &&
-            format.channels == project.channels && format.frameCount == project.totalFrames &&
-            format.dataOffset + format.dataSize <= file.length()
-    }.getOrDefault(false)
-
     private fun isValidSource(source: ProjectAudioSource): Boolean = runCatching {
         val file = sourceFile(source)
         if (!file.isFile) return false
@@ -244,32 +212,6 @@ class ProjectRepository(context: Context) {
             Math.addExact(format.dataOffset, format.dataSize) <= file.length()
     }.getOrDefault(false)
 
-    private fun cleanupPreviewCache(keep: File?) {
-        cleanupPreviewRenderTemps()
-        val previews = arrangementPreviews.listFiles { file ->
-            file.isFile && file.name.matches(PREVIEW_PATH)
-        }.orEmpty()
-        var total = previews.fold(0L) { sum, file ->
-            runCatching { Math.addExact(sum, file.length()) }.getOrDefault(Long.MAX_VALUE)
-        }
-        var count = previews.size
-        for (file in previews.filterNot { it == keep }.sortedBy(File::lastModified)) {
-            if (count <= MAX_PREVIEW_COUNT && total <= MAX_PREVIEW_BYTES) break
-            val size = file.length()
-            if (file.delete()) {
-                count--
-                total = (total - size).coerceAtLeast(0L)
-            }
-        }
-    }
-
-    /** Caller holds PREVIEW_LOCK so no live renderer's scratch file can be removed. */
-    private fun cleanupPreviewRenderTemps() {
-        arrangementPreviews.listFiles { file ->
-            file.isFile && file.name.matches(MIX_RENDER_TEMP)
-        }.orEmpty().forEach { it.delete() }
-    }
-
     /** Caller holds ARRANGEMENT_WORK_LOCK to protect any in-flight render/export lease. */
     private fun cleanupArrangementWorkTemps() {
         arrangementWork.listFiles { file ->
@@ -278,42 +220,6 @@ class ProjectRepository(context: Context) {
                     file.name.matches(MIX_RENDER_TEMP)
                 )
         }.orEmpty().forEach { it.delete() }
-    }
-
-    private fun deletePreviewFiles(projectId: String) {
-        arrangementPreviews.listFiles { file -> file.name.startsWith("$projectId.") && file.name.endsWith(".wav") }
-            .orEmpty().forEach { it.delete() }
-    }
-
-    private data class ReferenceScan(val referenced: Boolean, val fullyReadable: Boolean)
-
-    /** Any unreadable project metadata makes source deletion and orphan reconstruction unsafe. */
-    private fun scanSourceReferences(sourceWav: String, excludingProjectId: String? = null): ReferenceScan {
-        val bases = linkedMapOf<String, File>()
-        projects.listFiles().orEmpty().forEach { file ->
-            val baseName = when {
-                file.name.endsWith(".json") -> file.name
-                file.name.endsWith(".json.bak") -> file.name.removeSuffix(".bak")
-                file.name.endsWith(".json.new") -> file.name.removeSuffix(".new")
-                else -> null
-            } ?: return@forEach
-            val base = File(projects, baseName)
-            bases[baseName] = base
-        }
-        var readable = true
-        var referenced = false
-        for ((baseName, file) in bases) {
-            val projectId = baseName.removeSuffix(".json")
-            if (projectId == excludingProjectId) continue
-            try {
-                val project = ProjectStore(file).load()
-                val liveTracks = project.tracks + project.arrangementUndoHistory.flatMap(ProjectArrangementSnapshot::tracks)
-                if (liveTracks.any { track -> track.clips.any { it.source.wav == sourceWav } }) referenced = true
-            } catch (_: Exception) {
-                readable = false
-            }
-        }
-        return ReferenceScan(referenced, readable)
     }
 
     fun importOutput(id: String): File {
@@ -352,7 +258,7 @@ class ProjectRepository(context: Context) {
             activeStagingPaths
         )
         exportRetention.cleanup()
-        synchronized(PREVIEW_LOCK) { cleanupPreviewCache(keep = null) }
+        previewCache.cleanup()
         synchronized(ARRANGEMENT_WORK_LOCK) { cleanupArrangementWorkTemps() }
     }
 
@@ -373,7 +279,9 @@ class ProjectRepository(context: Context) {
             if (project != null) {
                 val ownedSourceFile = if (project.isArrangement) null else runCatching { audioFile(project) }.getOrNull()
                 val sourcePath = if (project.isArrangement) null else project.sourceWav
-                val refs = sourcePath?.let { scanSourceReferences(it, excludingProjectId = id) }
+                val sourceReferenced = sourcePath?.let {
+                    recovery.sourceReferences(excludingProjectId = id).isReferenced(it)
+                }
                 val arrangementSources = if (project.isArrangement) {
                     (project.tracks + project.arrangementUndoHistory.flatMap(ProjectArrangementSnapshot::tracks))
                         .flatMap(ProjectTrack::clips).map { it.source }.distinct()
@@ -381,122 +289,15 @@ class ProjectRepository(context: Context) {
                 val metadata = projectFile(id)
                 if (!metadata.delete() && metadata.exists()) throw IOException("Could not delete the project metadata.")
                 File(metadata.path + ".bak").delete()
-                if (ownedSourceFile != null && refs?.let { it.fullyReadable && !it.referenced } == true) ownedSourceFile.delete()
+                if (ownedSourceFile != null && sourceReferenced == false) ownedSourceFile.delete()
                 if (project.isArrangement) {
-                    synchronized(PREVIEW_LOCK) { deletePreviewFiles(id) }
+                    previewCache.delete(id)
                     arrangementSources.forEach { source ->
-                        val remaining = scanSourceReferences(source.wav)
-                        if (remaining.fullyReadable && !remaining.referenced) runCatching { sourceFile(source).delete() }
+                        val remaining = recovery.sourceReferences()
+                        if (!remaining.isReferenced(source.wav)) runCatching { sourceFile(source).delete() }
                     }
                 }
             }
-        }
-    }
-
-    /** Repairs crash-left partial WAVs before exposing the library. */
-    private fun recoverPartials(activePath: String? = null): List<Project> {
-        return recordings.listFiles { file -> file.name.matches(TAKE_PARTIAL_PATH) }.orEmpty().mapNotNull { partial ->
-            runCatching { recoverPartial(partial, activePath) }.getOrNull()
-        }
-    }
-
-    /** Rebuilds missing project records from complete take WAVs left by a process death during save. */
-    private fun recoverOrphanTakes(): List<Project> {
-        return recordings.listFiles { file -> file.name.matches(TAKE_PATH) }
-            .orEmpty().mapNotNull { wav -> runCatching { recoverOrphan(wav) }.getOrNull() }
-    }
-
-    /** Rebuilds project records from imported WAVs committed before a process death. */
-    fun recoverOrphanImports(): List<Project> = recordings.listFiles { file ->
-        file.name.matches(IMPORT_PATH)
-    }.orEmpty().mapNotNull { wav ->
-        val id = wav.name.removePrefix("import-").removeSuffix(".wav")
-        if (projectFile(id).isFile) return@mapNotNull null
-        val refs = scanSourceReferences("recordings/${wav.name}")
-        if (!refs.fullyReadable || refs.referenced) return@mapNotNull null
-        runCatching {
-            val format = wav.inputStream().use(WavFormat::read)
-            require(format.channels in 1..2 && format.sampleRate in SUPPORTED_SAMPLE_RATES && format.frameCount > 0L)
-            createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered import")
-        }.getOrNull()
-    }
-
-    fun recoverTakes(activePath: String? = null): List<Project> =
-        recoverPartials(activePath) + recoverOrphanTakes()
-
-    fun silentRecoveryCandidates(activePath: String? = null): List<File> =
-        recordings.listFiles {
-            it.name.matches(TAKE_PARTIAL_PATH) || it.name.matches(TAKE_PATH)
-        }
-            .orEmpty().filter { file ->
-                file.absolutePath != activePath && runCatching {
-                    val refs = scanSourceReferences("recordings/${file.name}")
-                    refs.fullyReadable && !refs.referenced && isSilentRecoveryCandidate(file)
-                }.getOrDefault(false)
-            }
-
-    fun recoverSilentTake(file: File): Project {
-        require(file.absoluteFile.parentFile == recordings.absoluteFile) { "Invalid recovered take path" }
-        return when {
-            file.name.matches(TAKE_PARTIAL_PATH) -> recoverPartial(file, null)
-            file.name.matches(TAKE_PATH) -> recoverOrphan(file)
-            else -> null
-        } ?: error("Silent recording could not be recovered")
-    }
-
-    private fun recoverPartial(partial: File, activePath: String?): Project? {
-        if (partial.absolutePath == activePath) return null
-        if (!partial.name.matches(TAKE_PARTIAL_PATH)) return null
-        val refs = scanSourceReferences("recordings/${partial.name}")
-        if (!refs.fullyReadable || refs.referenced) return null
-        val id = partial.name.removePrefix("take-").removeSuffix(".partial.wav")
-        if (!id.matches(PROJECT_ID) || get(id) != null) return null
-        val dataBytes = RecordingCore.repairableDataBytes(partial.length(), channels = 1)
-        if (dataBytes < 2L) return null
-        val allZero = RecordingCore.allSamplesZero(partial, WavFormat.HEADER_BYTES.toLong(), dataBytes)
-        val sampleRate = readRateFromPlaceholderOrDefault(partial)
-        RandomAccessFile(partial, "rw").use { file ->
-            file.setLength(WavFormat.HEADER_BYTES + dataBytes)
-            file.seek(0)
-            file.write(RecordingCore.header(sampleRate = sampleRate, channels = 1, dataBytes = dataBytes))
-            file.fd.sync()
-        }
-        val finalFile = File(recordings, "take-$id.wav")
-        if (!partial.renameTo(finalFile)) error("Could not recover partial recording")
-        return try {
-            createProject(id, finalFile, sampleRate, 1, dataBytes / 2, "Recovered take", silent = allZero)
-        } catch (failure: Throwable) {
-            finalFile.renameTo(partial)
-            throw failure
-        }
-    }
-
-    private fun recoverOrphan(wav: File): Project? {
-        val refs = scanSourceReferences("recordings/${wav.name}")
-        if (!refs.fullyReadable || refs.referenced) return null
-        val id = wav.name.removePrefix("take-").removeSuffix(".wav")
-        if (!id.matches(PROJECT_ID) || get(id) != null) return null
-        val format = wav.inputStream().use(WavFormat::read)
-        require(format.channels == 1 && format.frameCount > 0L) { "Invalid recovered take format" }
-        require(format.dataOffset + format.dataSize <= wav.length()) { "Truncated recovered take" }
-        val allZero = RecordingCore.allSamplesZero(wav, format.dataOffset, format.dataSize)
-        return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, "Recovered take", silent = allZero)
-    }
-
-    private fun isSilentRecoveryCandidate(file: File): Boolean {
-        val partial = file.name.matches(TAKE_PARTIAL_PATH)
-        val orphan = file.name.matches(TAKE_PATH)
-        if (!partial && !orphan) return false
-        val id = if (partial) file.name.removePrefix("take-").removeSuffix(".partial.wav")
-        else file.name.removePrefix("take-").removeSuffix(".wav")
-        if (!id.matches(PROJECT_ID) || get(id) != null) return false
-        return if (partial) {
-            val bytes = RecordingCore.repairableDataBytes(file.length(), channels = 1)
-            bytes >= 2L && RecordingCore.allSamplesZero(file, WavFormat.HEADER_BYTES.toLong(), bytes)
-        } else {
-            val format = file.inputStream().use(WavFormat::read)
-            format.channels == 1 && format.frameCount > 0L &&
-                RecordingCore.allSamplesZero(file, format.dataOffset, format.dataSize)
         }
     }
 
@@ -606,37 +407,11 @@ class ProjectRepository(context: Context) {
 
     private fun defaultName(): String = "Recording " + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
 
-    private fun readRateFromPlaceholderOrDefault(file: File): Int =
-        runCatching {
-            RandomAccessFile(file, "r").use { input ->
-                val header = ByteArray(28)
-                input.readFully(header)
-                require(String(header, 0, 4, Charsets.US_ASCII) == "RIFF" && String(header, 8, 4, Charsets.US_ASCII) == "WAVE")
-                require(String(header, 12, 4, Charsets.US_ASCII) == "fmt ")
-                val sampleRate = (header[24].toLong() and 0xFF) or
-                    ((header[25].toLong() and 0xFF) shl 8) or
-                    ((header[26].toLong() and 0xFF) shl 16) or
-                    ((header[27].toLong() and 0xFF) shl 24)
-                sampleRate.toInt().takeIf { sampleRate in SUPPORTED_SAMPLE_RATES.first.toLong()..SUPPORTED_SAMPLE_RATES.last.toLong() } ?: 48_000
-            }
-        }.getOrDefault(48_000)
-
     internal companion object {
         private val RECORDING_PATH = Regex("(?:take-$PROJECT_ID_PATTERN(?:\\.partial)?|import-$PROJECT_ID_PATTERN)\\.wav")
-        private val TAKE_PARTIAL_PATH = Regex("take-$PROJECT_ID_PATTERN\\.partial\\.wav")
-        private val TAKE_PATH = Regex("take-$PROJECT_ID_PATTERN\\.wav")
-        private val IMPORT_PATH = Regex("import-$PROJECT_ID_PATTERN\\.wav")
-        private val PREVIEW_PATH = Regex("$PROJECT_ID_PATTERN\\.[a-f0-9]{64}\\.wav")
         private val MIX_RENDER_TEMP = Regex("mix-render-[A-Za-z0-9]+\\.tmp")
         private val MIX_SOURCE_TEMP = Regex("mix-source-[A-Za-z0-9]+\\.wav")
         private val PROJECT_LOCK = Any()
-        private val PREVIEW_LOCK = Any()
         private val ARRANGEMENT_WORK_LOCK = Any()
-        private const val MAX_PREVIEW_BYTES = 512L * 1024 * 1024
-        private const val MAX_PREVIEW_COUNT = 8
     }
 }
-
-/** Lowercase SHA-256 hex, shared by file fingerprints and retention metadata. */
-internal fun sha256Hex(text: String): String = MessageDigest.getInstance("SHA-256")
-    .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }

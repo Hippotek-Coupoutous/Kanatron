@@ -72,14 +72,14 @@ internal class AppViewModel(application: Application) : AndroidViewModel(applica
                     if (startup) {
                         val activePath = RecordingActivePath.path
                         repository.sweepStartupOrphans(ImportActivePaths.activeDecodePaths(), ImportActivePaths.activeStagingPaths())
-                        repository.recoverTakes(activePath)
-                        repository.recoverOrphanImports()
+                        repository.recovery.recoverTakes(activePath)
+                        repository.recovery.recoverOrphanImports()
                     }
                     val library = repository.readLibrary()
                     val audioFiles = library.projects.mapNotNull { project ->
                         runCatching { repository.audioFile(project).takeIf(File::isFile)?.let { project.id to it } }.getOrNull()
                     }.toMap()
-                    val silentFiles = if (startup) repository.silentRecoveryCandidates(RecordingActivePath.path) else emptyList()
+                    val silentFiles = if (startup) repository.recovery.silentRecoveryCandidates(RecordingActivePath.path) else emptyList()
                     LibrarySnapshot(library, audioFiles, silentFiles)
                 }
                 if (generation == libraryGeneration) {

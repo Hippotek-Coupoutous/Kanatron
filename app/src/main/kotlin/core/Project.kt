@@ -1,8 +1,14 @@
 package com.ottomusic.sketch.core
 
+import java.security.MessageDigest
+
 /** Charset and length shared by project, track, clip and take ids. */
 const val PROJECT_ID_PATTERN = "[A-Za-z0-9-]{1,80}"
 val PROJECT_ID = Regex(PROJECT_ID_PATTERN)
+
+/** Lowercase SHA-256 hex, shared by file fingerprints and retention metadata. */
+internal fun sha256Hex(text: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
 /** Immutable identity and format metadata for a stored source WAV. */
 data class ProjectAudioSource(

@@ -1,0 +1,97 @@
+package com.ottomusic.sketch.data
+
+import com.ottomusic.sketch.core.ExportPreflight
+import com.ottomusic.sketch.core.MultitrackRenderer
+import com.ottomusic.sketch.core.PROJECT_ID_PATTERN
+import com.ottomusic.sketch.core.Project
+import com.ottomusic.sketch.core.ProjectAudioSource
+import com.ottomusic.sketch.core.WavFormat
+import com.ottomusic.sketch.core.sha256Hex
+import com.ottomusic.sketch.platform.PlatformPorts
+import java.io.File
+import java.io.IOException
+
+/** Bounded on-disk cache of rendered arrangement previews. */
+internal class PreviewCache(private val directory: File) {
+
+    /** Renders or reuses the private preview; [check] runs under the cache lock before any preview file is touched. */
+    fun render(project: Project, sourceFile: (ProjectAudioSource) -> File, check: () -> Unit): File {
+        synchronized(PREVIEW_LOCK) {
+            check()
+            if (!directory.isDirectory && !directory.mkdirs()) {
+                throw IOException("Could not create the arrangement preview folder.")
+            }
+            cleanupRenderTemps()
+            val expectedBytes = Math.addExact(
+                Math.multiplyExact(Math.multiplyExact(project.totalFrames, project.channels.toLong()), 2L),
+                WavFormat.HEADER_BYTES.toLong()
+            )
+            if (expectedBytes > MAX_PREVIEW_BYTES) {
+                throw IOException("This arrangement is too large for the preview cache. Shorten its clips and try again.")
+            }
+            val fingerprint = sha256Hex("${project.sampleRate}|${project.channels}|${project.tracks}")
+            val target = File(directory, "${project.id}.$fingerprint.wav")
+            if (target.isFile && isValid(target, project)) {
+                target.setLastModified(System.currentTimeMillis())
+                evict(keep = target)
+                return target
+            }
+            if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(directory), expectedBytes)) {
+                throw IOException("Not enough free storage to prepare the arrangement preview.")
+            }
+            if (target.exists()) target.delete()
+            MultitrackRenderer.renderToWav(project, sourceFile, target)
+            evict(keep = target)
+            return target
+        }
+    }
+
+    /** Evicts old renders down to the cache limits. */
+    fun cleanup() = synchronized(PREVIEW_LOCK) { evict(keep = null) }
+
+    /** Removes every cached render of [projectId] once its metadata is gone. */
+    fun delete(projectId: String) = synchronized(PREVIEW_LOCK) {
+        directory.listFiles { file -> file.name.startsWith("$projectId.") && file.name.endsWith(".wav") }
+            .orEmpty().forEach { it.delete() }
+    }
+
+    private fun isValid(file: File, project: Project): Boolean = runCatching {
+        val format = file.inputStream().use(WavFormat::read)
+        format.bitsPerSample == 16 && format.sampleRate == project.sampleRate &&
+            format.channels == project.channels && format.frameCount == project.totalFrames &&
+            format.dataOffset + format.dataSize <= file.length()
+    }.getOrDefault(false)
+
+    private fun evict(keep: File?) {
+        cleanupRenderTemps()
+        val previews = directory.listFiles { file ->
+            file.isFile && file.name.matches(PREVIEW_PATH)
+        }.orEmpty()
+        var total = previews.fold(0L) { sum, file ->
+            runCatching { Math.addExact(sum, file.length()) }.getOrDefault(Long.MAX_VALUE)
+        }
+        var count = previews.size
+        for (file in previews.filterNot { it == keep }.sortedBy(File::lastModified)) {
+            if (count <= MAX_PREVIEW_COUNT && total <= MAX_PREVIEW_BYTES) break
+            val size = file.length()
+            if (file.delete()) {
+                count--
+                total = (total - size).coerceAtLeast(0L)
+            }
+        }
+    }
+
+    /** Caller holds PREVIEW_LOCK so no live renderer's scratch file can be removed. */
+    private fun cleanupRenderTemps() {
+        directory.listFiles { file -> file.isFile && file.name.matches(MIX_RENDER_TEMP) }
+            .orEmpty().forEach { it.delete() }
+    }
+
+    private companion object {
+        val PREVIEW_PATH = Regex("$PROJECT_ID_PATTERN\\.[a-f0-9]{64}\\.wav")
+        val MIX_RENDER_TEMP = Regex("mix-render-[A-Za-z0-9]+\\.tmp")
+        val PREVIEW_LOCK = Any()
+        const val MAX_PREVIEW_BYTES = 512L * 1024 * 1024
+        const val MAX_PREVIEW_COUNT = 8
+    }
+}

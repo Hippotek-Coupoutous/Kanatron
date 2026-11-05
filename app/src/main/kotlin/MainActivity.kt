@@ -649,7 +649,7 @@ private fun AudioSketchApp(
                     TextButton(onClick = {
                         scope.launch {
                             try {
-                                withContext(Dispatchers.IO) { repository.recoverSilentTake(file) }
+                                withContext(Dispatchers.IO) { repository.recovery.recoverSilentTake(file) }
                                 appViewModel.refreshLibrary()
                                 appViewModel.removeSilentRecovery(file)
                                 silentRecoveryFailure = null

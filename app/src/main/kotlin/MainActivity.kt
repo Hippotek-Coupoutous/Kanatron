@@ -350,9 +350,13 @@ private fun KanatronApp(
         }
     }
 
+    // A running take keeps its controls (and the microphone) on Sketch.
+    val takeRunning = recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
+
     BackHandler(enabled = route != Route.LIBRARY) {
         when (route) {
-            Route.SKETCH, Route.TUNER -> appViewModel.leave(Route.LIBRARY)
+            Route.SKETCH -> if (!takeRunning) appViewModel.leave(Route.LIBRARY)
+            Route.TUNER -> appViewModel.leave(Route.LIBRARY)
             Route.MIX -> appViewModel.leave(Route.LIBRARY)
             Route.TRIM -> appViewModel.leave(Route.MIX, selected?.id ?: selectedId)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.SKETCH)
@@ -495,8 +499,6 @@ private fun KanatronApp(
                 }
             }
         }
-        // A running take keeps its controls (and the microphone) on Sketch.
-        val takeRunning = recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
         if (route.isTopLevel) TopLevelBar(route, itemsEnabled = !mixBusy && !takeRunning) { destination ->
             // Mix edits change the project's duration and metadata, so leaving it refreshes the library.
             if (route == Route.MIX) appViewModel.leave(destination, selected?.id ?: selectedId)

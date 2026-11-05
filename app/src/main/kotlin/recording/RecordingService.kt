@@ -16,18 +16,12 @@ import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.ottomusic.sketch.MainActivity
 import com.ottomusic.sketch.R
-import com.ottomusic.sketch.core.AudioClockPoint
-import com.ottomusic.sketch.core.OverdubAlignment
 import com.ottomusic.sketch.core.OverdubRoute
-import com.ottomusic.sketch.core.OverdubTiming
-import com.ottomusic.sketch.core.ProjectArrangementActions
-import com.ottomusic.sketch.core.ProjectClip
+import com.ottomusic.sketch.core.Project
 import com.ottomusic.sketch.core.RecordingLevel
 import com.ottomusic.sketch.core.SharedAudioTimeline
 import com.ottomusic.sketch.core.SUPPORTED_BPM
-import com.ottomusic.sketch.core.TrimRange
 import com.ottomusic.sketch.core.WavFormat
-import com.ottomusic.sketch.data.OverdubCalibrationStore
 import com.ottomusic.sketch.data.ProjectRepository
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
 import com.ottomusic.sketch.platform.PcmInput
@@ -82,26 +76,14 @@ class RecordingService : Service() {
     private var destroyed = false
     private lateinit var audioManager: AudioManager
     private lateinit var recordingFocus: RecordingFocus
+    private lateinit var clockTracker: OverdubClockTracker
     private var recorder: WavRecorder? = null
     private var latestStartId = 0
-    private var recordingCallback: android.media.AudioManager.AudioRecordingCallback? = null
+    private var recordingCallback: AudioManager.AudioRecordingCallback? = null
     private var backingPlayer: WavPlayer? = null
     private var clickOnlyPlayer: ClickOnlyPlayer? = null
     private var monitorClick: MonitorClick? = null
-    private var overdubBaseProject: com.ottomusic.sketch.core.Project? = null
-    private var overdubBackingRate: Int? = null
-    private var captureSampleRate = 48_000
-    private var captureRouteName = "System microphone"
-    private var backingRouteName = "System output"
-    @Volatile private var observedOverdubRoute: OverdubRoute? = null
-    @Volatile private var overdubTimeline: SharedAudioTimeline? = null
-    @Volatile private var captureRouteKey: String? = null
-    @Volatile private var backingRouteKey: String? = null
-    private val clockLock = Any()
-    private var firstCaptureClock: Triple<AudioClockPoint, String, String>? = null
-    private var firstBackingClock: Triple<AudioClockPoint, String, String>? = null
-    private var commonRouteKey: String? = null
-    private var timelineObserving = false
+    private var overdubBaseProject: Project? = null
     @Volatile private var transportStopped = false
     private var finalizing = false
     @Volatile private var lostFocusPermanently = false
@@ -111,6 +93,7 @@ class RecordingService : Service() {
         super.onCreate()
         audioManager = getSystemService(AudioManager::class.java)
         recordingFocus = PlatformPorts.recordingFocus(this)
+        clockTracker = OverdubClockTracker(this, { overdubBaseProject }, ::publishOverdubRoute)
         createNotificationChannel()
     }
 
@@ -175,8 +158,6 @@ class RecordingService : Service() {
                     project == null -> finishWithoutTake("The backing recording could not be found.")
                     else -> {
                         overdubBaseProject = project
-                        // Arrangement previews are rendered at their project rate; single-source files use that same rate.
-                        overdubBackingRate = project.sampleRate
                         beginCapture()
                     }
                 }
@@ -205,28 +186,30 @@ class RecordingService : Service() {
                         silenceWarning = value.silenceWarning,
                         inputSilenced = value.inputSilenced,
                         alignmentNotice = mutableState.value.alignmentNotice,
-                        overdubRoute = observedOverdubRoute
+                        overdubRoute = clockTracker.route
                     )
                     if (phaseChanged) updateNotification()
                 } },
                 onFinished = { take -> main.post { completeTake(createdRecorder, take) } },
-                onClock = ::observeCaptureClock,
-                onRoute = ::observeCaptureRoute
+                onClock = clockTracker::onCaptureClock,
+                onRoute = clockTracker::onCaptureRoute
             )
             recorder = createdRecorder
             createdRecorder.start { input ->
                 registerRecordingCallback(input)
                 overdubBaseProject?.let { project ->
-                    overdubTimeline = SharedAudioTimeline(
-                        projectSampleRate = project.sampleRate,
-                        projectStartFrame = project.trim.startFrame,
-                        captureSampleRate = input.sampleRate,
-                        backingSampleRate = overdubBackingRate ?: project.sampleRate,
-                        countInFrames = monitorClick?.countInFrames(project.sampleRate) ?: 0L
+                    // Arrangement previews are rendered at their project rate; single-source files use that same rate.
+                    clockTracker.attach(
+                        SharedAudioTimeline(
+                            projectSampleRate = project.sampleRate,
+                            projectStartFrame = project.trim.startFrame,
+                            captureSampleRate = input.sampleRate,
+                            backingSampleRate = project.sampleRate,
+                            countInFrames = monitorClick?.countInFrames(project.sampleRate) ?: 0L
+                        ),
+                        input.sampleRate,
+                        input.routeName
                     )
-                    captureSampleRate = input.sampleRate
-                    captureRouteName = input.routeName
-                    synchronized(clockLock) { primeTimelineClocks() }
                 }
             }
             startBackingPlayback()
@@ -251,19 +234,7 @@ class RecordingService : Service() {
     private fun prepareOverdubBase(intent: Intent?): String? {
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
-        overdubTimeline = null
-        captureRouteKey = null
-        backingRouteKey = null
-        captureRouteName = "System microphone"
-        backingRouteName = "System output"
-        observedOverdubRoute = null
-        captureSampleRate = 48_000
-        synchronized(clockLock) {
-            firstCaptureClock = null
-            firstBackingClock = null
-            commonRouteKey = null
-            timelineObserving = false
-        }
+        clockTracker.reset()
         val id = intent?.getStringExtra(EXTRA_OVERDUB_PROJECT_ID)?.takeIf(String::isNotBlank)
         val clickBpm = intent?.getIntExtra(EXTRA_OVERDUB_CLICK_BPM, 0) ?: 0
         monitorClick = if (clickBpm in SUPPORTED_BPM) runCatching {
@@ -275,7 +246,6 @@ class RecordingService : Service() {
         }.getOrNull() else null
         if (id == null) {
             overdubBaseProject = null
-            overdubBackingRate = null
         }
         return id
     }
@@ -289,8 +259,8 @@ class RecordingService : Service() {
                     this,
                     recorder?.state?.value?.sampleRate ?: 48_000,
                     click,
-                    ::observeBackingClock,
-                    ::observeBackingRoute
+                    clockTracker::onBackingClock,
+                    clockTracker::onBackingRoute
                 ).also(ClickOnlyPlayer::start)
                 clickOnlyPlayer?.let { player -> main.postDelayed({ reportClickOnlyStatus(player) }, 1_000L) }
             } catch (_: Throwable) {
@@ -303,8 +273,8 @@ class RecordingService : Service() {
                 val file = ProjectRepository(this).playbackFile(project)
                 if (transportStopped || recorder == null) return@Thread
                 val player = WavPlayer(
-                    this, file, takesFocus = false, onClock = ::observeBackingClock,
-                    monitorClick = monitorClick, onRoute = ::observeBackingRoute
+                    this, file, takesFocus = false, onClock = clockTracker::onBackingClock,
+                    monitorClick = monitorClick, onRoute = clockTracker::onBackingRoute
                 )
                 if (transportStopped || recorder == null) {
                     player.release()
@@ -329,8 +299,8 @@ class RecordingService : Service() {
         val playerState = player.state.value
         val notice = when {
             playerState.error != null -> "Backing playback failed; recording continued without it."
-            overdubTimeline?.routeInvalidated() == true -> "Audio route changed. Timing is uncalibrated; captured audio is still being saved."
-            overdubTimeline?.clockDiscontinuous() == true -> "Audio clock discontinuity detected. Drift correction is disabled for this take."
+            clockTracker.timeline?.routeInvalidated() == true -> "Audio route changed. Timing is uncalibrated; captured audio is still being saved."
+            clockTracker.timeline?.clockDiscontinuous() == true -> "Audio clock discontinuity detected. Drift correction is disabled for this take."
             else -> null
         }
         if (playerState.error != null) rememberOutputFailure(notice!!)
@@ -360,98 +330,20 @@ class RecordingService : Service() {
         .joinToString(" ")
         .takeIf(String::isNotEmpty)
 
-    private fun observeCaptureRoute(route: String, name: String) {
-        synchronized(clockLock) {
-            val previous = captureRouteKey
-            if (previous != null && previous != route &&
-                (!previous.startsWith("unknown-") || route.startsWith("unknown-") || firstCaptureClock != null || timelineObserving)) {
-                overdubTimeline?.invalidateRoute()
-                firstCaptureClock = null
-            }
-            captureRouteKey = route
-            captureRouteName = name
-            rememberCurrentRoute()
-        }
-    }
-
-    private fun observeBackingRoute(route: String, name: String) {
-        synchronized(clockLock) {
-            val previous = backingRouteKey
-            if (previous != null && previous != route &&
-                (!previous.startsWith("unknown-") || route.startsWith("unknown-") || firstBackingClock != null || timelineObserving)) {
-                overdubTimeline?.invalidateRoute()
-                firstBackingClock = null
-            }
-            backingRouteKey = route
-            backingRouteName = name
-            rememberCurrentRoute()
-        }
-    }
-
-    private fun observeCaptureClock(point: AudioClockPoint, route: String, name: String) {
-        synchronized(clockLock) {
-            observeCaptureRoute(route, name)
-            if (firstCaptureClock == null) firstCaptureClock = Triple(point, route, name)
-            if (timelineObserving) overdubTimeline?.observeCapture(point, commonRouteKey ?: return)
-            else primeTimelineClocks()
-        }
-    }
-
-    private fun observeBackingClock(point: AudioClockPoint, route: String, name: String) {
-        synchronized(clockLock) {
-            observeBackingRoute(route, name)
-            if (firstBackingClock == null) firstBackingClock = Triple(point, route, name)
-            if (timelineObserving) overdubTimeline?.observeBacking(point, commonRouteKey ?: return)
-            else primeTimelineClocks()
-        }
-    }
-
-    private fun rememberCurrentRoute() {
-        val base = overdubBaseProject ?: return
-        val capture = captureRouteKey ?: return
-        val backing = backingRouteKey ?: return
-        if (capture.startsWith("unknown-") || backing.startsWith("unknown-") ||
-            capture == "System microphone" || backing == "System output") {
-            if (observedOverdubRoute != null) {
-                observedOverdubRoute = null
-                main.post { mutableState.value = mutableState.value.copy(overdubRoute = null) }
-            }
-            return
-        }
-        val route = OverdubRoute(
-            "$capture|$backing", "$captureRouteName → $backingRouteName",
-            captureSampleRate, overdubBackingRate ?: base.sampleRate, base.sampleRate
-        )
-        if (route == observedOverdubRoute) return
-        observedOverdubRoute = route
-        OverdubCalibrationStore(this).rememberRoute(route)
+    /** Route changes arrive on audio threads; state updates belong on the main looper. */
+    private fun publishOverdubRoute(route: OverdubRoute?) {
         main.post { mutableState.value = mutableState.value.copy(overdubRoute = route) }
     }
 
-    private fun primeTimelineClocks() {
-        if (timelineObserving) return
-        val (capturePoint, captureRoute) = firstCaptureClock ?: return
-        val (backingPoint, outputRoute) = firstBackingClock ?: return
-        val timeline = overdubTimeline ?: return
-        if (captureRoute != captureRouteKey || outputRoute != backingRouteKey) {
-            timeline.invalidateRoute()
-            return
-        }
-        commonRouteKey = "$captureRoute|$outputRoute"
-        timeline.observeBacking(backingPoint, commonRouteKey!!)
-        timeline.observeCapture(capturePoint, commonRouteKey!!)
-        timelineObserving = true
-    }
-
     private fun pauseTransport() {
-        overdubTimeline?.pause()
+        clockTracker.timeline?.pause()
         recorder?.pause()
         backingPlayer?.pause()
         clickOnlyPlayer?.pause()
     }
 
     private fun resumeTransport() {
-        overdubTimeline?.resume()
+        clockTracker.timeline?.resume()
         recorder?.resume()
         overdubBaseProject?.let { backingPlayer?.play(it.trim.endFrame) }
         clickOnlyPlayer?.resume()
@@ -501,22 +393,6 @@ class RecordingService : Service() {
         recordingCallback = null
     }
 
-    private data class TakeSnapshot(
-        val base: com.ottomusic.sketch.core.Project?,
-        val alignment: OverdubAlignment?,
-        val routeInvalidated: Boolean,
-        val clockDiscontinuous: Boolean,
-        val route: OverdubRoute?,
-        val lostFocus: Boolean
-    )
-
-    private data class SavedTake(
-        val project: com.ottomusic.sketch.core.Project?,
-        val error: String?,
-        val interruptionNotice: String?,
-        val alignmentNotice: String?
-    )
-
     private fun completeTake(sourceRecorder: WavRecorder, take: RecordingTake) {
         if (recorder !== sourceRecorder || finalizing) return
         finalizing = true
@@ -525,7 +401,7 @@ class RecordingService : Service() {
         snapshotOutputFailure()
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
-        val snapshot = takeSnapshot()
+        val snapshot = clockTracker.snapshot(overdubBaseProject, lostFocusPermanently)
         val save = Runnable {
             if (take.frames <= 0L) {
                 val recoverable = hasRecoverablePcm(take)
@@ -538,7 +414,7 @@ class RecordingService : Service() {
                 main.post { finishTake(sourceRecorder, take, null, notice) }
                 return@Runnable
             }
-            val saved = persistTake(take, snapshot)
+            val saved = TakePersister(this).persist(take, snapshot)
             main.post {
                 finishTake(sourceRecorder, take, saved.project, saved.error, saved.interruptionNotice, saved.alignmentNotice)
             }
@@ -547,103 +423,10 @@ class RecordingService : Service() {
         if (background.isShutdown) save.run() else background.execute(save)
     }
 
-    /** Everything the disk part of a finished take needs; read here so the saving thread touches no service state. */
-    private fun takeSnapshot(): TakeSnapshot = synchronized(clockLock) {
-        val timeline = overdubTimeline
-        TakeSnapshot(
-            base = overdubBaseProject,
-            alignment = timeline?.alignmentForFirstCapturedFrame(),
-            routeInvalidated = timeline?.routeInvalidated() == true,
-            clockDiscontinuous = timeline?.clockDiscontinuous() == true,
-            route = observedOverdubRoute,
-            lostFocus = lostFocusPermanently
-        )
-    }
-
-    private fun persistTake(take: RecordingTake, snapshot: TakeSnapshot): SavedTake {
-        var project: com.ottomusic.sketch.core.Project? = null
-        var alignmentNotice: String? = null
-        var error = take.error
-        try {
-            val repository = ProjectRepository(this)
-            val savedTake = repository.saveTake(
-                take.id, take.file, take.sampleRate, take.channels, take.frames,
-                recovered = take.error != null, silent = take.allSamplesZero
-            )
-            project = savedTake
-            val base = snapshot.base
-            if (savedTake != null && base != null) {
-                val alignment = snapshot.alignment
-                val route = snapshot.route?.takeIf {
-                    alignment != null && !snapshot.routeInvalidated && it.routeKey == alignment.routeKey
-                }
-                val calibration = route?.let { OverdubCalibrationStore(this).calibration(it) }
-                val calibratedPlacement = OverdubTiming.placement(
-                    alignment?.positionFrames ?: base.trim.startFrame,
-                    calibration.takeIf { alignment != null }
-                )
-                val correction = OverdubTiming.driftCorrectionPpm(
-                    snapshot.clockDiscontinuous,
-                    alignment?.rateCorrectionPpm
-                )
-                val safeCorrection = correction?.takeIf { it in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM } ?: 0
-                val leadInTrim = if (alignment == null || calibratedPlacement.leadInFrames == 0L) 0L else {
-                    OverdubTiming.sourceTrimForLeadIn(
-                        calibratedPlacement.leadInFrames, savedTake.sampleRate, base.sampleRate, safeCorrection
-                    )
-                }
-                if (leadInTrim >= savedTake.totalFrames) {
-                    project = savedTake
-                    alignmentNotice = "The take would start before frame zero. Its original WAV was kept in the library without shifting its audio."
-                } else {
-                    val arrangement = repository.appendRecordedTake(base.id, savedTake.id, calibratedPlacement.positionFrames)
-                    var edited = arrangement
-                    val track = arrangement.tracks.firstOrNull { candidate ->
-                        candidate.clips.any { it.source.wav == savedTake.sourceWav }
-                    }
-                    val clip = track?.clips?.firstOrNull { it.source.wav == savedTake.sourceWav }
-                    if (track != null && clip != null) {
-                        if (correction != null && correction in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM && correction != 0) {
-                            edited = ProjectArrangementActions.setRateCorrection(edited, track.id, clip.id, correction)
-                        }
-                        if (leadInTrim > 0L) {
-                            val safeStart = leadInTrim.coerceAtMost(savedTake.totalFrames - 1L)
-                            edited = ProjectArrangementActions.setClipTrim(
-                                edited, track.id, clip.id, TrimRange(safeStart, savedTake.totalFrames)
-                            )
-                        }
-                    }
-                    project = if (edited == arrangement) arrangement else repository.saveEditState(edited)
-                    alignmentNotice = when {
-                        snapshot.routeInvalidated ->
-                            "The audio route changed. The take was saved at the backing start."
-                        alignment == null ->
-                            "Timestamps were unavailable. The take was saved at the backing start."
-                        else -> null
-                    }
-                }
-            }
-            if (project == null) error = error ?: "Could not save recording"
-        } catch (failure: Throwable) {
-            error = error ?: failure.message ?: "Could not save recording"
-            alignmentNotice = if (project != null) {
-                "The take was saved in your library, but could not be added to the backing project."
-            } else if (failure.message.orEmpty().contains("header does not match", ignoreCase = true)) {
-                "The WAV header did not match the captured audio. Its retained partial was kept for recovery at startup."
-            } else {
-                "The take was not saved in your library. Its retained partial will be checked for recovery at startup."
-            }
-        }
-        val interruptionNotice = if (snapshot.lostFocus && project != null) {
-            "Audio focus was lost. Your recording was saved."
-        } else null
-        return SavedTake(project, error, interruptionNotice, alignmentNotice)
-    }
-
     private fun finishTake(
         completedRecorder: WavRecorder,
         take: RecordingTake,
-        project: com.ottomusic.sketch.core.Project?,
+        project: Project?,
         error: String?,
         interruptionNotice: String? = null,
         alignmentNotice: String? = null
@@ -659,7 +442,7 @@ class RecordingService : Service() {
             silent = take.allSamplesZero,
             interruptionNotice = interruptionNotice,
             alignmentNotice = terminalNotice,
-            overdubRoute = observedOverdubRoute
+            overdubRoute = clockTracker.route
         )
         // A save can outlive the service; the result is still published, but a destroyed service has nothing to stop.
         if (destroyed) return

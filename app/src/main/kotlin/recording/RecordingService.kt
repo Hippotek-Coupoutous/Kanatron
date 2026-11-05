@@ -38,8 +38,10 @@ import com.ottomusic.sketch.playback.WavPlayer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+enum class RecordingPhase { IDLE, STARTING, RECORDING, PAUSED, COMPLETE, FAILED }
+
 data class RecordingServiceState(
-    val phase: String = "idle",
+    val phase: RecordingPhase = RecordingPhase.IDLE,
     val frames: Long = 0L,
     val sampleRate: Int = 48_000,
     val level: RecordingLevel = RecordingLevel(0f, 0f),
@@ -135,7 +137,7 @@ class RecordingService : Service() {
         transportStopped = false
         lostFocusPermanently = false
         outputFailureNotice = null
-        mutableState.value = RecordingServiceState("starting")
+        mutableState.value = RecordingServiceState(RecordingPhase.STARTING)
         try {
             loadOverdubBase(intent)
             promoteToForeground("Preparing microphone…")
@@ -148,9 +150,9 @@ class RecordingService : Service() {
                 context = this,
                 onState = { value -> main.post {
                     // onFinished owns terminal service state, after the take and project are persisted.
-                    if (value.phase == "complete" || value.phase == "failed") return@post
+                    if (value.phase == RecordingPhase.COMPLETE || value.phase == RecordingPhase.FAILED) return@post
                     // A recorder update posted after the take was finalized must not wipe its projectId.
-                    if (mutableState.value.phase == "complete" || mutableState.value.phase == "failed") return@post
+                    if (mutableState.value.phase == RecordingPhase.COMPLETE || mutableState.value.phase == RecordingPhase.FAILED) return@post
                     val phaseChanged = mutableState.value.phase != value.phase
                     mutableState.value = RecordingServiceState(
                         value.phase, value.frames, value.sampleRate, value.level, value.error,
@@ -184,7 +186,7 @@ class RecordingService : Service() {
             }
             startBackingPlayback()
             if (lostFocusPermanently) createdRecorder.requestStop()
-            mutableState.value = RecordingServiceState("recording", sampleRate = recorder?.state?.value?.sampleRate ?: 48_000, inputDevice = recorder?.state?.value?.inputDevice ?: "System microphone")
+            mutableState.value = RecordingServiceState(RecordingPhase.RECORDING, sampleRate = recorder?.state?.value?.sampleRate ?: 48_000, inputDevice = recorder?.state?.value?.inputDevice ?: "System microphone")
             updateNotification()
         } catch (failure: Throwable) {
             unregisterRecordingCallback()
@@ -568,7 +570,7 @@ class RecordingService : Service() {
         if (recorder === completedRecorder) recorder = null
         val terminalNotice = mergeNotices(alignmentNotice, outputFailureNotice, mutableState.value.alignmentNotice)
         mutableState.value = RecordingServiceState(
-            phase = if (project != null && error == null) "complete" else "failed",
+            phase = if (project != null && error == null) RecordingPhase.COMPLETE else RecordingPhase.FAILED,
             frames = take.frames,
             sampleRate = take.sampleRate,
             error = error,
@@ -586,7 +588,7 @@ class RecordingService : Service() {
 
     private fun finishWithoutTake(message: String) {
         recorder = null
-        mutableState.value = RecordingServiceState("failed", error = message)
+        mutableState.value = RecordingServiceState(RecordingPhase.FAILED, error = message)
         stopForeground(STOP_FOREGROUND_REMOVE)
         abandonFocus()
         stopSelfResult(latestStartId)
@@ -602,16 +604,17 @@ class RecordingService : Service() {
     }
 
     private fun updateNotification() {
-        if (mutableState.value.phase == "idle" || mutableState.value.phase == "complete" || mutableState.value.phase == "failed") return
-        val message = when (mutableState.value.phase) {
-            "paused" -> "Recording paused"
+        val phase = mutableState.value.phase
+        if (phase == RecordingPhase.IDLE || phase == RecordingPhase.COMPLETE || phase == RecordingPhase.FAILED) return
+        val message = when (phase) {
+            RecordingPhase.PAUSED -> "Recording paused"
             else -> "Recording in progress"
         }
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
     }
 
     private fun notification(text: String): Notification {
-        val paused = mutableState.value.phase == "paused"
+        val paused = mutableState.value.phase == RecordingPhase.PAUSED
         val launch = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val pauseAction = if (paused) ACTION_RESUME else ACTION_PAUSE
         val pauseLabel = if (paused) "Resume" else "Pause"

@@ -30,7 +30,7 @@ data class RecordingTake(
     val allSamplesZero: Boolean
 )
 data class WavRecorderState(
-    val phase: String = "idle",
+    val phase: RecordingPhase = RecordingPhase.IDLE,
     val frames: Long = 0,
     val sampleRate: Int = 48_000,
     val level: RecordingLevel = RecordingLevel(0f, 0f),
@@ -97,7 +97,7 @@ class WavRecorder(
             opened.start()
             inputDevice = opened.inputDevice
             runCatching { onRoute(opened.routeKey, opened.routeName) }
-            publish(WavRecorderState("recording", sampleRate = openedRate, inputDevice = inputDevice))
+            publish(WavRecorderState(RecordingPhase.RECORDING, sampleRate = openedRate, inputDevice = inputDevice))
             worker = Thread(::recordLoop, "wav-recorder").apply { start() }
         } catch (failure: Throwable) {
             runCatching { opened?.release() }
@@ -114,13 +114,13 @@ class WavRecorder(
     fun pause() {
         if (worker == null || stopRequested.get()) return
         paused = true
-        publish(mutableState.value.copy(phase = "paused", level = RecordingLevel(0f, 0f)))
+        publish(mutableState.value.copy(phase = RecordingPhase.PAUSED, level = RecordingLevel(0f, 0f)))
     }
 
     fun resume() {
         if (worker == null || stopRequested.get()) return
         paused = false
-        publish(mutableState.value.copy(phase = "recording"))
+        publish(mutableState.value.copy(phase = RecordingPhase.RECORDING))
     }
 
     fun stop() {
@@ -194,7 +194,7 @@ class WavRecorder(
                 val level = RecordingCore.level(alignedBuffer, aligned)
                 silentFrames = if (level.isLow) silentFrames + frames else 0L
                 publish(WavRecorderState(
-                    "recording", capturedFrames, openedRate, level,
+                    RecordingPhase.RECORDING, capturedFrames, openedRate, level,
                     inputDevice = inputDevice,
                     silenceWarning = RecordingCore.isSustainedSilence(silentFrames, openedRate),
                     inputSilenced = inputSilenced
@@ -228,7 +228,7 @@ class WavRecorder(
             )
             val result = RecordingTake(id, file, openedRate, openedChannels, capturedFrames, failure, allSamplesZero)
             publish(WavRecorderState(
-                if (failure == null) "complete" else "failed", capturedFrames, openedRate,
+                if (failure == null) RecordingPhase.COMPLETE else RecordingPhase.FAILED, capturedFrames, openedRate,
                 RecordingLevel(0f, 0f), failure, inputDevice
             ))
             onFinished(result)

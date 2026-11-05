@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ottomusic.sketch.core.RecordingCore
+import com.ottomusic.sketch.recording.RecordingPhase
 import com.ottomusic.sketch.recording.RecordingServiceState
 
 @Composable
@@ -55,7 +56,7 @@ internal fun RecordScreen(
     onStop: () -> Unit,
     onOpenRecording: () -> Unit
 ) {
-    val active = recording.phase == "recording" || recording.phase == "paused"
+    val active = recording.phase == RecordingPhase.RECORDING || recording.phase == RecordingPhase.PAUSED
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -64,14 +65,14 @@ internal fun RecordScreen(
             SynthTopBar("Record", onBack, backLabel = "Library")
             SynthPanel {
                 val label = when (recording.phase) {
-                    "paused" -> "Paused"
-                    "recording" -> if (layering) "Recording over backing" else "Recording"
-                    "starting" -> "Starting microphone…"
-                    "complete" -> "Recording saved"
-                    "failed" -> "Recording stopped"
+                    RecordingPhase.PAUSED -> "Paused"
+                    RecordingPhase.RECORDING -> if (layering) "Recording over backing" else "Recording"
+                    RecordingPhase.STARTING -> "Starting microphone…"
+                    RecordingPhase.COMPLETE -> "Recording saved"
+                    RecordingPhase.FAILED -> "Recording stopped"
                     else -> if (layering) "Layer: backing plays in headphones" else "Ready"
                 }
-                Text(label, color = if (recording.phase == "recording") Synth.pink else Synth.muted, fontWeight = FontWeight.SemiBold)
+                Text(label, color = if (recording.phase == RecordingPhase.RECORDING) Synth.pink else Synth.muted, fontWeight = FontWeight.SemiBold)
                 Text(
                     formatTime(RecordingCore.elapsedMillis(recording.frames, recording.sampleRate)),
                     color = if (active) Synth.pink else Synth.cyan, fontSize = 60.sp, fontFamily = FontFamily.Monospace
@@ -97,7 +98,7 @@ internal fun RecordScreen(
             when {
                 active -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     RoundButton(
-                        if (recording.phase == "paused") SynthIcon.Rec else SynthIcon.Pause, if (recording.phase == "paused") "Resume" else "Pause",
+                        if (recording.phase == RecordingPhase.PAUSED) SynthIcon.Rec else SynthIcon.Pause, if (recording.phase == RecordingPhase.PAUSED) "Resume" else "Pause",
                         Synth.surfaceHi, onPauseResume, size = 80.dp, contentColor = Synth.text
                     )
                     RoundButton(SynthIcon.Stop, "Stop and save", Synth.pink, onStop, size = 112.dp, contentColor = Color.White)

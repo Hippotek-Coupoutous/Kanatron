@@ -54,6 +54,7 @@ import com.ottomusic.sketch.data.OverdubCalibrationStore
 import com.ottomusic.sketch.platform.MICROPHONE_PERMISSION_ERROR
 import com.ottomusic.sketch.playback.ClickEngine
 import com.ottomusic.sketch.playback.MonitorClick
+import com.ottomusic.sketch.recording.RecordingPhase
 import com.ottomusic.sketch.recording.RecordingService
 import com.ottomusic.sketch.recording.WavRecorder
 import com.ottomusic.sketch.ui.ArrangeScreen
@@ -323,8 +324,8 @@ class MainActivity : ComponentActivity() {
 private enum class Route { LIBRARY, RECORD, DETAIL, TRIM, MIX, TUNER, ARRANGE, OVERDUB_CALIBRATION }
 private enum class MicrophoneAction { RECORD, TUNER }
 
-private fun playbackAllowed(recordingPhase: String): Boolean =
-    recordingPhase !in setOf("starting", "recording", "paused", "stopping")
+private fun playbackAllowed(recordingPhase: RecordingPhase): Boolean =
+    recordingPhase !in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
 
 @Composable
 private fun AudioSketchApp(
@@ -403,8 +404,8 @@ private fun AudioSketchApp(
     }
 
     LaunchedEffect(recording.phase) {
-        if (recording.phase != "failed") dismissedTakeError = null
-        if (recording.phase == "complete" || recording.phase == "failed") {
+        if (recording.phase != RecordingPhase.FAILED) dismissedTakeError = null
+        if (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED) {
             layerBackingId = null
             layerClickBpm = 0
             layerClickBeats = 4
@@ -413,10 +414,10 @@ private fun AudioSketchApp(
     }
 
     LaunchedEffect(appState.startupComplete, recording.phase) {
-        if (appState.startupComplete && (recording.phase == "recording" || recording.phase == "paused" || recording.phase == "starting")) route = Route.RECORD
+        if (appState.startupComplete && (recording.phase == RecordingPhase.RECORDING || recording.phase == RecordingPhase.PAUSED || recording.phase == RecordingPhase.STARTING)) route = Route.RECORD
     }
     LaunchedEffect(recording.projectId, recording.phase, route) {
-        if (recording.projectId != null && (recording.phase == "complete" || recording.phase == "failed")) {
+        if (recording.projectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
             appViewModel.refreshLibrary(recording.projectId.takeIf { route == Route.RECORD })
             if (route == Route.RECORD) { selectedId = recording.projectId; homeId = recording.projectId }
         }
@@ -482,7 +483,7 @@ private fun AudioSketchApp(
             microphoneDenied = microphoneDenied,
             lifecycle = hostLifecycle,
             microphoneBlockedReason = when {
-                recording.phase in setOf("starting", "recording", "paused", "stopping") || WavRecorder.activePath != null ->
+                recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || WavRecorder.activePath != null ->
                     "Stop the active recording before tuning."
                 layerOn -> "Turn Layer off before tuning."
                 else -> null
@@ -521,7 +522,7 @@ private fun AudioSketchApp(
                 onRequestMic = { onRecordRequest(layerBackingId, clickSettings) },
                 onOpenSettings = onOpenSettings,
                 onPauseResume = {
-                    val action = if (recording.phase == "paused") RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
+                    val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
                     context.startService(Intent(context, RecordingService::class.java).setAction(action))
                 },
                 onStop = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
@@ -569,7 +570,7 @@ private fun AudioSketchApp(
         } else Text("Loading recording…")
     }
     val takeErrorKey = "${recording.projectId ?: "no-project"}:${recording.error}"
-    val hasTakeError = recording.phase == "failed" && recording.error != null &&
+    val hasTakeError = recording.phase == RecordingPhase.FAILED && recording.error != null &&
         (recording.projectId != null || route != Route.RECORD) && dismissedTakeError != takeErrorKey
     val activeSelectionError = appState.selectionError?.takeIf { appState.selectionErrorForId == selectedId }
     when {

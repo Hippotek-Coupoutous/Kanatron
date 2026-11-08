@@ -84,7 +84,7 @@ class ProjectRepository(context: Context) {
     private fun directSource(project: Project): ProjectAudioSource? {
         val track = project.tracks.singleOrNull() ?: return null
         val clip = track.clips.singleOrNull() ?: return null
-        val untouched = clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.gainPermille == ProjectClip.UNITY_GAIN &&
+        val untouched = clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.gainPermille == ProjectClip.UNITY_GAIN && clip.eq.flat &&
             clip.source.sampleRate == project.sampleRate &&
             clip.trim.startFrame == 0L && clip.trim.endFrame == clip.source.totalFrames
         return clip.source.takeIf { untouched }
@@ -136,7 +136,7 @@ class ProjectRepository(context: Context) {
      * The new WAV lands before the metadata that points at it, so a crash leaves at most a WAV startup recovery adopts.
      */
     fun replaceAudio(project: Project, arrangement: Project): Project = withTemporaryWav(arrangement) { wav, clipped ->
-        if (clipped) throw IOException("The edit would clip. Nothing was changed.")
+        if (clipped) throw IOException("The edit would clip. Lower the level in Mix; nothing was changed.")
         synchronized(PROJECT_LOCK) {
             val file = File(recordings, "take-${UUID.randomUUID()}.wav")
             Files.move(wav.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)

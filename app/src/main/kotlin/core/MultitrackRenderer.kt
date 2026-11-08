@@ -57,6 +57,7 @@ object MultitrackRenderer {
         try {
             for ((clip, source, file) in inputs) readers += ClipReader(clip.id, source, file, project.sampleRate, frames)
             val byClipId = readers.associateBy { it.clipId }
+            val filters = clips.associate { it.id to it.eq.filter(project.sampleRate, channels) }
 
             val temp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, parent)
             var committed = false
@@ -70,7 +71,19 @@ object MultitrackRenderer {
                         if (cancelled.get()) throw IOException("Render cancelled.")
                         val count = minOf(BLOCK_FRAMES.toLong(), frames - start).toInt()
                         val sums = DoubleArray(count * channels)
-                        for (clip in clips) byClipId.getValue(clip.id).addBlock(clip, start, count, channels, sums)
+                        for (clip in clips) {
+                            val reader = byClipId.getValue(clip.id)
+                            val filter = filters.getValue(clip.id)
+                            if (filter == null) {
+                                reader.addBlock(clip, start, count, channels, sums)
+                            } else {
+                                // The filter runs on this clip alone, so its tone never colours the others.
+                                val own = DoubleArray(sums.size)
+                                reader.addBlock(clip, start, count, channels, own)
+                                filter.process(own)
+                                for (i in sums.indices) sums[i] += own[i]
+                            }
+                        }
                         var byteOffset = 0
                         for (sum in sums) {
                             val rounded = Math.round(sum)

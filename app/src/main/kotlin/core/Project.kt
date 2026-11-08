@@ -27,7 +27,7 @@ data class ProjectAudioSource(
 
 /**
  * A source slice placed on the project timeline, measured in the owning project's sample rate.
- * [gainPermille] only lives in arrangements about to be rendered; saved recordings are always at unity.
+ * [gainPermille] and [eq] only live in arrangements about to be rendered; saved recordings are always plain.
  */
 data class ProjectClip(
     val id: String,
@@ -35,7 +35,8 @@ data class ProjectClip(
     val positionFrames: Long,
     val trim: TrimRange,
     val rateCorrectionPpm: Int = 0,
-    val gainPermille: Int = UNITY_GAIN
+    val gainPermille: Int = UNITY_GAIN,
+    val eq: Eq = Eq.FLAT
 ) {
     init {
         require(id.matches(PROJECT_ID))
@@ -46,6 +47,9 @@ data class ProjectClip(
         }
         require(gainPermille in 0..UNITY_GAIN) { "Clip gain can only attenuate." }
     }
+
+    /** This clip lowered by [levelSteps] and shaped by [eq] when it renders. */
+    fun mixed(levelSteps: Int, eq: Eq): ProjectClip = copy(gainPermille = OverdubMix.gainPermille(levelSteps), eq = eq)
 
     companion object {
         const val MAX_RATE_CORRECTION_PPM = 2_000
@@ -105,7 +109,7 @@ data class Project(
     val totalFrames: Long get() = MultitrackRenderer.frameCount(tracks, sampleRate)
 
     fun toJson(): String = buildString {
-        require(tracks.all { track -> track.clips.all { it.gainPermille == ProjectClip.UNITY_GAIN } }) { "Clip gains are rendered, never saved." }
+        require(tracks.all { track -> track.clips.all { it.gainPermille == ProjectClip.UNITY_GAIN && it.eq.flat } }) { "Clip gain and EQ are rendered, never saved." }
         append('{')
         append("\"schemaVersion\":4,")
         append("\"id\":").append(quote(id)).append(',')

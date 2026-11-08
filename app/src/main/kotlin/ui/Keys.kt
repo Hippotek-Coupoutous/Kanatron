@@ -178,9 +178,10 @@ fun Stepper(
     minusEnabled: Boolean = true, plusEnabled: Boolean = true
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Key("−", onMinus, Modifier.width(64.dp), enabled = minusEnabled, description = minusLabel, height = KeyHeight.Small)
+        // Both keys report the value, so a screen reader hears each change.
+        Key("−", onMinus, Modifier.width(64.dp), enabled = minusEnabled, description = minusLabel, state = value, height = KeyHeight.Small)
         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Readout(value, Synth.cyan, 28.sp) }
-        Key("+", onPlus, Modifier.width(64.dp), enabled = plusEnabled, description = plusLabel, height = KeyHeight.Small)
+        Key("+", onPlus, Modifier.width(64.dp), enabled = plusEnabled, description = plusLabel, state = value, height = KeyHeight.Small)
     }
 }
 

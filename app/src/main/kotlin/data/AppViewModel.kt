@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.kanatron.app.core.Cuts
+import com.kanatron.app.core.Eq
 import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.TrimRange
@@ -39,8 +40,21 @@ internal data class SplicePart(val project: Project, val range: TrimRange)
 /** Enough parts to comp a phrase from several takes while every lane stays tall enough to drag. */
 internal const val MAX_SPLICE_PARTS = 4
 
-/** Unsaved cuts on the Edit subject; they survive rotation but not process death. */
-internal data class EditSession(val projectId: String, val pieces: List<TrimRange>, val undo: List<List<TrimRange>>)
+/** Unsaved cuts, level and EQ on the Edit subject; they survive rotation but not process death. */
+internal data class EditSession(
+    val projectId: String,
+    val pieces: List<TrimRange>,
+    val undo: List<List<TrimRange>>,
+    val levelSteps: Int = 0,
+    val eq: Eq = Eq.FLAT
+) {
+    val pending: Boolean get() = undo.isNotEmpty() || levelSteps != 0 || !eq.flat
+
+    /** The recording as it would save: its pieces back to back, each lowered and shaped alike. */
+    fun arrangement(project: Project): Project = Cuts.arrangement(project, pieces).let { cut ->
+        cut.copy(tracks = cut.tracks.map { track -> track.copy(clips = track.clips.map { it.mixed(levelSteps, eq) }) })
+    }
+}
 
 /** What the Activity is about to do once the microphone permission is settled. */
 internal enum class MicrophoneAction { RECORD, TUNER }
@@ -107,15 +121,24 @@ internal class AppViewModel(
 
     fun navigate(route: Route) = updateState { it.copy(route = route) }
 
+    private fun AppUiState.session(project: Project): EditSession =
+        edit?.takeIf { it.projectId == project.id } ?: EditSession(project.id, listOf(project.firstClip.trim), emptyList())
+
+    /** A session with nothing pending is no session, so leaving Edit asks nothing. */
+    private fun AppUiState.withSession(session: EditSession) = copy(edit = session.takeIf { it.pending })
+
     fun cut(project: Project, pieces: List<TrimRange>) = editing { state ->
-        val previous = state.edit?.pieces?.takeIf { state.edit.projectId == project.id } ?: listOf(project.firstClip.trim)
-        val undo = state.edit?.undo?.takeIf { state.edit.projectId == project.id }.orEmpty()
-        state.copy(edit = EditSession(project.id, pieces, undo + listOf(previous)))
+        val session = state.session(project)
+        state.withSession(session.copy(pieces = pieces, undo = session.undo + listOf(session.pieces)))
     }
 
     fun undoCut() = editing { state ->
-        val session = state.edit ?: return@editing state
-        state.copy(edit = if (session.undo.size <= 1) null else session.copy(pieces = session.undo.last(), undo = session.undo.dropLast(1)))
+        val session = state.edit?.takeIf { it.undo.isNotEmpty() } ?: return@editing state
+        state.withSession(session.copy(pieces = session.undo.last(), undo = session.undo.dropLast(1)))
+    }
+
+    fun mix(project: Project, levelSteps: Int, eq: Eq) = editing { state ->
+        state.withSession(state.session(project).copy(levelSteps = levelSteps, eq = eq))
     }
 
     fun discardEdits() = updateState { it.copy(edit = null, editError = null) }
@@ -197,10 +220,10 @@ internal class AppViewModel(
         }
     }
 
-    /** Saves Edit's cuts over the recording's audio, or as a new recording; an uncut unsaved take is simply kept. */
+    /** Saves Edit's changes over the recording's audio, or as a new recording; an untouched unsaved take is simply kept. */
     fun saveEdits(project: Project, asNew: Boolean) {
-        val pieces = _state.value.edit?.takeIf { it.projectId == project.id }?.pieces
-        if (pieces == null) {
+        val session = _state.value.edit?.takeIf { it.projectId == project.id }
+        if (session == null) {
             if (project.draft) saveRecoveredDraft(project.id)
             return
         }
@@ -209,8 +232,8 @@ internal class AppViewModel(
         viewModelScope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) {
-                    val arrangement = Cuts.arrangement(project, pieces)
-                    if (asNew) repository.saveRendered(arrangement) ?: error("The edit would clip.")
+                    val arrangement = session.arrangement(project)
+                    if (asNew) repository.saveRendered(arrangement) ?: error("The edit would clip. Lower the level in Mix.")
                     else repository.replaceAudio(project, arrangement)
                 }
                 invalidatePlayback(project.id)

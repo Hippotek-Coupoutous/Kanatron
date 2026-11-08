@@ -14,7 +14,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 
 /** Glyphs drawn on a 24-unit grid, one stroke weight, so no icon dependency is needed. */
-enum class SynthIcon { Play, Pause, Save, Rec, New, Import, Share, Click, Overdub, Trim, Undo, Clip, Mix, More, Back, Delete, Library, Sketch, Tuner }
+enum class SynthIcon { Play, Pause, Save, Rec, New, Import, Share, Click, Overdub, Trim, Undo, Clip, More, Back, Delete, Library, Sketch, Tuner }
 
 @Composable
 fun SynthGlyph(icon: SynthIcon, tint: Color, modifier: Modifier = Modifier.size(28.dp)) {
@@ -32,7 +32,6 @@ private fun DrawScope.drawGlyph(icon: SynthIcon, tint: Color) {
         SynthIcon.Save -> { drawRoundRect(tint, p(4f, 4f), Size(16 * u, 16 * u), androidx.compose.ui.geometry.CornerRadius(2 * u), style = stroke); line(8f, 12.5f, 11f, 15.5f); line(11f, 15.5f, 16.5f, 9f) }
         SynthIcon.Rec -> drawCircle(tint, 7 * u, p(12f, 12f))
         SynthIcon.New -> { line(12f, 5f, 12f, 19f); line(5f, 12f, 19f, 12f) }
-        SynthIcon.Mix -> for ((x, knob) in listOf(6f to 15f, 12f to 8f, 18f to 13f)) { line(x, 4f, x, 20f); drawCircle(tint, 2.4f * u, p(x, knob)) }
         SynthIcon.More -> for (y in listOf(5f, 12f, 19f)) drawCircle(tint, 1.8f * u, p(12f, y))
         SynthIcon.Import -> { line(12f, 3f, 12f, 15f); line(12f, 15f, 7.5f, 10.5f); line(12f, 15f, 16.5f, 10.5f); line(4f, 15f, 4f, 20f); line(4f, 20f, 20f, 20f); line(20f, 20f, 20f, 15f) }
         SynthIcon.Share -> { drawCircle(tint, 2.5f * u, p(18f, 5f), style = stroke); drawCircle(tint, 2.5f * u, p(6f, 12f), style = stroke); drawCircle(tint, 2.5f * u, p(18f, 19f), style = stroke); line(8.2f, 10.8f, 15.8f, 6.4f); line(8.2f, 13.2f, 15.8f, 17.6f) }

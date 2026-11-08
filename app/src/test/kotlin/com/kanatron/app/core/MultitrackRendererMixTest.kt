@@ -3,6 +3,7 @@ package com.kanatron.app.core
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -173,6 +174,28 @@ class MultitrackRendererMixTest {
         assertEquals(24, samples[2 * 99]) // a's last frame: 1000 x 1/41
         assertEquals(49, samples[2 * 100]) // b's first frame: 2000 x 1/41
         assertEquals(2_000, samples[2 * 150])
+    }
+
+    @Test
+    fun `a clip's EQ shapes that clip alone`() {
+        val root = tempFolder.root
+        // A 1 kHz tone over a 100 Hz tone; cutting the mids must leave the low clip as it was.
+        writeWav(File(root, "tone.wav"), channels = 1, sampleRate = 48_000, samples = List(4_800) { (8_000 * Math.sin(2 * Math.PI * 1_000 * it / 48_000)).toInt() })
+        writeWav(File(root, "low.wav"), channels = 1, sampleRate = 48_000, samples = List(4_800) { (8_000 * Math.sin(2 * Math.PI * 100 * it / 48_000)).toInt() })
+        val tone = clip("clip-tone", "tone.wav", 1, 4_800)
+        val low = clip("clip-low", "low.wav", 1, 4_800)
+        fun render(vararg clips: ProjectClip): List<Int> {
+            val destination = File(root, "eq.wav")
+            MultitrackRenderer.renderToWav(project(ProjectTrack("track-main", "Base", clips.toList()), channels = 1), { File(root, it.wav) }, destination)
+            return pcm(destination)
+        }
+        val dull = Eq(midSteps = -4)
+
+        val both = render(tone.mixed(0, dull), low)
+        val toneAlone = render(tone.mixed(0, dull))
+        val lowAlone = render(low)
+        assertTrue(both.indices.all { kotlin.math.abs(both[it] - toneAlone[it] - lowAlone[it]) <= 1 })
+        assertTrue(toneAlone.subList(2_400, 2_500).max() < render(tone).subList(2_400, 2_500).max() / 2)
     }
 
     private fun clip(id: String, wav: String, channels: Int, frames: Long) =

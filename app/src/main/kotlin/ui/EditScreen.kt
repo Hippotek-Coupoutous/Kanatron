@@ -60,12 +60,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kanatron.app.core.Cuts
+import com.kanatron.app.core.Eq
+import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.Peak
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.RecordingCore
 import com.kanatron.app.core.TrimEdge
 import com.kanatron.app.core.TrimRange
+import com.kanatron.app.data.EditSession
 import com.kanatron.app.data.ProjectRepository
 import com.kanatron.app.playback.WavPlayer
 import java.io.File
@@ -78,26 +81,27 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
-/** One recording's pending cuts: select a range on the waveform, then keep it or delete it. */
+/** One recording's pending changes: select a range and keep or delete it, set its level and EQ, then save. */
 @Composable
 internal fun EditScreen(
     project: Project,
-    pieces: List<TrimRange>,
-    canUndo: Boolean,
+    session: EditSession,
     repository: ProjectRepository,
     playbackAllowed: Boolean,
     saving: Boolean,
     error: String?,
     onCut: (List<TrimRange>) -> Unit,
     onUndo: () -> Unit,
+    onMix: (levelSteps: Int, eq: Eq) -> Unit,
     onSave: (asNew: Boolean) -> Unit,
     onSplice: () -> Unit
 ) {
     val context = LocalContext.current
     val rate = project.sampleRate
+    val pieces = session.pieces
     val length = Cuts.length(pieces)
-    // The edited timeline plays from a cached render; an uncut recording plays its own WAV.
-    val timeline = producePlaybackRender(repository, 0L, project, pieces) { Cuts.arrangement(project, pieces) }
+    // The edited recording plays from a cached render; an untouched one plays its own WAV.
+    val timeline = producePlaybackRender(repository, PREVIEW_DEBOUNCE_MILLIS, project, session) { session.arrangement(project) }
     val file = timeline?.getOrNull()
     val overview by produceState(emptyList<Peak>(), file) {
         value = emptyList()
@@ -111,6 +115,7 @@ internal fun EditScreen(
     var viewEnd by rememberSaveable(project.id, length) { mutableStateOf(length) }
     var dragging by remember { mutableStateOf<TrimEdge?>(null) }
     var askSave by rememberSaveable { mutableStateOf(false) }
+    var mixOpen by rememberSaveable { mutableStateOf(false) }
     val selection = TrimRange(selectionStart, selectionEnd)
 
     var player by remember(file) { mutableStateOf<WavPlayer?>(null) }
@@ -152,9 +157,9 @@ internal fun EditScreen(
     }
     val waveform: @Composable ColumnScope.() -> Unit = {
         SynthTopBar("Edit") {
-            // A splice joins saved audio, so pending cuts are saved first.
-            Key("Clip", { player?.stop(); onSplice() }, icon = SynthIcon.Clip, height = KeyHeight.Small, enabled = !saving && !canUndo,
-                description = if (canUndo) "Save your cuts before clipping" else "Clip with other recordings")
+            // Clip joins saved audio, so pending changes are saved first.
+            Key("Clip", { player?.stop(); onSplice() }, icon = SynthIcon.Clip, height = KeyHeight.Small, enabled = !saving && !session.pending,
+                description = if (session.pending) "Save your edits before clipping" else "Clip with other recordings")
         }
         Text(
             buildString {
@@ -206,16 +211,15 @@ internal fun EditScreen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (edge in TrimEdge.entries) {
                 val frame = if (edge == TrimEdge.Start) selectionStart else selectionEnd
-                Key(edge.name, { activeEdge = edge }, Modifier.weight(1f), selected = edge == activeEdge, role = Role.Tab, sublabel = clockMillis(frame, rate), description = "${edge.name} ${clockMillis(frame, rate)}")
+                Key(
+                    edge.name, { activeEdge = edge }, Modifier.weight(1f), selected = edge == activeEdge, role = Role.Tab,
+                    sublabel = clockMillis(frame, rate), description = "${edge.name} ${clockMillis(frame, rate)}"
+                )
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            for ((label, unit, frames) in nudges(rate)) {
-                Key(label, {
-                    val current = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
-                    setEdge(activeEdge, current + frames)
-                }, Modifier.weight(1f), sublabel = unit, description = "Move edge $label $unit", height = KeyHeight.Small)
-            }
+        NudgeKeys(rate, "edge") { frames ->
+            val current = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
+            setEdge(activeEdge, current + frames)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val idle = !saving && file != null
@@ -225,13 +229,19 @@ internal fun EditScreen(
             )
             Key("Keep", { cut(Cuts.keep(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Trim, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Keep only the selection")
             Key("Delete", { cut(Cuts.delete(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Delete, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Delete the selection")
-            Key("Undo", { player?.stop(); onUndo() }, Modifier.weight(1f), icon = SynthIcon.Undo, height = KeyHeight.Transport, enabled = !saving && canUndo, description = "Undo last cut")
+            Key("Undo", { player?.stop(); onUndo() }, Modifier.weight(1f), icon = SynthIcon.Undo, height = KeyHeight.Transport, enabled = !saving && session.undo.isNotEmpty(), description = "Undo last cut")
         }
-        Key(
-            if (project.draft) "Save to Library" else "Save",
-            { if (project.draft) onSave(false) else askSave = true },
-            Modifier.fillMaxWidth(), icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving && (project.draft || canUndo)
-        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Key(
+                "Mix", { mixOpen = true }, Modifier.weight(1f), enabled = !saving,
+                sublabel = mixSummary(session.levelSteps, session.eq), description = "Level and EQ, ${mixSummary(session.levelSteps, session.eq)}"
+            )
+            Key(
+                if (project.draft) "Save to Library" else "Save",
+                { if (project.draft) onSave(false) else askSave = true },
+                Modifier.weight(2f), icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving && (project.draft || session.pending)
+            )
+        }
     }
 
     Column(
@@ -248,6 +258,8 @@ internal fun EditScreen(
             controls()
         }
     }
+
+    if (mixOpen) MixSheet(project.name, session.levelSteps, session.eq, onChange = onMix, onDismiss = { mixOpen = false })
 
     if (askSave) AlertDialog(
         onDismissRequest = { askSave = false },
@@ -412,10 +424,23 @@ private fun DrawScope.drawPeaks(peaks: List<Peak>, from: Long, to: Long, viewSta
     }
 }
 
-private fun nudges(rate: Int) = listOf(
-    Triple("−100", "ms", -rate / 10L), Triple("−10", "ms", -rate / 100L), Triple("−1", "frame", -1L),
-    Triple("+1", "frame", 1L), Triple("+10", "ms", rate / 100L), Triple("+100", "ms", rate / 10L)
-)
+/** Fine moves shared by Edit's range edges and Clip's parts. */
+@Composable
+internal fun NudgeKeys(rate: Int, what: String, onNudge: (frames: Long) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        for ((label, unit, frames) in listOf(
+            Triple("−10", "ms", -rate / 100L), Triple("−1", "frame", -1L), Triple("+1", "frame", 1L), Triple("+10", "ms", rate / 100L)
+        )) {
+            Key(label, { onNudge(frames) }, Modifier.weight(1f), sublabel = unit, description = "Move $what $label $unit", height = KeyHeight.Small)
+        }
+    }
+}
+
+/** What the Mix key says it is doing, or Flat. */
+internal fun mixSummary(levelSteps: Int, eq: Eq): String = listOfNotNull(
+    "−${levelSteps * OverdubMix.DB_PER_STEP} dB".takeIf { levelSteps != 0 },
+    "EQ".takeIf { !eq.flat }
+).joinToString(" · ").ifEmpty { "Flat" }
 
 internal fun clockMillis(frames: Long, rate: Int) = RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, rate), withMillis = true, hours = false)
 

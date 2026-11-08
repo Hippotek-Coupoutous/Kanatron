@@ -55,6 +55,7 @@ import com.kanatron.app.core.firstClip
 import com.kanatron.app.core.ResumeStartGate
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.data.AppViewModel
+import com.kanatron.app.data.EditSession
 import com.kanatron.app.data.ImportStage
 import com.kanatron.app.data.MicrophoneAction
 import com.kanatron.app.data.OverdubCalibrationStore
@@ -475,14 +476,14 @@ private fun KanatronApp(
                             val session = appState.edit?.takeIf { it.projectId == project.id }
                             EditScreen(
                                 project = project,
-                                pieces = session?.pieces ?: listOf(project.firstClip.trim),
-                                canUndo = session != null,
+                                session = session ?: EditSession(project.id, listOf(project.firstClip.trim), emptyList()),
                                 repository = repository,
                                 playbackAllowed = playbackAllowed(recording.phase),
                                 saving = appState.editSaving,
                                 error = appState.editError ?: appState.libraryError,
                                 onCut = { appViewModel.cut(project, it) },
                                 onUndo = appViewModel::undoCut,
+                                onMix = { level, eq -> appViewModel.mix(project, level, eq) },
                                 onSave = { asNew -> appViewModel.saveEdits(project, asNew) },
                                 onSplice = { appViewModel.startSplice(project) }
                             )
@@ -668,7 +669,7 @@ private fun KanatronApp(
                     Text(when (route) {
                         Route.SPLICE -> "The splice is not saved yet."
                         Route.OVERDUB_REVIEW -> "The mix is not saved. The take stays in the Library on its own."
-                        else -> "Your unsaved cuts will be lost."
+                        else -> "Your unsaved edits will be lost."
                     })
                 },
                 confirmButton = {

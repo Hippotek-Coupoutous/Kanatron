@@ -7,7 +7,6 @@ import com.kanatron.app.core.PROJECT_ID
 import com.kanatron.app.core.PROJECT_ID_PATTERN
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
-import com.kanatron.app.core.ProjectArrangementActions
 import com.kanatron.app.core.ProjectAudioSource
 import com.kanatron.app.core.ProjectClip
 import com.kanatron.app.core.ProjectTrack
@@ -85,7 +84,7 @@ class ProjectRepository(context: Context) {
     private fun directSource(project: Project): ProjectAudioSource? {
         val track = project.tracks.singleOrNull() ?: return null
         val clip = track.clips.singleOrNull() ?: return null
-        val untouched = clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 &&
+        val untouched = clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.gainPermille == ProjectClip.UNITY_GAIN &&
             clip.source.sampleRate == project.sampleRate &&
             clip.trim.startFrame == 0L && clip.trim.endFrame == clip.source.totalFrames
         return clip.source.takeIf { untouched }

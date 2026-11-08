@@ -170,6 +170,7 @@ object MultitrackRenderer {
             // An edge cut from its source, or met by other audio inside the timeline, would click.
             val fadeIn = clip.trim.startFrame > 0L || clip.positionFrames > 0L
             val fadeOut = clip.trim.endFrame < clip.source.totalFrames || clipEnd < timelineFrames
+            val gain = clip.gainPermille / ProjectClip.UNITY_GAIN.toDouble()
             var position = firstPosition
             for (outputFrame in start until end) {
                 val local = outputFrame - clip.positionFrames
@@ -185,7 +186,7 @@ object MultitrackRenderer {
                     val lower = sample(bytes, firstFrame, lowerFrame, sourceChannel)
                     val upper = sample(bytes, firstFrame, upperFrame, sourceChannel)
                     val interpolated = lower + (upper - lower) * fraction
-                    sums[outputIndex + channel] += interpolated * envelope
+                    sums[outputIndex + channel] += interpolated * envelope * gain
                 }
                 position = advance(position, 1, ratio)
             }

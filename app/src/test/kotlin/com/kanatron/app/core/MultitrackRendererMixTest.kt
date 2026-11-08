@@ -86,10 +86,10 @@ class MultitrackRendererMixTest {
         writeWav(File(root, "base.wav"), channels = 2, sampleRate = 48_000, samples = listOf(100, -100, 200, -200, 300, -300, 400, -400))
         writeWav(File(root, "take.wav"), channels = 1, sampleRate = 48_000, samples = listOf(10, 20))
         val base = project(ProjectTrack("track-main", "Base", listOf(clip("clip-main", "base.wav", 2, 4))), channels = 2)
-        val take = clip("clip-main", "take.wav", 1, 2).copy(positionFrames = 3L)
+        val take = OverdubMix(base, "take", ProjectAudioSource("take.wav", 48_000, 1, 2), measuredOffsetFrames = 3L, rateCorrectionPpm = 0)
 
         val destination = File(root, "mix.wav")
-        val clipped = MultitrackRenderer.renderToWav(ProjectArrangementActions.overdub(base, take), { File(root, it.wav) }, destination)
+        val clipped = MultitrackRenderer.renderToWav(take.arrangement(), { File(root, it.wav) }, destination)
 
         assertEquals(false, clipped)
         // Edges inside the timeline ramp over half a short clip: the backing's last 2 frames (x 2/3, 1/3)
@@ -104,7 +104,7 @@ class MultitrackRendererMixTest {
         writeWav(File(root, "take.wav"), channels = 2, sampleRate = 48_000, samples = listOf(1, -1, 2, -2))
         val base = project(ProjectTrack("track-main", "Base", listOf(clip("clip-main", "base.wav", 1, 2))), channels = 1)
 
-        val mix = ProjectArrangementActions.overdub(base, clip("clip-main", "take.wav", 2, 2))
+        val mix = OverdubMix(base, "take", ProjectAudioSource("take.wav", 48_000, 2, 2), 0L, 0).arrangement()
         val destination = File(root, "mix.wav")
         MultitrackRenderer.renderToWav(mix, { File(root, it.wav) }, destination)
 
@@ -119,7 +119,7 @@ class MultitrackRendererMixTest {
         writeWav(File(root, "take.wav"), channels = 1, sampleRate = 48_000, samples = listOf(32_767, -32_768))
         val base = project(ProjectTrack("track-main", "Base", listOf(clip("clip-main", "base.wav", 1, 2))), channels = 1)
 
-        val mix = ProjectArrangementActions.overdub(base, clip("clip-main", "take.wav", 1, 2))
+        val mix = OverdubMix(base, "take", ProjectAudioSource("take.wav", 48_000, 1, 2), 0L, 0).arrangement()
         val destination = File(root, "mix.wav")
 
         assertEquals(true, MultitrackRenderer.renderToWav(mix, { File(root, it.wav) }, destination))

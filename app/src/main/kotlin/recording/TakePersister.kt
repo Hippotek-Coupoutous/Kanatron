@@ -2,12 +2,11 @@ package com.kanatron.app.recording
 
 import android.content.Context
 import com.kanatron.app.core.OverdubAlignment
+import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.OverdubRoute
 import com.kanatron.app.core.OverdubTiming
 import com.kanatron.app.core.Project
-import com.kanatron.app.core.ProjectArrangementActions
 import com.kanatron.app.core.ProjectClip
-import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.firstClip
 import com.kanatron.app.data.OverdubCalibrationStore
 import com.kanatron.app.data.ProjectRepository
@@ -25,14 +24,16 @@ internal data class SavedTake(
     val project: Project?,
     val error: String?,
     val interruptionNotice: String?,
-    val alignmentNotice: String?
+    val alignmentNotice: String?,
+    val overdub: OverdubMix?
 )
 
-/** Writes a finished take to disk and, when overdubbing, flattens it with its backing into a new recording. */
+/** Writes a finished take to disk and, when overdubbing, places it over its backing for review. */
 internal class TakePersister(private val context: Context) {
 
     fun persist(take: RecordingTake, snapshot: TakeSnapshot): SavedTake {
         var project: Project? = null
+        var overdub: OverdubMix? = null
         var alignmentNotice: String? = null
         var error = take.error
         try {
@@ -58,40 +59,24 @@ internal class TakePersister(private val context: Context) {
                     alignment?.rateCorrectionPpm
                 )
                 val safeCorrection = correction?.takeIf { it in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM } ?: 0
-                val leadInTrim = if (alignment == null || calibratedPlacement.leadInFrames == 0L) 0L else {
-                    OverdubTiming.sourceTrimForLeadIn(
-                        calibratedPlacement.leadInFrames, savedTake.sampleRate, base.sampleRate, safeCorrection
-                    )
-                }
                 if (savedTake.silent) {
                     alignmentNotice = "The take was silent, so it was not mixed."
-                } else if (leadInTrim >= savedTake.totalFrames) {
-                    alignmentNotice = "The take would start before frame zero. It was saved on its own, not mixed."
+                } else if (error != null) {
+                    // Saving a mix deletes the take, which must not be the fate of the only copy of a doubtful file.
+                    alignmentNotice = "The take did not finish cleanly, so it was not mixed."
                 } else {
-                    val placed = savedTake.firstClip.copy(
-                        positionFrames = calibratedPlacement.positionFrames,
-                        trim = TrimRange(leadInTrim, savedTake.totalFrames),
-                        rateCorrectionPpm = safeCorrection
-                    )
-                    val mixed = repository.saveRendered(ProjectArrangementActions.overdub(base, placed))
-                    if (mixed == null) {
-                        alignmentNotice = "The overdub would clip, so it was not mixed. The take was saved on its own."
-                    } else {
-                        project = mixed
-                        // The mix holds the take now; its separate Library entry and WAV go.
-                        runCatching { repository.delete(savedTake.id) }
-                        alignmentNotice = when {
-                            snapshot.routeInvalidated -> "The audio route changed. The take was mixed at the backing start."
-                            alignment == null -> "Timestamps were unavailable. The take was mixed at the backing start."
-                            else -> null
-                        }
+                    overdub = OverdubMix(base, savedTake.id, savedTake.firstClip.source, calibratedPlacement.offsetFrames, safeCorrection)
+                    alignmentNotice = when {
+                        snapshot.routeInvalidated -> "The audio route changed. The take was placed at the backing start."
+                        alignment == null -> "Timestamps were unavailable. The take was placed at the backing start."
+                        else -> null
                     }
                 }
             }
             if (project == null) error = error ?: "Could not save recording"
         } catch (failure: Throwable) {
             alignmentNotice = if (project != null) {
-                "The take was saved on its own, but could not be mixed with the backing: ${failure.message ?: "unknown error"}"
+                "The take was saved on its own, but could not be placed over the backing: ${failure.message ?: "unknown error"}"
             } else {
                 error = error ?: failure.message ?: "Could not save recording"
                 if (failure.message.orEmpty().contains("header does not match", ignoreCase = true)) {
@@ -104,6 +89,6 @@ internal class TakePersister(private val context: Context) {
         val interruptionNotice = if (snapshot.lostFocus && project != null) {
             "Audio focus was lost. Your recording was saved."
         } else null
-        return SavedTake(project, error, interruptionNotice, alignmentNotice)
+        return SavedTake(project, error, interruptionNotice, alignmentNotice, overdub)
     }
 }

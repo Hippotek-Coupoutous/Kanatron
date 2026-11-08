@@ -73,7 +73,7 @@ internal class PreviewCache(private val directory: File) {
                     .append(clip.source.sampleRate).append(',').append(clip.source.channels).append(',')
                     .append(clip.source.totalFrames).append(',').append(clip.positionFrames).append(',')
                     .append(clip.trim.startFrame).append('-').append(clip.trim.endFrame).append(',')
-                    .append(clip.rateCorrectionPpm)
+                    .append(clip.rateCorrectionPpm).append(',').append(clip.gainPermille)
         }
     }
 

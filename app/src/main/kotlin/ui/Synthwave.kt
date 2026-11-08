@@ -193,21 +193,24 @@ fun BigButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, 
 
 /** [-] value [+] with 64dp buttons. */
 @Composable
-fun Stepper(value: String, onMinus: () -> Unit, onPlus: () -> Unit, minusLabel: String, plusLabel: String, modifier: Modifier = Modifier) {
+fun Stepper(
+    value: String, onMinus: () -> Unit, onPlus: () -> Unit, minusLabel: String, plusLabel: String, modifier: Modifier = Modifier,
+    minusEnabled: Boolean = true, plusEnabled: Boolean = true
+) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        StepKey("−", minusLabel, onMinus)
+        StepKey("−", minusLabel, minusEnabled, onMinus)
         Text(value, color = Synth.cyan, fontSize = 26.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.weight(1f))
-        StepKey("+", plusLabel, onPlus)
+        StepKey("+", plusLabel, plusEnabled, onPlus)
     }
 }
 
 @Composable
-private fun StepKey(symbol: String, label: String, onClick: () -> Unit) {
+private fun StepKey(symbol: String, label: String, enabled: Boolean, onClick: () -> Unit) {
     Box(
         Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)).background(Synth.surfaceHi).border(1.dp, Synth.line, RoundedCornerShape(16.dp))
-            .clickable(role = Role.Button, onClick = onClick).semantics { contentDescription = label },
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center
-    ) { Text(symbol, color = Synth.text, fontSize = 30.sp) }
+    ) { Text(symbol, color = if (enabled) Synth.text else Synth.text.copy(alpha = 0.35f), fontSize = 30.sp) }
 }
 
 /** Rounded translucent surface. */

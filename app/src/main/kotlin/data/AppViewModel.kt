@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.kanatron.app.core.Cuts
+import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.firstClip
@@ -26,7 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal enum class Route {
-    LIBRARY, SKETCH, EDIT, TUNER, EDIT_IMPORT, SPLICE, SPLICE_PICK, OVERDUB_CALIBRATION;
+    LIBRARY, SKETCH, EDIT, TUNER, EDIT_IMPORT, SPLICE, SPLICE_PICK, OVERDUB_CALIBRATION, OVERDUB_REVIEW;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == EDIT || this == TUNER
@@ -34,6 +35,9 @@ internal enum class Route {
 
 /** One recording's chosen range in a splice. */
 internal data class SplicePart(val project: Project, val range: TrimRange)
+
+/** Enough parts to comp a phrase from several takes while every lane stays tall enough to drag. */
+internal const val MAX_SPLICE_PARTS = 4
 
 /** Unsaved cuts on the Edit subject; they survive rotation but not process death. */
 internal data class EditSession(val projectId: String, val pieces: List<TrimRange>, val undo: List<List<TrimRange>>)
@@ -46,8 +50,10 @@ internal data class AppUiState(
     val selectedId: String? = null,
     val homeId: String? = null,
     val edit: EditSession? = null,
-    /** The splice being built from Edit: its subject first, then a second recording; rotation-safe only. */
+    /** The splice being built from Edit, in playing order; rotation-safe only. */
     val splice: List<SplicePart> = emptyList(),
+    /** A finished take over its backing, not mixed yet; rotation-safe only, the take itself is already saved. */
+    val overdub: OverdubMix? = null,
     val editSaving: Boolean = false,
     val editError: String? = null,
     val microphoneGranted: Boolean = false,
@@ -95,7 +101,6 @@ internal class AppViewModel(
     private var importJob: Job? = null
     private var importCancellation: ImportCancellation? = null
     private var draftActionInFlight = false
-
     init {
         // A restored route can already point at a project; load it like the first selection would.
         _state.value.selectedId?.let { selectProject(it) }
@@ -105,41 +110,52 @@ internal class AppViewModel(
 
     fun setHome(id: String?) = updateState { it.copy(homeId = id) }
 
-    fun cut(project: Project, pieces: List<TrimRange>) = updateState { state ->
+    fun cut(project: Project, pieces: List<TrimRange>) = editing { state ->
         val previous = state.edit?.pieces?.takeIf { state.edit.projectId == project.id } ?: listOf(project.firstClip.trim)
         val undo = state.edit?.undo?.takeIf { state.edit.projectId == project.id }.orEmpty()
-        state.copy(edit = EditSession(project.id, pieces, undo + listOf(previous)), editError = null)
+        state.copy(edit = EditSession(project.id, pieces, undo + listOf(previous)))
     }
 
-    fun undoCut() = updateState { state ->
-        val session = state.edit ?: return@updateState state
+    fun undoCut() = editing { state ->
+        val session = state.edit ?: return@editing state
         state.copy(edit = if (session.undo.size <= 1) null else session.copy(pieces = session.undo.last(), undo = session.undo.dropLast(1)))
     }
 
     fun discardEdits() = updateState { it.copy(edit = null, editError = null) }
 
-    fun startSplice(project: Project) = updateState { it.copy(splice = listOf(SplicePart(project, project.firstClip.trim)), editError = null, route = Route.SPLICE) }
+    fun startSplice(project: Project) = updateState { it.copy(splice = listOf(SplicePart(project, project.firstClip.trim)), route = Route.SPLICE) }
 
-    fun addToSplice(project: Project) = updateState { it.copy(splice = it.splice + SplicePart(project, project.firstClip.trim), route = Route.SPLICE) }
+    fun addToSplice(project: Project) = editing {
+        if (it.splice.size >= MAX_SPLICE_PARTS) it.copy(route = Route.SPLICE)
+        else it.copy(splice = it.splice + SplicePart(project, project.firstClip.trim), route = Route.SPLICE)
+    }
 
-    fun setSpliceRange(index: Int, range: TrimRange) = updateState { state ->
+    fun setSpliceRange(index: Int, range: TrimRange) = editing { state ->
         state.copy(splice = state.splice.mapIndexed { i, part -> if (i == index) part.copy(range = range) else part })
     }
 
-    fun swapSplice() = updateState { it.copy(splice = it.splice.reversed()) }
+    fun moveSplicePartEarlier(index: Int) = editing { state ->
+        if (index !in 1 until state.splice.size) state
+        else state.copy(splice = state.splice.toMutableList().apply { add(index - 1, removeAt(index)) })
+    }
 
-    fun closeSplice() = updateState { it.copy(splice = emptyList(), editError = null, route = Route.EDIT) }
+    fun removeSplicePart(index: Int) = editing { state ->
+        if (state.splice.size <= 1 || index !in state.splice.indices) state
+        else state.copy(splice = state.splice.filterIndexed { i, _ -> i != index })
+    }
+
+    fun closeSplice() = updateState { it.copy(splice = emptyList(), route = Route.EDIT) }
 
     /** Saves the splice as a new recording and makes it Edit's subject. */
     fun saveSplice() {
         val parts = _state.value.splice
-        if (parts.size != 2 || _state.value.editSaving) return
+        if (parts.size < 2 || _state.value.editSaving) return
         updateState { it.copy(editSaving = true, editError = null) }
         viewModelScope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) {
                     repository.saveRendered(Cuts.join(parts.first().project, parts.map { it.project.firstClip.source to it.range }))
-                        ?: error("The splice would clip. Shorten or swap the parts.")
+                        ?: error("The splice would clip. Shorten or reorder the parts.")
                 }
                 refreshLibrary(selectId = saved.id).join()
                 setHome(saved.id)
@@ -148,6 +164,40 @@ internal class AppViewModel(
                 throw cancelled
             } catch (failure: Throwable) {
                 updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the splice.") }
+            }
+        }
+    }
+
+    fun startOverdubReview(mix: OverdubMix) = updateState { it.copy(overdub = mix, route = Route.OVERDUB_REVIEW) }
+
+    fun nudgeOverdub(millis: Int) = editing { state -> state.overdub?.nudged(millis)?.let { state.copy(overdub = it) } ?: state }
+
+    fun balanceOverdub(steps: Int) = editing { state -> state.overdub?.let { state.copy(overdub = it.balanced(steps)) } ?: state }
+
+    /** The take stays in the Library on its own. */
+    fun discardOverdub() = updateState { it.copy(route = Route.SKETCH) }
+
+    /** Mixes the take into a new recording; the take's own entry goes, the backing stays as it is. */
+    fun saveOverdub() {
+        val mix = _state.value.overdub
+        if (mix == null || _state.value.editSaving) return
+        updateState { it.copy(editSaving = true, editError = null) }
+        viewModelScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    repository.saveRendered(mix.arrangement()) ?: error("The mix would clip. Lower the backing or the take.")
+                }
+                setHome(saved.id)
+                updateState { it.copy(selectedId = saved.id, selectedProject = saved) }
+                // The take goes only once nothing points at it; if it stays, it is just another Library entry.
+                withContext(Dispatchers.IO) { runCatching { repository.delete(mix.takeProjectId) } }
+                // Sketch shows the newest recording, so it waits for a Library without the take.
+                refreshLibrary(selectId = saved.id).join()
+                updateState { it.copy(editSaving = false, route = Route.SKETCH) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the mix.") }
             }
         }
     }
@@ -229,8 +279,15 @@ internal class AppViewModel(
 
     fun clearShortcutRequest() = updateState { it.copy(shortcutRequested = false) }
 
-    /** A RECORD_NOW intent: show Sketch and let the recorder ask for the microphone. */
-    fun startShortcutRecord() = updateState { it.copy(route = Route.SKETCH, shortcutRequested = true) }
+    /**
+     * A RECORD_NOW intent shows Sketch for a deliberate new take; an open overdub review closes, its take stays in the Library.
+     * Refused while a save runs, since the save ends on its own screen. Returns whether the take should start.
+     */
+    fun startShortcutRecord(): Boolean {
+        if (_state.value.editSaving) return false
+        updateState { it.copy(route = Route.SKETCH, shortcutRequested = true) }
+        return true
+    }
 
     /** The single exit for editing screens so system Back refreshes exactly like on-screen Back. */
     fun leave(to: Route, changedProjectId: String? = null) {
@@ -475,7 +532,7 @@ internal class AppViewModel(
         }
     }
 
-    /** Promotes a recovered take into the Library and makes it the current take. */
+    /** Promotes a recovered take into the Library and makes it the current take; [onSaved] runs only if Sketch is still showing. */
     fun saveRecoveredDraft(id: String, onSaved: () -> Unit = {}) {
         if (draftActionInFlight) return
         draftActionInFlight = true
@@ -489,7 +546,7 @@ internal class AppViewModel(
                 _state.update { it.copy(drafts = it.drafts.filterNot { draft -> draft.id == id }) }
                 refreshLibrary(selectId = saved.id).join()
                 setHome(saved.id)
-                onSaved()
+                if (_state.value.route == Route.SKETCH) onSaved()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -500,7 +557,7 @@ internal class AppViewModel(
         }
     }
 
-    /** Deletes a recovered take; its WAV survives while another project references it. */
+    /** Deletes a recovered take; its WAV survives while another project references it. [onDeleted] runs only if Sketch is still showing. */
     fun discardRecoveredDraft(id: String, onDeleted: () -> Unit = {}) {
         // A stale banner must never delete a take that has since been saved into the Library.
         if (draftActionInFlight || _state.value.drafts.none { it.id == id }) return
@@ -513,7 +570,7 @@ internal class AppViewModel(
                 if (_state.value.selectedId == id) selectProject(null, force = true)
                 if (_state.value.homeId == id) setHome(null)
                 refreshLibrary().join()
-                onDeleted()
+                if (_state.value.route == Route.SKETCH) onDeleted()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -530,8 +587,19 @@ internal class AppViewModel(
 
     /** Every write goes through here so the process-death copy never drifts from the visible state. */
     private fun updateState(transform: (AppUiState) -> AppUiState) {
-        _state.update(transform)
+        // An edit error belongs to the screen that showed it, and an unsaved mix to its review.
+        _state.update { state ->
+            transform(state).let { next ->
+                if (next.route == state.route) next
+                else next.copy(editError = null, overdub = next.overdub.takeIf { next.route == Route.OVERDUB_REVIEW })
+            }
+        }
         persist(_state.value)
+    }
+
+    /** Edits wait out a save, whose snapshot is already taken; a real change clears the last save error. */
+    private fun editing(transform: (AppUiState) -> AppUiState) = updateState { state ->
+        if (state.editSaving) state else transform(state).let { if (it == state) state else it.copy(editError = null) }
     }
 
     private fun persist(state: AppUiState) {
@@ -549,6 +617,7 @@ internal class AppViewModel(
         route = when (val stored = savedStateHandle.get<String>(KEY_ROUTE)?.let { runCatching { Route.valueOf(it) }.getOrNull() }) {
             null -> Route.LIBRARY
             Route.SPLICE, Route.SPLICE_PICK -> Route.EDIT
+            Route.OVERDUB_REVIEW -> Route.SKETCH
             else -> stored
         },
         selectedId = savedStateHandle.get<String>(KEY_SELECTED),

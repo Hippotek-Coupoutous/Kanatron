@@ -25,13 +25,17 @@ data class ProjectAudioSource(
     }
 }
 
-/** A source slice placed on the project timeline, measured in the owning project's sample rate. */
+/**
+ * A source slice placed on the project timeline, measured in the owning project's sample rate.
+ * [gainPermille] only lives in arrangements about to be rendered; saved recordings are always at unity.
+ */
 data class ProjectClip(
     val id: String,
     val source: ProjectAudioSource,
     val positionFrames: Long,
     val trim: TrimRange,
-    val rateCorrectionPpm: Int = 0
+    val rateCorrectionPpm: Int = 0,
+    val gainPermille: Int = UNITY_GAIN
 ) {
     init {
         require(id.matches(PROJECT_ID))
@@ -40,9 +44,13 @@ data class ProjectClip(
         require(rateCorrectionPpm in -MAX_RATE_CORRECTION_PPM..MAX_RATE_CORRECTION_PPM) {
             "Rate correction must be within ±$MAX_RATE_CORRECTION_PPM ppm."
         }
+        require(gainPermille in 0..UNITY_GAIN) { "Clip gain can only attenuate." }
     }
 
-    companion object { const val MAX_RATE_CORRECTION_PPM = 2_000 }
+    companion object {
+        const val MAX_RATE_CORRECTION_PPM = 2_000
+        const val UNITY_GAIN = 1_000
+    }
 }
 
 data class ProjectTrack(
@@ -97,6 +105,7 @@ data class Project(
     val totalFrames: Long get() = MultitrackRenderer.frameCount(tracks, sampleRate)
 
     fun toJson(): String = buildString {
+        require(tracks.all { track -> track.clips.all { it.gainPermille == ProjectClip.UNITY_GAIN } }) { "Clip gains are rendered, never saved." }
         append('{')
         append("\"schemaVersion\":4,")
         append("\"id\":").append(quote(id)).append(',')

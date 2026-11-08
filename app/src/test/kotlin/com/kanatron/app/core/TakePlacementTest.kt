@@ -20,6 +20,7 @@ class TakePlacementTest {
         // take frame 0 sits at backing frame 0, one count-in bar before project zero
         assertEquals(-96_000L, alignment.positionFrames)
         assertEquals(OverdubPlacement(0L, 96_000L), OverdubTiming.placement(alignment.positionFrames, null))
+        assertEquals(-96_000L, OverdubTiming.placement(alignment.positionFrames, null).offsetFrames)
     }
 
     @Test
@@ -31,6 +32,9 @@ class TakePlacementTest {
         assertEquals(OverdubPlacement(1_000L, 0L), OverdubTiming.placement(1_000L, null))
         assertEquals(OverdubPlacement(0L, 500L), OverdubTiming.placement(1_000L, minus1500))
         assertEquals(OverdubPlacement(150L, 0L), OverdubTiming.placement(-100L, plus250))
+        // The review gets one signed offset either side of zero.
+        assertEquals(-500L, OverdubTiming.placement(1_000L, minus1500).offsetFrames)
+        assertEquals(150L, OverdubTiming.placement(-100L, plus250).offsetFrames)
     }
 
     @Test

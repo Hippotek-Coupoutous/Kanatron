@@ -16,6 +16,7 @@ import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.kanatron.app.MainActivity
 import com.kanatron.app.R
+import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.OverdubRoute
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.RecordingLevel
@@ -35,8 +36,12 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 
 enum class RecordingPhase { IDLE, STARTING, RECORDING, PAUSED, COMPLETE, FAILED }
+
+/** A saved take the screen has not shown yet; an overdub also waits for review over its backing. */
+data class TakeCompletion(val projectId: String, val overdub: OverdubMix?)
 
 data class RecordingServiceState(
     val phase: RecordingPhase = RecordingPhase.IDLE,
@@ -53,7 +58,8 @@ data class RecordingServiceState(
     val alignmentNotice: String? = null,
     val overdubRoute: OverdubRoute? = null,
     val previewPlaying: Boolean = false,
-    val previewFrame: Long = 0L
+    val previewFrame: Long = 0L,
+    val completion: TakeCompletion? = null
 )
 
 class RecordingService : Service() {
@@ -73,6 +79,9 @@ class RecordingService : Service() {
         private const val PREVIEW_PUBLISH_MILLIS = 100L
         private val mutableState = MutableStateFlow(RecordingServiceState())
         val state = mutableState.asStateFlow()
+
+        /** Hands a finished take over once, so a recreated screen does not reselect it or reopen its review. */
+        fun takeCompletion(): TakeCompletion? = mutableState.getAndUpdate { it.copy(completion = null) }.completion
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -490,7 +499,7 @@ class RecordingService : Service() {
             }
             val saved = TakePersister(this).persist(take, snapshot)
             main.post {
-                finishTake(sourceRecorder, take, saved.project, saved.error, saved.interruptionNotice, saved.alignmentNotice)
+                finishTake(sourceRecorder, take, saved.project, saved.error, saved.interruptionNotice, saved.alignmentNotice, saved.overdub)
             }
         }
         // onDestroy also runs here, so this check cannot race; a destroyed service has no saving thread left.
@@ -503,7 +512,8 @@ class RecordingService : Service() {
         project: Project?,
         error: String?,
         interruptionNotice: String? = null,
-        alignmentNotice: String? = null
+        alignmentNotice: String? = null,
+        overdub: OverdubMix? = null
     ) {
         // The take is saved or abandoned now, so startup recovery may adopt its file.
         if (RecordingActivePath.path == take.file.absolutePath) RecordingActivePath.path = null
@@ -518,7 +528,8 @@ class RecordingService : Service() {
             silent = take.allSamplesZero,
             interruptionNotice = interruptionNotice,
             alignmentNotice = terminalNotice,
-            overdubRoute = clockTracker.route
+            overdubRoute = clockTracker.route,
+            completion = project?.let { TakeCompletion(it.id, overdub) }
         )
         // A save can outlive the service; the result is still published, but a destroyed service has nothing to stop.
         if (destroyed) return

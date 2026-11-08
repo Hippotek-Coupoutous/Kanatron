@@ -104,16 +104,7 @@ internal fun EditScreen(
     val rate = project.sampleRate
     val length = Cuts.length(pieces)
     // The edited timeline plays from a cached render; an uncut recording plays its own WAV.
-    val timeline by produceState<Result<File>?>(null, project, pieces) {
-        value = null
-        val cancelled = AtomicBoolean(false)
-        val render = async(Dispatchers.IO) { runCatching { repository.playbackFile(Cuts.arrangement(project, pieces), cancelled) } }
-        try {
-            value = render.await()
-        } finally {
-            cancelled.set(true)
-        }
-    }
+    val timeline = producePlaybackRender(repository, 0L, project, pieces) { Cuts.arrangement(project, pieces) }
     val file = timeline?.getOrNull()
     val overview by produceState(emptyList<Peak>(), file) {
         value = emptyList()
@@ -229,7 +220,7 @@ internal fun EditScreen(
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for ((label, unit, frames) in nudges(rate)) {
-                NudgeKey(label, unit, Modifier.weight(1f)) {
+                NudgeKey(label, unit, "Move edge $label $unit", Modifier.weight(1f)) {
                     val current = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
                     setEdge(activeEdge, current + frames)
                 }
@@ -447,13 +438,13 @@ private fun EdgeChip(edge: TrimEdge, time: String, active: Boolean, modifier: Mo
 }
 
 @Composable
-private fun NudgeKey(label: String, unit: String, modifier: Modifier, onClick: () -> Unit) {
+internal fun NudgeKey(label: String, unit: String, description: String, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
     Column(
         modifier.heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).background(Synth.surface).border(1.dp, Synth.line, RoundedCornerShape(12.dp))
-            .clickable(role = Role.Button, onClick = onClick).semantics { contentDescription = "Move edge $label $unit" },
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = description },
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
     ) {
-        Text(label, color = Synth.text, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, textAlign = TextAlign.Center)
+        Text(label, color = if (enabled) Synth.text else Synth.text.copy(alpha = 0.35f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, textAlign = TextAlign.Center)
         Text(unit, color = Synth.muted, fontSize = 11.sp)
     }
 }
@@ -475,6 +466,37 @@ private fun nudges(rate: Int) = listOf(
 internal fun clockMillis(frames: Long, rate: Int) = RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, rate), withMillis = true, hours = false)
 
 private const val OVERVIEW_BUCKETS = 2_048
+/** Long enough for a burst of taps on a preview control to settle into one render. */
+internal const val PREVIEW_DEBOUNCE_MILLIS = 250L
+
+/**
+ * Renders the [arrangement] to a playable file; a new key cancels the render in flight. Taps that change the
+ * arrangement in quick succession settle within [debounceMillis] before a render starts. Null while rendering or
+ * while there is nothing to render.
+ */
+@Composable
+internal fun producePlaybackRender(
+    repository: ProjectRepository,
+    debounceMillis: Long,
+    vararg keys: Any?,
+    arrangement: () -> Project?
+): Result<File>? {
+    val render by produceState<Result<File>?>(null, *keys) {
+        value = null
+        val built = runCatching(arrangement)
+        val project = built.getOrElse { value = Result.failure(it); return@produceState } ?: return@produceState
+        delay(debounceMillis)
+        val cancelled = AtomicBoolean(false)
+        val job = async(Dispatchers.IO) { runCatching { repository.playbackFile(project, cancelled) } }
+        try {
+            value = job.await()
+        } finally {
+            cancelled.set(true)
+        }
+    }
+    return render
+}
+
 private val ACTION_HEIGHT = 76.dp
 /** The tightest zoom still shows a few dozen samples per handle drag. */
 private const val MIN_VIEW_FRAMES = 64L

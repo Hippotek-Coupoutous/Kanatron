@@ -72,6 +72,7 @@ import com.kanatron.app.ui.EditScreen
 import com.kanatron.app.ui.MissingAudioScreen
 import com.kanatron.app.ui.SynthTopBar
 import com.kanatron.app.ui.OverdubCalibrationScreen
+import com.kanatron.app.ui.OverdubScreen
 import com.kanatron.app.ui.SketchScreen
 import com.kanatron.app.ui.SpliceScreen
 import com.kanatron.app.ui.Synth
@@ -211,10 +212,12 @@ class MainActivity : ComponentActivity() {
 
     private fun consumeRecordNowIntent(intent: Intent) {
         if (intent.action == ACTION_RECORD_NOW) {
-            appViewModel.startShortcutRecord()
-            shortcutRequestPending = true
             // Consume the action so an in-process redelivery cannot start a second take.
             intent.action = Intent.ACTION_MAIN
+            if (!appViewModel.startShortcutRecord()) return
+            // A deliberate new take outranks reviewing a finished one, which stays in the Library on its own.
+            RecordingService.takeCompletion()
+            shortcutRequestPending = true
             window.decorView.post { dispatchShortcutRecordRequest() }
         }
     }
@@ -308,8 +311,11 @@ private fun KanatronApp(
     fun leavingEdits(then: () -> Unit) {
         when {
             appState.editSaving -> Unit
-            route == Route.SPLICE && appState.splice.size == 2 -> discardAndThen = { appViewModel.closeSplice(); then() }
+            // Only an untouched single part is nothing to lose.
+            route == Route.SPLICE && appState.splice.singleOrNull()?.let { it.range == it.project.firstClip.trim } != true ->
+                discardAndThen = { appViewModel.closeSplice(); then() }
             route == Route.SPLICE -> { appViewModel.closeSplice(); then() }
+            route == Route.OVERDUB_REVIEW -> discardAndThen = { appViewModel.discardOverdub(); then() }
             appState.edit != null -> discardAndThen = { appViewModel.discardEdits(); then() }
             else -> then()
         }
@@ -346,13 +352,12 @@ private fun KanatronApp(
         if (recording.phase != RecordingPhase.FAILED) dismissedTakeError = null
     }
 
-    LaunchedEffect(recording.projectId, recording.phase) {
-        val finishedProjectId = recording.projectId
-        if (finishedProjectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
-            // Select the finished take; an overdub is a new recording the library has not read yet.
-            appViewModel.refreshLibrary(finishedProjectId)
-            appViewModel.setHome(finishedProjectId)
-        }
+    LaunchedEffect(recording.completion) {
+        val completion = RecordingService.takeCompletion() ?: return@LaunchedEffect
+        // Select the finished take; it is a new recording the library has not read yet.
+        appViewModel.refreshLibrary(completion.projectId)
+        appViewModel.setHome(completion.projectId)
+        completion.overdub?.let(appViewModel::startOverdubReview)
     }
     LaunchedEffect(appState.importedProjectId) {
         appState.importedProjectId?.let { id ->
@@ -378,6 +383,7 @@ private fun KanatronApp(
             Route.SPLICE -> leavingEdits {}
             Route.SPLICE_PICK -> appViewModel.navigate(Route.SPLICE)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.SKETCH)
+            Route.OVERDUB_REVIEW -> leavingEdits {}
             Route.LIBRARY -> Unit
         }
     }
@@ -495,8 +501,9 @@ private fun KanatronApp(
                     saving = appState.editSaving,
                     error = appState.editError,
                     onRange = appViewModel::setSpliceRange,
-                    onChooseSecond = { appViewModel.navigate(Route.SPLICE_PICK) },
-                    onSwap = appViewModel::swapSplice,
+                    onChooseNext = { appViewModel.navigate(Route.SPLICE_PICK) },
+                    onMoveEarlier = appViewModel::moveSplicePartEarlier,
+                    onRemove = appViewModel::removeSplicePart,
                     onSave = appViewModel::saveSplice,
                     onClose = { leavingEdits {} }
                 )
@@ -504,9 +511,9 @@ private fun KanatronApp(
                     Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
                         SynthTopBar("Join", { appViewModel.navigate(Route.SPLICE) }, backLabel = "Splice")
                     }
-                    val first = appState.splice.firstOrNull()?.project?.id
+                    // A comp may reuse a phrase from the same take, so no recording is excluded.
                     LibraryScreen(
-                        projects = projects.filter { it.id != first && it.tracks.size == 1 && it.tracks[0].clips.size == 1 },
+                        projects = projects.filter { it.tracks.size == 1 && it.tracks[0].clips.size == 1 },
                         onOpen = appViewModel::addToSplice,
                         onRename = null,
                         onDelete = null
@@ -543,6 +550,21 @@ private fun KanatronApp(
                     onOpenSettings = onOpenSettings,
                     onBack = { appViewModel.leave(Route.LIBRARY) }
                 )
+                // The route and its mix are always set and cleared together.
+                Route.OVERDUB_REVIEW -> appState.overdub?.let { mix ->
+                    OverdubScreen(
+                        mix = mix,
+                        repository = repository,
+                        playbackAllowed = playbackAllowed(recording.phase),
+                        saving = appState.editSaving,
+                        error = appState.editError,
+                        notice = listOfNotNull(recording.interruptionNotice, recording.alignmentNotice).joinToString(" ").ifEmpty { null },
+                        onNudge = appViewModel::nudgeOverdub,
+                        onBalance = appViewModel::balanceOverdub,
+                        onSave = appViewModel::saveOverdub,
+                        onClose = { leavingEdits {} }
+                    )
+                }
                 Route.OVERDUB_CALIBRATION -> OverdubCalibrationScreen(
                     route = recording.overdubRoute ?: calibrationStore.lastRoute(),
                     onBack = { appViewModel.leave(Route.SKETCH) }
@@ -662,7 +684,13 @@ private fun KanatronApp(
             AlertDialog(
                 onDismissRequest = { discardAndThen = null },
                 title = { Text("Discard changes?") },
-                text = { Text(if (route == Route.SPLICE) "The splice is not saved yet." else "Your unsaved cuts will be lost.") },
+                text = {
+                    Text(when (route) {
+                        Route.SPLICE -> "The splice is not saved yet."
+                        Route.OVERDUB_REVIEW -> "The mix is not saved. The take stays in the Library on its own."
+                        else -> "Your unsaved cuts will be lost."
+                    })
+                },
                 confirmButton = {
                     TextButton(onClick = {
                         val then = discardAndThen

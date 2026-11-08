@@ -38,7 +38,10 @@ data class OverdubCalibration(
             backingSampleRate == route.backingSampleRate && projectSampleRate == route.projectSampleRate
 }
 
-data class OverdubPlacement(val positionFrames: Long, val leadInFrames: Long)
+data class OverdubPlacement(val positionFrames: Long, val leadInFrames: Long) {
+    /** Where take frame 0 lands on the backing; negative starts before it. */
+    val offsetFrames: Long get() = positionFrames - leadInFrames
+}
 
 object OverdubTiming {
     /** Positive offset moves the captured clip later. */

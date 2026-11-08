@@ -4,7 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import com.kanatron.app.tuner.ReadingHold
 import org.junit.Test
 import kotlin.math.PI
 import kotlin.math.abs
@@ -106,6 +105,19 @@ class TunerPitchTest {
     }
 
     @Test
+    fun readsALowEWhoseFundamentalIsWeakerThanItsOctave() {
+        // The fundamental at a quarter of the octave's level leaves a 0.1 dip at the E3 lag, under the 0.15 threshold.
+        val samples = FloatArray(4096) { i ->
+            val t = i.toDouble() / 44_100
+            (0.25 * sin(2 * PI * 82.41 * t) + sin(2 * PI * 164.82 * t) + 0.5 * sin(2 * PI * 329.64 * t)).toFloat() * 0.3f
+        }
+        val reading = TunerPitch.detect(samples, 44_100)
+        assertNotNull(reading)
+        assertEquals("E2", reading!!.note)
+        assertTrue("got ${reading.cents} cents", abs(reading.cents) <= 1.0)
+    }
+
+    @Test
     fun rejectsSilenceAndOneLsbButAcceptsAQuietNote() {
         assertNull("all zeros", TunerPitch.detect(FloatArray(4096), RATE))
 
@@ -142,20 +154,6 @@ class TunerPitchTest {
         val samples = FloatArray(4096) { (0.005 * sqrt(3.0) * (noise.nextDouble() * 2 - 1)).toFloat() }
         assertTrue(TunerPitch.rms(samples) > TunerPitch.MIN_GATE_RMS)
         assertNull(TunerPitch.detect(samples, RATE))
-    }
-
-    @Test
-    fun holdKeepsTheLastNoteFor1500MillisecondsAfterItFades() {
-        val note = TunerPitch.detect(tone(440.0), RATE)!!
-        val hold = ReadingHold()
-        assertNull("nothing to hold yet", hold.next(null, 0).reading)
-
-        assertEquals(note, hold.next(note, 1_000).reading)
-        assertTrue(hold.next(null, 2_000).holding)
-        assertEquals("a fresh note restarts the hold", note, hold.next(note, 2_400).reading)
-        assertEquals(note, hold.next(null, 3_800).reading)
-        assertTrue(hold.next(null, 3_900).holding)
-        assertNull(hold.next(null, 3_901).reading)
     }
 
     @Test

@@ -21,6 +21,10 @@ object TunerPitch {
     /** A noise floor that opens the gate fully until the room proves louder. */
     const val QUIET_ROOM_FLOOR = MIN_GATE_RMS / NOISE_GATE_RATIO
     private const val CMND_THRESHOLD = 0.15
+    /** Off-integer lag error alone stays under 0.003 up to 1046.5 Hz, so dips above this are genuinely weak. */
+    private const val WEAK_DIP = 0.05
+    /** Real notes measured 1–2x between period multiples; the plucked low E's octave error measured 100x. */
+    private const val OCTAVE_DIP_RATIO = 5.0
     private const val EDGE_TOLERANCE_CENTS = 2.0
     private const val LN_2 = 0.6931471805599453
     private val noteNames = arrayOf("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
@@ -70,6 +74,12 @@ object TunerPitch {
             lag++
         }
         if (candidate < 0 || candidate >= maxLag) return null
+        // A weak dip with a far deeper one at twice its lag is the octave-up error. Only the octave: a deep dip
+        // elsewhere is another string ringing, not this note's period.
+        if (normalized[candidate] > WEAK_DIP && 2 * candidate + 2 < maxLag) {
+            val octave = (2 * candidate - 2..2 * candidate + 2).minBy { normalized[it] }
+            if (normalized[octave] * OCTAVE_DIP_RATIO < normalized[candidate]) candidate = octave
+        }
 
         val left = differences[candidate - 1]
         val center = differences[candidate]
@@ -88,7 +98,8 @@ object TunerPitch {
         return TunerPitchReading(
             note = "${noteNames[Math.floorMod(midi, 12)]}${midi / 12 - 1}",
             frequencyHz = frequency,
-            cents = cents
+            cents = cents,
+            targetHz = target
         )
     }
 
@@ -105,5 +116,6 @@ object TunerPitch {
 data class TunerPitchReading(
     val note: String,
     val frequencyHz: Double,
-    val cents: Double
+    val cents: Double,
+    val targetHz: Double
 )

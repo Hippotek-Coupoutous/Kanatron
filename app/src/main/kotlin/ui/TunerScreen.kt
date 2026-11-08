@@ -38,7 +38,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.kanatron.app.core.TunerPitchReading
 import com.kanatron.app.platform.PlatformPorts
 import com.kanatron.app.tuner.TunerAudioSession
-import kotlin.math.abs
+import com.kanatron.app.tuner.playInTuneBeep
 
 @Composable
 fun TunerScreen(
@@ -85,6 +85,9 @@ fun TunerScreen(
     }
 
     val reading = audio.reading
+    LaunchedEffect(audio.inTune) {
+        if (audio.inTune && reading != null) playInTuneBeep(reading.targetHz)
+    }
     val status = when {
         microphoneBusy -> microphoneBlockedReason.orEmpty()
         !microphoneGranted -> if (microphoneDenied) "Microphone access is off." else "Allow microphone access to tune."
@@ -92,7 +95,7 @@ fun TunerScreen(
         !foreground -> "Tuner pauses in the background."
         reading == null -> "Play a note."
         else -> when {
-            abs(reading.cents) <= 3.0 -> "In tune"
+            audio.inTune -> "In tune"
             reading.cents < 0.0 -> "Flat"
             else -> "Sharp"
         } + if (audio.holding) " – holding" else ""
@@ -129,7 +132,7 @@ fun TunerScreen(
             Text(
                 status,
                 modifier = Modifier.fillMaxWidth().semantics { contentDescription = status },
-                color = if (reading != null && abs(reading.cents) <= 3.0) Synth.cyan else Synth.text,
+                color = if (audio.inTune) Synth.cyan else Synth.text,
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center
             )

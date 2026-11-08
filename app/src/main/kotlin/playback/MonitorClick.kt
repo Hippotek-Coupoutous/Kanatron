@@ -56,12 +56,18 @@ internal class ClickPcmMixer(
     }
 }
 
-internal fun synthesizeClick(sampleRate: Int, hz: Double, amplitude: Double): ShortArray {
-    val frames = sampleRate * 30 / 1_000
+internal fun synthesizeClick(
+    sampleRate: Int,
+    hz: Double,
+    amplitude: Double,
+    durationMs: Int = 30,
+    decayPerSecond: Double = 110.0
+): ShortArray {
+    val frames = sampleRate * durationMs / 1_000
     val fadeFrom = frames - frames / 10
     return ShortArray(frames) { index ->
         val time = index.toDouble() / sampleRate
         val fade = if (index < fadeFrom) 1.0 else (frames - index).toDouble() / (frames - fadeFrom)
-        (sin(2 * PI * hz * time) * exp(-time * 110.0) * fade * amplitude * Short.MAX_VALUE).toInt().toShort()
+        (sin(2 * PI * hz * time) * exp(-time * decayPerSecond) * fade * amplitude * Short.MAX_VALUE).toInt().toShort()
     }
 }

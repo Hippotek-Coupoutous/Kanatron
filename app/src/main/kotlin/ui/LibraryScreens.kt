@@ -466,8 +466,10 @@ private fun TextAction(
 internal fun LibraryScreen(
     projects: List<Project>,
     onOpen: (Project) -> Unit,
-    onRename: (Project, String) -> Unit,
-    onDelete: (Project) -> Unit
+    onRename: ((Project, String) -> Unit)?,
+    onDelete: ((Project) -> Unit)?,
+    selectedId: String? = null,
+    onShare: ((Project) -> Unit)? = null
 ) {
     var renameId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteTarget by remember { mutableStateOf<Project?>(null) }
@@ -477,17 +479,25 @@ internal fun LibraryScreen(
             Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                "Library", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Library", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                if (onShare != null) {
+                    val chosen = projects.firstOrNull { it.id == selectedId }
+                    IconSquare(SynthIcon.Share, chosen?.let { "Share ${it.name}" } ?: "Choose a recording to share", { chosen?.let(onShare) }, enabled = chosen != null)
+                }
+            }
             if (projects.isEmpty()) {
                 Text("Your recordings live here", color = Synth.night, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
             } else projects.sortedByDescending { it.createdAtEpochMillis }.forEach { project ->
                 LibraryRow(
                     project,
+                    selected = project.id == selectedId,
                     onOpen = { onOpen(project) },
-                    onRename = { renameName = project.name; renameId = project.id },
-                    onDelete = { deleteTarget = project }
+                    onRename = onRename?.let { { renameName = project.name; renameId = project.id } },
+                    onDelete = onDelete?.let { { deleteTarget = project } }
                 )
             }
         }
@@ -498,7 +508,7 @@ internal fun LibraryScreen(
             onDismissRequest = { renameId = null },
             title = { Text("Rename recording") },
             text = { OutlinedTextField(renameName, { renameName = it }, label = { Text("Name") }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { if (renameName.isNotBlank()) onRename(rename, renameName); renameId = null }) { Text("Save") } },
+            confirmButton = { TextButton(onClick = { if (renameName.isNotBlank()) onRename?.invoke(rename, renameName); renameId = null }) { Text("Save") } },
             dismissButton = { TextButton(onClick = { renameId = null }) { Text("Cancel") } }
         )
     }
@@ -508,29 +518,32 @@ internal fun LibraryScreen(
             onDismissRequest = { deleteTarget = null },
             title = { Text("Delete recording?") },
             text = { Text("${delete.name} will be removed. Audio still used by another recording is kept.") },
-            confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete(delete) }) { Text("Delete") } },
+            confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete?.invoke(delete) }) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
         )
     }
 }
 
 @Composable
-private fun LibraryRow(project: Project, onOpen: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+private fun LibraryRow(project: Project, selected: Boolean, onOpen: () -> Unit, onRename: (() -> Unit)?, onDelete: (() -> Unit)?) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Synth.surface)
-            .border(1.dp, Synth.line, RoundedCornerShape(16.dp)),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (selected) Synth.surfaceHi else Synth.surface)
+            .border(if (selected) 2.dp else 1.dp, if (selected) Synth.cyan else Synth.line, RoundedCornerShape(16.dp)),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(
             Modifier.weight(1f).heightIn(min = 68.dp).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 10.dp)
-                .clearAndSetSemantics { contentDescription = "${project.name}, ${duration(project)}" },
+                .clearAndSetSemantics {
+                    contentDescription = "${project.name}, ${duration(project)}"
+                    this.selected = selected
+                },
             verticalArrangement = Arrangement.Center
         ) {
             Text(project.name, color = Synth.text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             Text(if (project.silent) "${duration(project)} · silent" else duration(project), color = Synth.muted, fontFamily = FontFamily.Monospace)
         }
-        Box {
+        if (onRename != null && onDelete != null) Box {
             Box(
                 Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).clickable(role = Role.Button, onClick = { menuOpen = true })
                     .semantics { contentDescription = "More options for ${project.name}" },

@@ -26,11 +26,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal enum class Route {
-    LIBRARY, SKETCH, EDIT, TUNER, EDIT_IMPORT, OVERDUB_CALIBRATION;
+    LIBRARY, SKETCH, EDIT, TUNER, EDIT_IMPORT, SPLICE, SPLICE_PICK, OVERDUB_CALIBRATION;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == EDIT || this == TUNER
 }
+
+/** One recording's chosen range in a splice. */
+internal data class SplicePart(val project: Project, val range: TrimRange)
 
 /** Unsaved cuts on the Edit subject; they survive rotation but not process death. */
 internal data class EditSession(val projectId: String, val pieces: List<TrimRange>, val undo: List<List<TrimRange>>)
@@ -43,6 +46,8 @@ internal data class AppUiState(
     val selectedId: String? = null,
     val homeId: String? = null,
     val edit: EditSession? = null,
+    /** The splice being built from Edit: its subject first, then a second recording; rotation-safe only. */
+    val splice: List<SplicePart> = emptyList(),
     val editSaving: Boolean = false,
     val editError: String? = null,
     val microphoneGranted: Boolean = false,
@@ -112,6 +117,40 @@ internal class AppViewModel(
     }
 
     fun discardEdits() = updateState { it.copy(edit = null, editError = null) }
+
+    fun startSplice(project: Project) = updateState { it.copy(splice = listOf(SplicePart(project, project.firstClip.trim)), editError = null, route = Route.SPLICE) }
+
+    fun addToSplice(project: Project) = updateState { it.copy(splice = it.splice + SplicePart(project, project.firstClip.trim), route = Route.SPLICE) }
+
+    fun setSpliceRange(index: Int, range: TrimRange) = updateState { state ->
+        state.copy(splice = state.splice.mapIndexed { i, part -> if (i == index) part.copy(range = range) else part })
+    }
+
+    fun swapSplice() = updateState { it.copy(splice = it.splice.reversed()) }
+
+    fun closeSplice() = updateState { it.copy(splice = emptyList(), editError = null, route = Route.EDIT) }
+
+    /** Saves the splice as a new recording and makes it Edit's subject. */
+    fun saveSplice() {
+        val parts = _state.value.splice
+        if (parts.size != 2 || _state.value.editSaving) return
+        updateState { it.copy(editSaving = true, editError = null) }
+        viewModelScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    repository.saveRendered(Cuts.join(parts.first().project, parts.map { it.project.firstClip.source to it.range }))
+                        ?: error("The splice would clip. Shorten or swap the parts.")
+                }
+                refreshLibrary(selectId = saved.id).join()
+                setHome(saved.id)
+                updateState { it.copy(selectedProject = saved, splice = emptyList(), editSaving = false, route = Route.EDIT) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the splice.") }
+            }
+        }
+    }
 
     /** Saves Edit's cuts over the recording's audio, or as a new recording; an uncut unsaved take is simply kept. */
     fun saveEdits(project: Project, asNew: Boolean) {
@@ -507,7 +546,11 @@ internal class AppViewModel(
     }
 
     private fun restoredState(): AppUiState = AppUiState(
-        route = savedStateHandle.get<String>(KEY_ROUTE)?.let { stored -> runCatching { Route.valueOf(stored) }.getOrNull() } ?: Route.LIBRARY,
+        route = when (val stored = savedStateHandle.get<String>(KEY_ROUTE)?.let { runCatching { Route.valueOf(it) }.getOrNull() }) {
+            null -> Route.LIBRARY
+            Route.SPLICE, Route.SPLICE_PICK -> Route.EDIT
+            else -> stored
+        },
         selectedId = savedStateHandle.get<String>(KEY_SELECTED),
         homeId = savedStateHandle.get<String>(KEY_HOME),
         pendingMicrophoneAction = savedStateHandle.get<String>(KEY_PENDING_MIC)

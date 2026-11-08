@@ -27,7 +27,7 @@ object MultitrackRenderer {
         } ?: 0L
     }
 
-    /** Clip edges that cut into their source ramp over 5 ms so they do not click. */
+    /** Clip edges that could click ramp over 5 ms. */
     fun fadeFrames(sampleRate: Int): Int = sampleRate / 200
 
     fun clipFrameCount(clip: ProjectClip, sampleRate: Int): Long =
@@ -54,7 +54,7 @@ object MultitrackRenderer {
         require(inputs.none { (_, _, file) -> file.canonicalFile == targetCanonical }) { "Mix output must not overwrite an original source." }
         val readers = mutableListOf<ClipReader>()
         try {
-            for ((clip, source, file) in inputs) readers += ClipReader(clip.id, source, file, project.sampleRate)
+            for ((clip, source, file) in inputs) readers += ClipReader(clip.id, source, file, project.sampleRate, frames)
             val byClipId = readers.associateBy { it.clipId }
             val soloExists = project.tracks.any { it.solo && !it.muted }
             val active = project.tracks.flatMap { track ->
@@ -130,7 +130,13 @@ object MultitrackRenderer {
         return a
     }
 
-    private class ClipReader(val clipId: String, source: ProjectAudioSource, file: File, private val targetRate: Int) : AutoCloseable {
+    private class ClipReader(
+        val clipId: String,
+        source: ProjectAudioSource,
+        file: File,
+        private val targetRate: Int,
+        private val timelineFrames: Long
+    ) : AutoCloseable {
         private val format = file.inputStream().use(WavFormat::read)
 
         init {
@@ -169,8 +175,9 @@ object MultitrackRenderer {
 
             val combinedGain = clip.gainPermille.toDouble() * trackGainPermille.toDouble() / 1_000_000.0
             val fade = minOf(fadeFrames(targetRate).toLong(), clipFrames / 2)
-            val fadeIn = clip.trim.startFrame > 0L
-            val fadeOut = clip.trim.endFrame < clip.source.totalFrames
+            // An edge cut from its source, or met by other audio inside the timeline, would click.
+            val fadeIn = clip.trim.startFrame > 0L || clip.positionFrames > 0L
+            val fadeOut = clip.trim.endFrame < clip.source.totalFrames || clipEnd < timelineFrames
             var position = firstPosition
             for (outputFrame in start until end) {
                 val local = outputFrame - clip.positionFrames

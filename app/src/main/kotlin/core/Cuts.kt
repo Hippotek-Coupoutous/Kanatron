@@ -18,17 +18,26 @@ object Cuts {
      * The recording as back-to-back clips the renderer can play or save. Each piece runs on into the audio
      * it was cut from, under the next piece, so the renderer's edge fades crossfade every join.
      */
-    fun arrangement(project: Project, pieces: List<TrimRange>): Project {
-        val source = project.firstClip.source
-        val overlap = MultitrackRenderer.fadeFrames(project.sampleRate).toLong()
+    fun arrangement(project: Project, pieces: List<TrimRange>): Project =
+        join(project, pieces.map { project.firstClip.source to it })
+
+    /** Ranges of different recordings back to back, at [base]'s sample rate; mono parts play in both channels. */
+    fun join(base: Project, pieces: List<Pair<ProjectAudioSource, TrimRange>>): Project {
+        val rate = base.sampleRate
+        val overlap = MultitrackRenderer.fadeFrames(rate).toLong()
         var position = 0L
-        val clips = pieces.mapIndexed { index, piece ->
+        val clips = pieces.mapIndexed { index, (source, piece) ->
             val next = pieces.getOrNull(index + 1)
-            val tail = if (next == null) 0L else minOf(overlap, next.frameCount, source.totalFrames - piece.endFrame)
+            val nextFrames = next?.let { (nextSource, range) -> MultitrackRenderer.clipFrameCount(ProjectClip("next", nextSource, 0L, range), rate) } ?: 0L
+            val tail = minOf(minOf(overlap, nextFrames) * source.sampleRate / rate, source.totalFrames - piece.endFrame)
             ProjectClip("clip-$index", source, position, TrimRange(piece.startFrame, piece.endFrame + tail))
-                .also { position += piece.frameCount }
+                .also { position += MultitrackRenderer.clipFrameCount(it.copy(trim = piece), rate) }
         }
-        return project.copy(tracks = listOf(ProjectTrack("track-main", project.name, clips)), undoHistory = emptyList())
+        return base.copy(
+            channels = clips.maxOf { it.source.channels },
+            tracks = listOf(ProjectTrack("track-main", base.name, clips)),
+            undoHistory = emptyList()
+        )
     }
 
     private fun slice(pieces: List<TrimRange>, start: Long, end: Long): List<TrimRange> {

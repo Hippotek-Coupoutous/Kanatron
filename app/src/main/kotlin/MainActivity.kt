@@ -73,6 +73,7 @@ import com.kanatron.app.ui.MissingAudioScreen
 import com.kanatron.app.ui.SynthTopBar
 import com.kanatron.app.ui.OverdubCalibrationScreen
 import com.kanatron.app.ui.SketchScreen
+import com.kanatron.app.ui.SpliceScreen
 import com.kanatron.app.ui.Synth
 import com.kanatron.app.ui.SynthGlyph
 import com.kanatron.app.ui.SynthIcon
@@ -303,11 +304,13 @@ private fun KanatronApp(
     var shareFailure by remember { mutableStateOf<String?>(null) }
     var shareFailureProject by remember { mutableStateOf<Project?>(null) }
     var discardAndThen by remember { mutableStateOf<(() -> Unit)?>(null) }
-    /** Unsaved cuts are only dropped after the user agrees. */
+    /** Unsaved cuts or a chosen splice are only dropped after the user agrees. */
     fun leavingEdits(then: () -> Unit) {
         when {
             appState.editSaving -> Unit
-            appState.edit != null -> discardAndThen = then
+            route == Route.SPLICE && appState.splice.size == 2 -> discardAndThen = { appViewModel.closeSplice(); then() }
+            route == Route.SPLICE -> { appViewModel.closeSplice(); then() }
+            appState.edit != null -> discardAndThen = { appViewModel.discardEdits(); then() }
             else -> then()
         }
     }
@@ -372,6 +375,8 @@ private fun KanatronApp(
             Route.TUNER -> appViewModel.leave(Route.LIBRARY)
             Route.EDIT -> leavingEdits { appViewModel.leave(Route.LIBRARY) }
             Route.EDIT_IMPORT -> appViewModel.navigate(Route.EDIT)
+            Route.SPLICE -> leavingEdits {}
+            Route.SPLICE_PICK -> appViewModel.navigate(Route.SPLICE)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.SKETCH)
             Route.LIBRARY -> Unit
         }
@@ -387,13 +392,15 @@ private fun KanatronApp(
             when (route) {
                 Route.LIBRARY -> LibraryScreen(
                     projects = projects,
+                    // A tap chooses the recording that Sketch, Edit and Share work on.
                     onOpen = {
                         appViewModel.selectProject(it.id)
                         appViewModel.setHome(it.id)
-                        appViewModel.navigate(Route.EDIT)
                     },
                     onRename = { project, name -> appViewModel.renameProject(project.id, name) },
-                    onDelete = { appViewModel.deleteProject(it.id) }
+                    onDelete = { appViewModel.deleteProject(it.id) },
+                    selectedId = selectedId,
+                    onShare = ::share
                 )
                 Route.SKETCH -> {
                     val visibleCurrent = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
@@ -476,10 +483,35 @@ private fun KanatronApp(
                                 onUndo = appViewModel::undoCut,
                                 onSave = { asNew -> appViewModel.saveEdits(project, asNew) },
                                 onImport = { appViewModel.navigate(Route.EDIT_IMPORT) },
+                                onSplice = { appViewModel.startSplice(project) },
                                 onBack = { leavingEdits { appViewModel.leave(Route.LIBRARY) } }
                             )
                         }
                     }
+                }
+                Route.SPLICE -> SpliceScreen(
+                    parts = appState.splice,
+                    repository = repository,
+                    playbackAllowed = playbackAllowed(recording.phase),
+                    saving = appState.editSaving,
+                    error = appState.editError,
+                    onRange = appViewModel::setSpliceRange,
+                    onChooseSecond = { appViewModel.navigate(Route.SPLICE_PICK) },
+                    onSwap = appViewModel::swapSplice,
+                    onSave = appViewModel::saveSplice,
+                    onClose = { leavingEdits {} }
+                )
+                Route.SPLICE_PICK -> Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                    Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
+                        SynthTopBar("Join", { appViewModel.navigate(Route.SPLICE) }, backLabel = "Splice")
+                    }
+                    val first = appState.splice.firstOrNull()?.project?.id
+                    LibraryScreen(
+                        projects = projects.filter { it.id != first && it.tracks.size == 1 && it.tracks[0].clips.size == 1 },
+                        onOpen = appViewModel::addToSplice,
+                        onRename = null,
+                        onDelete = null
+                    )
                 }
                 Route.EDIT_IMPORT -> Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                     Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
@@ -630,13 +662,12 @@ private fun KanatronApp(
         discardAndThen != null -> {
             AlertDialog(
                 onDismissRequest = { discardAndThen = null },
-                title = { Text("Discard edits?") },
-                text = { Text("Your unsaved cuts will be lost.") },
+                title = { Text("Discard changes?") },
+                text = { Text(if (route == Route.SPLICE) "The splice is not saved yet." else "Your unsaved cuts will be lost.") },
                 confirmButton = {
                     TextButton(onClick = {
                         val then = discardAndThen
                         discardAndThen = null
-                        appViewModel.discardEdits()
                         then?.invoke()
                     }) { Text("Discard") }
                 },

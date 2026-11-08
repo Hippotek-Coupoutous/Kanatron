@@ -97,6 +97,7 @@ internal fun EditScreen(
     onUndo: () -> Unit,
     onSave: (asNew: Boolean) -> Unit,
     onImport: () -> Unit,
+    onSplice: () -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -167,7 +168,11 @@ internal fun EditScreen(
     }
     val waveform: @Composable ColumnScope.() -> Unit = {
         SynthTopBar("Edit", onBack, backLabel = "Library") {
-            IconSquare(SynthIcon.Import, "Import a recording to edit", { player?.stop(); onImport() }, enabled = !saving)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // A splice joins saved audio, so pending cuts are saved first.
+                IconSquare(SynthIcon.Splice, if (canUndo) "Save your cuts before splicing" else "Splice with another recording", { player?.stop(); onSplice() }, enabled = !saving && !canUndo)
+                IconSquare(SynthIcon.Import, "Import a recording to edit", { player?.stop(); onImport() }, enabled = !saving)
+            }
         }
         Text(
             buildString {
@@ -219,7 +224,7 @@ internal fun EditScreen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (edge in TrimEdge.entries) {
                 val frame = if (edge == TrimEdge.Start) selectionStart else selectionEnd
-                EdgeChip(edge, clock(frame, rate), edge == activeEdge, Modifier.weight(1f)) { activeEdge = edge }
+                EdgeChip(edge, clockMillis(frame, rate), edge == activeEdge, Modifier.weight(1f)) { activeEdge = edge }
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -296,7 +301,7 @@ private fun Overview(peaks: List<Peak>, length: Long, viewStart: Long, viewEnd: 
  * pinch to zoom, tap to place the playhead.
  */
 @Composable
-private fun Waveform(
+internal fun Waveform(
     file: File?,
     overview: List<Peak>,
     length: Long,
@@ -376,7 +381,7 @@ private fun Waveform(
                 }
                 .semantics {
                     contentDescription = "Waveform"
-                    stateDescription = "Selection ${clock(selection.startFrame, rate)} to ${clock(selection.endFrame, rate)}"
+                    stateDescription = "Selection ${clockMillis(selection.startFrame, rate)} to ${clockMillis(selection.endFrame, rate)}"
                 }
         ) {
             widthPx = size.width.toInt().coerceAtLeast(1)
@@ -467,7 +472,7 @@ private fun nudges(rate: Int) = listOf(
     Triple("+1", "frame", 1L), Triple("+10", "ms", rate / 100L), Triple("+100", "ms", rate / 10L)
 )
 
-private fun clock(frames: Long, rate: Int) = RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, rate), withMillis = true, hours = false)
+internal fun clockMillis(frames: Long, rate: Int) = RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, rate), withMillis = true, hours = false)
 
 private const val OVERVIEW_BUCKETS = 2_048
 private val ACTION_HEIGHT = 76.dp

@@ -90,7 +90,7 @@ class MultitrackRendererMixTest {
                 // b is cut at its start; its 3 frames hold a 1-frame fade-in: 3 x 0.5 x 1/2 = 0.75.
                 32_001, 1,
                 -32_768, 31_000, // -32000 - 1000 clamps; 32000 - 1000
-                250, 50, // 100 + 300 x 0.5; -100 + 300 x 0.5
+                175, -25, // b ends inside the timeline, so its last frame fades too: ±100 + 300 x 0.5 x 1/2
                 0, 0
             ),
             actual.toList()
@@ -116,7 +116,9 @@ class MultitrackRendererMixTest {
         val clipped = MultitrackRenderer.renderToWav(ProjectArrangementActions.overdub(base, take), { File(root, it.wav) }, destination)
 
         assertEquals(false, clipped)
-        assertEquals(listOf(100, -100, 200, -200, 300, -300, 410, -390, 20, 20), pcm(destination))
+        // Edges inside the timeline ramp over half a short clip: the backing's last 2 frames (x 2/3, 1/3)
+        // and the take's first frame (x 1/2).
+        assertEquals(listOf(100, -100, 200, -200, 200, -200, 138, -128, 20, 20), pcm(destination))
     }
 
     @Test
@@ -173,6 +175,28 @@ class MultitrackRendererMixTest {
         // 20 frames cannot hold two 40-frame fades, so each edge ramps over 10.
         MultitrackRenderer.renderToWav(Cuts.arrangement(recording, listOf(TrimRange(100, 120))), { File(root, it.wav) }, destination)
         assertEquals(909, pcm(destination).max()) // 1000 x 10/11
+    }
+
+    @Test
+    fun `two whole recordings joined meet through a fade, at the first part's rate`() {
+        val root = tempFolder.root
+        writeWav(File(root, "a.wav"), channels = 1, sampleRate = 8_000, samples = List(100) { 1_000 })
+        writeWav(File(root, "b.wav"), channels = 2, sampleRate = 16_000, samples = List(400) { 2_000 })
+        val a = ProjectAudioSource("a.wav", 8_000, 1, 100)
+        val b = ProjectAudioSource("b.wav", 16_000, 2, 200)
+        val base = Project("p", "A", 8_000, 1, 0L, tracks = listOf(ProjectTrack("track-main", "A", listOf(ProjectClip("clip-main", a, 0L, TrimRange(0, 100))))))
+
+        val joined = Cuts.join(base, listOf(a to TrimRange(0, 100), b to TrimRange(0, 200)))
+        val destination = File(root, "joined.wav")
+        MultitrackRenderer.renderToWav(joined, { File(root, it.wav) }, destination)
+        val samples = pcm(destination)
+
+        assertEquals(2, joined.channels)
+        assertEquals(200L, joined.totalFrames) // 100 frames of a, then 200 b frames at 16 kHz are 100 at 8 kHz
+        assertEquals(1_000, samples[2 * 50]) // well inside a
+        assertEquals(24, samples[2 * 99]) // a's last frame: 1000 x 1/41
+        assertEquals(49, samples[2 * 100]) // b's first frame: 2000 x 1/41
+        assertEquals(2_000, samples[2 * 150])
     }
 
     private fun clip(id: String, wav: String, channels: Int, frames: Long) =

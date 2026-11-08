@@ -4,11 +4,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import com.kanatron.app.tuner.ReadingHold
 import org.junit.Test
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 private const val RATE = 48_000
 
@@ -116,5 +118,52 @@ class TunerPitchTest {
         val detected = reading!!
         assertEquals("A4", detected.note)
         assertTrue("got ${detected.cents} cents", abs(detected.cents) <= 2.0)
+    }
+
+    @Test
+    fun readsTheQuietTailOfALowEThatTheOldGateDropped() {
+        // Low E with two harmonics at 0.006 RMS over 0.0003 RMS hiss: a pluck about four seconds in.
+        val noise = java.util.Random(1)
+        val samples = FloatArray(4096) { i ->
+            val t = i.toDouble() / 44_100
+            val note = sin(2 * PI * 82.41 * t) + 0.6 * sin(2 * PI * 164.82 * t) + 0.4 * sin(2 * PI * 247.23 * t)
+            (0.0069 * note + 0.0003 * sqrt(3.0) * (noise.nextDouble() * 2 - 1)).toFloat()
+        }
+        assertNull("the old 0.008 gate", TunerPitch.detect(samples, 44_100, gateRms = 0.008))
+        val reading = TunerPitch.detect(samples, 44_100)
+        assertNotNull(reading)
+        assertEquals("E2", reading!!.note)
+        assertTrue("got ${reading.cents} cents", abs(reading.cents) <= 3.0)
+    }
+
+    @Test
+    fun quietWhiteNoiseAboveTheGateStaysSilent() {
+        val noise = java.util.Random(7)
+        val samples = FloatArray(4096) { (0.005 * sqrt(3.0) * (noise.nextDouble() * 2 - 1)).toFloat() }
+        assertTrue(TunerPitch.rms(samples) > TunerPitch.MIN_GATE_RMS)
+        assertNull(TunerPitch.detect(samples, RATE))
+    }
+
+    @Test
+    fun holdKeepsTheLastNoteFor1500MillisecondsAfterItFades() {
+        val note = TunerPitch.detect(tone(440.0), RATE)!!
+        val hold = ReadingHold()
+        assertNull("nothing to hold yet", hold.next(null, 0).reading)
+
+        assertEquals(note, hold.next(note, 1_000).reading)
+        assertTrue(hold.next(null, 2_000).holding)
+        assertEquals("a fresh note restarts the hold", note, hold.next(note, 2_400).reading)
+        assertEquals(note, hold.next(null, 3_800).reading)
+        assertTrue(hold.next(null, 3_900).holding)
+        assertNull(hold.next(null, 3_901).reading)
+    }
+
+    @Test
+    fun gateOpensFullyInAQuietRoomAndNeverExceedsTheOldFixedGate() {
+        assertEquals(TunerPitch.MIN_GATE_RMS, TunerPitch.gateRms(TunerPitch.QUIET_ROOM_FLOOR), 1e-12)
+        assertEquals(0.005, TunerPitch.gateRms(0.0005), 1e-12)
+        assertEquals(0.008, TunerPitch.gateRms(0.01), 1e-12)
+        // A DC offset is not sound.
+        assertEquals(0.0, TunerPitch.rms(FloatArray(4096) { 0.01f }), 1e-9)
     }
 }

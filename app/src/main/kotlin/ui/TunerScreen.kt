@@ -91,9 +91,11 @@ fun TunerScreen(
         audio.error != null -> audio.error.orEmpty()
         !foreground -> "Tuner pauses in the background."
         reading == null -> "Play a note."
-        abs(reading.cents) <= 3.0 -> "In tune"
-        reading.cents < 0.0 -> "Flat"
-        else -> "Sharp"
+        else -> when {
+            abs(reading.cents) <= 3.0 -> "In tune"
+            reading.cents < 0.0 -> "Flat"
+            else -> "Sharp"
+        } + if (audio.holding) " – holding" else ""
     }
 
     Column(
@@ -107,7 +109,7 @@ fun TunerScreen(
             Text(
                 reading?.note ?: "—",
                 modifier = Modifier.fillMaxWidth().semantics {
-                    contentDescription = reading?.let { "Detected note ${it.note}" } ?: "No stable note detected"
+                    contentDescription = reading?.let { if (audio.holding) "Held note ${it.note}" else "Detected note ${it.note}" } ?: "No stable note detected"
                 },
                 color = Synth.cyan,
                 fontSize = 68.sp,

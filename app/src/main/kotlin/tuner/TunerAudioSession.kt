@@ -1,6 +1,7 @@
 package com.kanatron.app.tuner
 
 import android.media.AudioRecord
+import android.os.SystemClock
 import com.kanatron.app.core.TunerPitch
 import com.kanatron.app.core.TunerPitchReading
 import com.kanatron.app.core.pcm16At
@@ -14,8 +15,33 @@ import kotlinx.coroutines.flow.asStateFlow
 
 internal data class TunerAudioState(
     val reading: TunerPitchReading? = null,
-    val error: String? = null
+    val error: String? = null,
+    val holding: Boolean = false
 )
+
+/** Keeps the last note on screen while a plucked string decays below detection. */
+internal class ReadingHold {
+    private var last: TunerPitchReading? = null
+    private var lastAtMs = 0L
+
+    fun next(reading: TunerPitchReading?, nowMs: Long): TunerAudioState {
+        if (reading != null) {
+            last = reading
+            lastAtMs = nowMs
+            return TunerAudioState(reading)
+        }
+        val held = last
+        if (held == null || nowMs - lastAtMs > HOLD_MS) {
+            last = null
+            return TunerAudioState()
+        }
+        return TunerAudioState(held, holding = true)
+    }
+
+    private companion object {
+        const val HOLD_MS = 1500L
+    }
+}
 
 /** Owns one foreground microphone input and releases it on every stop or failure path. */
 internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
@@ -83,6 +109,11 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
             val pair = ByteArray(2)
             var pendingBytes = 0
             var sampleCount = 0
+            var hold = ReadingHold()
+            var holdA4Hz = a4Hz
+            var noiseFloor = TunerPitch.QUIET_ROOM_FLOOR
+            // Minimum statistics: the floor drops at once and leaks up 0.1 dB per second.
+            val floorLeak = Math.pow(10.0, 0.1 / 20.0 * FRAME_SAMPLES / created.sampleRate)
             while (!stopRequested) {
                 val count = created.read(bytes)
                 if (stopRequested) break
@@ -96,8 +127,14 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
                     pendingBytes = 0
                     samples[sampleCount++] = pcm16At(pair, 0) / 32768f
                     if (sampleCount == samples.size) {
-                        val reading = TunerPitch.detect(samples, created.sampleRate, a4Hz)
-                        publishWhileActive(TunerAudioState(reading = reading))
+                        val frameA4Hz = a4Hz
+                        if (frameA4Hz != holdA4Hz) {
+                            hold = ReadingHold()
+                            holdA4Hz = frameA4Hz
+                        }
+                        val reading = TunerPitch.detect(samples, created.sampleRate, frameA4Hz, TunerPitch.gateRms(noiseFloor))
+                        if (reading == null) noiseFloor = minOf(TunerPitch.rms(samples), noiseFloor * floorLeak)
+                        publishWhileActive(hold.next(reading, SystemClock.elapsedRealtime()))
                         sampleCount = 0
                     }
                 }

@@ -12,25 +12,30 @@ object TunerPitch {
     const val MAX_FREQUENCY_HZ = 1046.5
     const val DEFAULT_A4_HZ = 440.0
 
-    private const val MIN_RMS = 0.008
+    /** Below this a frame is mic hiss or dither, whatever the room's noise floor. */
+    const val MIN_GATE_RMS = 0.004
+    /** The fixed gate this replaced: a noisy room never makes the tuner stricter than it was. */
+    private const val MAX_GATE_RMS = 0.008
+    /** Under 10x the noise floor, low E over white noise reads more than 3 cents off. */
+    private const val NOISE_GATE_RATIO = 10.0
+    /** A noise floor that opens the gate fully until the room proves louder. */
+    const val QUIET_ROOM_FLOOR = MIN_GATE_RMS / NOISE_GATE_RATIO
     private const val CMND_THRESHOLD = 0.15
     private const val EDGE_TOLERANCE_CENTS = 2.0
     private const val LN_2 = 0.6931471805599453
     private val noteNames = arrayOf("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
 
-    fun detect(samples: FloatArray, sampleRate: Int, a4Hz: Double = DEFAULT_A4_HZ): TunerPitchReading? {
+    fun detect(
+        samples: FloatArray,
+        sampleRate: Int,
+        a4Hz: Double = DEFAULT_A4_HZ,
+        gateRms: Double = MIN_GATE_RMS
+    ): TunerPitchReading? {
         if (samples.size < 1024 || sampleRate <= 0 || !a4Hz.isFinite() || a4Hz <= 0.0) return null
 
-        var mean = 0.0
-        for (sample in samples) mean += sample.toDouble()
-        mean /= samples.size
-        var energy = 0.0
-        val centered = DoubleArray(samples.size) { i ->
-            val value = samples[i].toDouble() - mean
-            energy += value * value
-            value
-        }
-        if (sqrt(energy / samples.size) < MIN_RMS) return null
+        if (rms(samples) < gateRms) return null
+        val mean = samples.average()
+        val centered = DoubleArray(samples.size) { samples[it] - mean }
 
         val minLag = maxOf(2, (sampleRate / MAX_FREQUENCY_HZ).toInt())
         val maxLag = minOf(samples.size / 2, ceil(sampleRate / MIN_FREQUENCY_HZ).toInt() + 1)
@@ -85,6 +90,15 @@ object TunerPitch {
             frequencyHz = frequency,
             cents = cents
         )
+    }
+
+    fun gateRms(noiseFloor: Double): Double = (NOISE_GATE_RATIO * noiseFloor).coerceIn(MIN_GATE_RMS, MAX_GATE_RMS)
+
+    /** Mean-centred, so a DC offset never reads as sound. */
+    fun rms(samples: FloatArray): Double {
+        if (samples.isEmpty()) return 0.0
+        val mean = samples.average()
+        return sqrt(samples.sumOf { (it - mean) * (it - mean) } / samples.size)
     }
 }
 

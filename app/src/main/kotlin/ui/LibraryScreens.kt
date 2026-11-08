@@ -100,7 +100,7 @@ internal fun SketchScreen(
     onImport: () -> Unit,
     onCalibration: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenInMix: () -> Unit
+    onOpenInEdit: () -> Unit
 ) {
     val context = LocalContext.current
     val wav = currentWav
@@ -268,7 +268,7 @@ internal fun SketchScreen(
                     Notice("Notifications are off. Android shows an active recording notice in Task Manager, but not in the notification drawer. Use the app controls to pause or stop.")
                 }
                 if (saved) {
-                    TextAction("Open in Mix", onOpenInMix, modifier = Modifier.fillMaxWidth(), description = "Open saved take in Mix", color = Synth.cyan)
+                    TextAction("Open in Edit", onOpenInEdit, modifier = Modifier.fillMaxWidth(), description = "Open saved take in Edit", color = Synth.cyan)
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {

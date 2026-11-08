@@ -5,6 +5,7 @@ import com.kanatron.app.core.OverdubAlignment
 import com.kanatron.app.core.OverdubRoute
 import com.kanatron.app.core.OverdubTiming
 import com.kanatron.app.core.Project
+import com.kanatron.app.core.ProjectArrangementActions
 import com.kanatron.app.core.ProjectClip
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.firstClip
@@ -72,7 +73,7 @@ internal class TakePersister(private val context: Context) {
                         trim = TrimRange(leadInTrim, savedTake.totalFrames),
                         rateCorrectionPpm = safeCorrection
                     )
-                    val mixed = repository.saveOverdub(base, placed)
+                    val mixed = repository.saveRendered(ProjectArrangementActions.overdub(base, placed))
                     if (mixed == null) {
                         alignmentNotice = "The overdub would clip, so it was not mixed. The take was saved on its own."
                     } else {

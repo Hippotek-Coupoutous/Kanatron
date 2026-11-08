@@ -87,7 +87,8 @@ class MultitrackRendererMixTest {
             listOf(
                 32_767, -31_000, // 32000 + 1000 clamps; -32000 + 1000
                 32_000, -32_000,
-                32_002, 2, // 32000 + 3 x (250/1000 x 2000/1000) = 32001.5, rounded half up
+                // b is cut at its start; its 3 frames hold a 1-frame fade-in: 3 x 0.5 x 1/2 = 0.75.
+                32_001, 1,
                 -32_768, 31_000, // -32000 - 1000 clamps; 32000 - 1000
                 250, 50, // 100 + 300 x 0.5; -100 + 300 x 0.5
                 0, 0
@@ -145,6 +146,33 @@ class MultitrackRendererMixTest {
 
         assertEquals(true, MultitrackRenderer.renderToWav(mix, { File(root, it.wav) }, destination))
         assertEquals(listOf(32_767, -32_768), pcm(destination))
+    }
+
+    @Test
+    fun `a cut crossfades with no dip and a kept range fades out where it was cut`() {
+        val root = tempFolder.root
+        // 8 kHz makes the 5 ms fade 40 frames.
+        writeWav(File(root, "steady.wav"), channels = 1, sampleRate = 8_000, samples = List(200) { 1_000 })
+        val source = ProjectAudioSource("steady.wav", 8_000, 1, 200)
+        val recording = Project("p", "Steady", 8_000, 1, 0L, tracks = listOf(
+            ProjectTrack("track-main", "Steady", listOf(ProjectClip("clip-main", source, 0L, TrimRange(0, 200))))
+        ))
+        val destination = File(root, "edit.wav")
+
+        val cut = Cuts.delete(listOf(TrimRange(0, 200)), TrimRange(50, 100))
+        val arrangement = Cuts.arrangement(recording, cut)
+        MultitrackRenderer.renderToWav(arrangement, { File(root, it.wav) }, destination)
+        assertEquals(Cuts.length(cut), arrangement.totalFrames)
+        assertEquals(List(150) { 1_000 }, pcm(destination))
+
+        MultitrackRenderer.renderToWav(Cuts.arrangement(recording, listOf(TrimRange(0, 100))), { File(root, it.wav) }, destination)
+        val kept = pcm(destination)
+        assertEquals(1_000, kept[59])
+        assertEquals(24, kept[99]) // 1000 x 1/41
+
+        // 20 frames cannot hold two 40-frame fades, so each edge ramps over 10.
+        MultitrackRenderer.renderToWav(Cuts.arrangement(recording, listOf(TrimRange(100, 120))), { File(root, it.wav) }, destination)
+        assertEquals(909, pcm(destination).max()) // 1000 x 10/11
     }
 
     private fun clip(id: String, wav: String, channels: Int, frames: Long) =

@@ -131,7 +131,8 @@ data class Project(
     companion object {
         const val MAX_JSON_BYTES = 64 * 1024
         const val MAX_TRACKS = 4
-        const val MAX_CLIPS = 16
+        /** Edit's timeline is one clip per kept piece, so this bounds cuts, not tracks. */
+        const val MAX_CLIPS = 256
         const val MAX_UNDO = 20
 
         fun fromJson(json: String): Project {

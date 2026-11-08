@@ -71,8 +71,6 @@ class ProjectRepository(context: Context) {
     /** The raw WAV of a project's first clip. */
     fun audioFile(project: Project): File = sourceFile(project.firstClip.source)
 
-    fun audioFile(source: ProjectAudioSource): File = sourceFile(source)
-
     private fun sourceFile(source: ProjectAudioSource): File {
         val name = File(source.wav).name
         require(source.wav == "recordings/$name" && RECORDING_PATH.matches(name)) { "Invalid recording source path." }
@@ -131,14 +129,33 @@ class ProjectRepository(context: Context) {
         }
     }
 
+    /** Renders [arrangement] as a new Library recording. Returns null, committing nothing, when the sum would clip. */
+    fun saveRendered(arrangement: Project): Project? = withTemporaryWav(arrangement) { wav, clipped ->
+        if (clipped) null else saveTake(UUID.randomUUID().toString(), wav, arrangement.sampleRate, arrangement.channels, arrangement.totalFrames)
+    }
+
     /**
-     * Flattens the backing and a placed take into a new recording; both originals stay untouched.
-     * Returns null, committing nothing, when the sum would clip.
+     * Replaces [project]'s audio with [arrangement] rendered; the recording keeps its id and name and joins the Library.
+     * The new WAV lands before the metadata that points at it, so a crash leaves at most a WAV startup recovery adopts.
      */
-    fun saveOverdub(base: Project, take: ProjectClip): Project? {
-        val mix = ProjectArrangementActions.overdub(base, take)
-        return withTemporaryWav(mix) { wav, clipped ->
-            if (clipped) null else saveTake(UUID.randomUUID().toString(), wav, mix.sampleRate, mix.channels, mix.totalFrames)
+    fun replaceAudio(project: Project, arrangement: Project): Project = withTemporaryWav(arrangement) { wav, clipped ->
+        if (clipped) throw IOException("The edit would clip. Nothing was changed.")
+        synchronized(PROJECT_LOCK) {
+            val file = File(recordings, "take-${UUID.randomUUID()}.wav")
+            Files.move(wav.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            val frames = arrangement.totalFrames
+            val source = ProjectAudioSource("recordings/${file.name}", arrangement.sampleRate, arrangement.channels, frames)
+            val replaced = project.copy(
+                sampleRate = arrangement.sampleRate,
+                channels = arrangement.channels,
+                draft = false,
+                tracks = listOf(ProjectTrack("track-main", project.name, listOf(ProjectClip("clip-main", source, 0L, TrimRange(0L, frames))))),
+                undoHistory = emptyList()
+            )
+            ProjectStore(projectFile(project.id)).save(replaced)
+            previewCache.delete(project.id)
+            deleteUnreferenced(project.sources(), excludeProjectId = null)
+            replaced
         }
     }
 
@@ -219,20 +236,26 @@ class ProjectRepository(context: Context) {
         synchronized(PROJECT_LOCK) {
             val project = get(id)
             if (project != null) {
-                val sources = (project.tracks + project.undoHistory.flatMap(ProjectArrangementSnapshot::tracks))
-                    .flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
                 // Metadata goes last: a crash must not leave WAVs that startup recovery rebuilds as projects.
                 previewCache.delete(id)
-                val references = recovery.sourceReferences(excludeProjectId = id)
-                sources.forEach { source ->
-                    if (!references.isReferenced(source.wav)) runCatching {
-                        val file = sourceFile(source)
-                        if (file.delete()) PeakExtractor.deleteCaches(file)
-                    }
-                }
+                deleteUnreferenced(project.sources(), excludeProjectId = id)
                 val metadata = projectFile(id)
                 if (!metadata.delete() && metadata.exists()) throw IOException("Could not delete the project metadata.")
                 File(metadata.path + ".bak").delete()
+            }
+        }
+    }
+
+    private fun Project.sources(): List<ProjectAudioSource> =
+        (tracks + undoHistory.flatMap(ProjectArrangementSnapshot::tracks)).flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
+
+    /** Caller holds PROJECT_LOCK. */
+    private fun deleteUnreferenced(sources: List<ProjectAudioSource>, excludeProjectId: String?) {
+        val references = recovery.sourceReferences(excludeProjectId)
+        sources.forEach { source ->
+            if (!references.isReferenced(source.wav)) runCatching {
+                val file = sourceFile(source)
+                if (file.delete()) PeakExtractor.deleteCaches(file)
             }
         }
     }

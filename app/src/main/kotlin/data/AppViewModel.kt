@@ -5,7 +5,10 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.kanatron.app.core.Cuts
 import com.kanatron.app.core.Project
+import com.kanatron.app.core.TrimRange
+import com.kanatron.app.core.firstClip
 import com.kanatron.app.core.SUPPORTED_BPM
 import com.kanatron.app.playback.MonitorClick
 import java.io.File
@@ -23,11 +26,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal enum class Route {
-    LIBRARY, SKETCH, MIX, TUNER, TRIM, OVERDUB_CALIBRATION;
+    LIBRARY, SKETCH, EDIT, TUNER, EDIT_IMPORT, OVERDUB_CALIBRATION;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
-    val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == MIX || this == TUNER
+    val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == EDIT || this == TUNER
 }
+
+/** Unsaved cuts on the Edit subject; they survive rotation but not process death. */
+internal data class EditSession(val projectId: String, val pieces: List<TrimRange>, val undo: List<List<TrimRange>>)
 
 /** What the Activity is about to do once the microphone permission is settled. */
 internal enum class MicrophoneAction { RECORD, TUNER }
@@ -36,8 +42,9 @@ internal data class AppUiState(
     val route: Route = Route.LIBRARY,
     val selectedId: String? = null,
     val homeId: String? = null,
-    val trimTrackId: String? = null,
-    val trimClipId: String? = null,
+    val edit: EditSession? = null,
+    val editSaving: Boolean = false,
+    val editError: String? = null,
     val microphoneGranted: Boolean = false,
     val microphoneDenied: Boolean = false,
     val notificationGranted: Boolean = true,
@@ -93,8 +100,46 @@ internal class AppViewModel(
 
     fun setHome(id: String?) = updateState { it.copy(homeId = id) }
 
-    fun setTrimTarget(trackId: String?, clipId: String?) =
-        updateState { it.copy(trimTrackId = trackId, trimClipId = clipId) }
+    fun cut(project: Project, pieces: List<TrimRange>) = updateState { state ->
+        val previous = state.edit?.pieces?.takeIf { state.edit.projectId == project.id } ?: listOf(project.firstClip.trim)
+        val undo = state.edit?.undo?.takeIf { state.edit.projectId == project.id }.orEmpty()
+        state.copy(edit = EditSession(project.id, pieces, undo + listOf(previous)), editError = null)
+    }
+
+    fun undoCut() = updateState { state ->
+        val session = state.edit ?: return@updateState state
+        state.copy(edit = if (session.undo.size <= 1) null else session.copy(pieces = session.undo.last(), undo = session.undo.dropLast(1)))
+    }
+
+    fun discardEdits() = updateState { it.copy(edit = null, editError = null) }
+
+    /** Saves Edit's cuts over the recording's audio, or as a new recording; an uncut unsaved take is simply kept. */
+    fun saveEdits(project: Project, asNew: Boolean) {
+        val pieces = _state.value.edit?.takeIf { it.projectId == project.id }?.pieces
+        if (pieces == null) {
+            if (project.draft) saveRecoveredDraft(project.id)
+            return
+        }
+        if (_state.value.editSaving) return
+        updateState { it.copy(editSaving = true, editError = null) }
+        viewModelScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    val arrangement = Cuts.arrangement(project, pieces)
+                    if (asNew) repository.saveRendered(arrangement) ?: error("The edit would clip.")
+                    else repository.replaceAudio(project, arrangement)
+                }
+                invalidatePlayback(project.id)
+                refreshLibrary(selectId = saved.id).join()
+                setHome(saved.id)
+                updateState { it.copy(selectedProject = saved, edit = null, editSaving = false) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the edits.") }
+            }
+        }
+    }
 
     fun updatePermissions(granted: Boolean, notificationsGranted: Boolean) = updateState {
         it.copy(
@@ -381,6 +426,7 @@ internal class AppViewModel(
                 }
                 if (_state.value.homeId == id) setHome(null)
                 if (_state.value.pendingOverdubProjectId == id) clearPendingRecord()
+                if (_state.value.edit?.projectId == id) discardEdits()
                 refreshLibrary()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -453,8 +499,6 @@ internal class AppViewModel(
         savedStateHandle[KEY_ROUTE] = state.route.name
         savedStateHandle[KEY_SELECTED] = state.selectedId
         savedStateHandle[KEY_HOME] = state.homeId
-        savedStateHandle[KEY_TRIM_TRACK] = state.trimTrackId
-        savedStateHandle[KEY_TRIM_CLIP] = state.trimClipId
         savedStateHandle[KEY_PENDING_MIC] = state.pendingMicrophoneAction?.name
         savedStateHandle[KEY_PENDING_OVERDUB] = state.pendingOverdubProjectId
         savedStateHandle[KEY_CLICK_BPM] = state.pendingClick?.bpm
@@ -466,8 +510,6 @@ internal class AppViewModel(
         route = savedStateHandle.get<String>(KEY_ROUTE)?.let { stored -> runCatching { Route.valueOf(stored) }.getOrNull() } ?: Route.LIBRARY,
         selectedId = savedStateHandle.get<String>(KEY_SELECTED),
         homeId = savedStateHandle.get<String>(KEY_HOME),
-        trimTrackId = savedStateHandle.get<String>(KEY_TRIM_TRACK),
-        trimClipId = savedStateHandle.get<String>(KEY_TRIM_CLIP),
         pendingMicrophoneAction = savedStateHandle.get<String>(KEY_PENDING_MIC)
             ?.let { stored -> runCatching { MicrophoneAction.valueOf(stored) }.getOrNull() },
         pendingOverdubProjectId = savedStateHandle.get<String>(KEY_PENDING_OVERDUB),
@@ -495,8 +537,6 @@ internal class AppViewModel(
         const val KEY_ROUTE = "route"
         const val KEY_SELECTED = "selectedProjectId"
         const val KEY_HOME = "homeProjectId"
-        const val KEY_TRIM_TRACK = "trimTrackId"
-        const val KEY_TRIM_CLIP = "trimClipId"
         const val KEY_PENDING_MIC = "pendingMicrophoneAction"
         const val KEY_PENDING_OVERDUB = "pendingOverdubProjectId"
         const val KEY_CLICK_BPM = "pendingClickBpm"

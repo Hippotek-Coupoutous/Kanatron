@@ -43,7 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** Glyphs drawn on a 24-unit grid, one stroke weight, so no icon dependency is needed. */
-enum class SynthIcon { Play, Pause, Stop, Rec, Import, Share, Click, Overdub, Trim, Mix, Back, Delete, Library, Sketch, Tuner }
+enum class SynthIcon { Play, Pause, Stop, Rec, Import, Share, Click, Overdub, Trim, Undo, Back, Delete, Library, Sketch, Tuner }
 
 @Composable
 fun SynthGlyph(icon: SynthIcon, tint: Color, modifier: Modifier = Modifier.size(28.dp)) {
@@ -65,12 +65,9 @@ private fun DrawScope.drawGlyph(icon: SynthIcon, tint: Color) {
         SynthIcon.Click -> { drawPath(Path().apply { moveTo(9 * u, 3 * u); lineTo(15 * u, 3 * u); lineTo(19 * u, 21 * u); lineTo(5 * u, 21 * u); close() }, tint, style = stroke); line(12f, 15f, 17f, 6f); line(8f, 17f, 16f, 17f) }
         SynthIcon.Overdub -> { drawArc(tint, 180f, 180f, false, p(4f, 4f), Size(16 * u, 16 * u), style = stroke); drawRoundRect(tint, p(3f, 13f), Size(4 * u, 7 * u), androidx.compose.ui.geometry.CornerRadius(1.5f * u)); drawRoundRect(tint, p(17f, 13f), Size(4 * u, 7 * u), androidx.compose.ui.geometry.CornerRadius(1.5f * u)) }
         SynthIcon.Trim -> { drawCircle(tint, 3 * u, p(6f, 6f), style = stroke); drawCircle(tint, 3 * u, p(6f, 18f), style = stroke); line(8.5f, 7.5f, 20f, 18f); line(8.5f, 16.5f, 20f, 6f) }
-        SynthIcon.Mix -> {
-            for (y0 in listOf(8f, 16f)) drawPath(Path().apply {
-                moveTo(3 * u, y0 * u); cubicTo(6 * u, y0 * u, 6 * u, (y0 - 4) * u, 9 * u, (y0 - 4) * u)
-                cubicTo(12 * u, (y0 - 4) * u, 12 * u, (y0 + 4) * u, 15 * u, (y0 + 4) * u)
-                cubicTo(18 * u, (y0 + 4) * u, 18 * u, y0 * u, 21 * u, y0 * u)
-            }, tint, style = stroke)
+        SynthIcon.Undo -> {
+            drawPath(Path().apply { moveTo(5 * u, 10 * u); lineTo(14 * u, 10 * u); cubicTo(22 * u, 10 * u, 22 * u, 20 * u, 14 * u, 20 * u); lineTo(9 * u, 20 * u) }, tint, style = stroke)
+            line(9f, 6f, 5f, 10f); line(5f, 10f, 9f, 14f)
         }
         SynthIcon.Back -> { line(15f, 5f, 8f, 12f); line(8f, 12f, 15f, 19f) }
         SynthIcon.Delete -> { line(4f, 7f, 20f, 7f); line(9f, 7f, 10f, 3.5f); line(10f, 3.5f, 14f, 3.5f); line(14f, 3.5f, 15f, 7f); drawPath(Path().apply { moveTo(6 * u, 7 * u); lineTo(7 * u, 20 * u); lineTo(17 * u, 20 * u); lineTo(18 * u, 7 * u) }, tint, style = stroke) }
@@ -120,10 +117,19 @@ fun RoundButton(
 
 /** Square tile with a glyph and a short label; [selected] floods it violet for toggles. */
 @Composable
-fun Tile(icon: SynthIcon, label: String, onClick: () -> Unit, modifier: Modifier = Modifier, selected: Boolean? = null, enabled: Boolean = true, description: String = label) {
+fun Tile(
+    icon: SynthIcon,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    selected: Boolean? = null,
+    enabled: Boolean = true,
+    description: String = label,
+    minHeight: Dp = 92.dp
+) {
     val on = selected == true
     Column(
-        modifier.heightIn(min = 92.dp).clip(RoundedCornerShape(18.dp))
+        modifier.heightIn(min = minHeight).clip(RoundedCornerShape(18.dp))
             .background(if (on) Synth.violet else Synth.surface)
             .border(1.dp, if (on) Synth.violet else Synth.line, RoundedCornerShape(18.dp))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)

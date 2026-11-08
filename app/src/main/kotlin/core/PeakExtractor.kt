@@ -15,17 +15,25 @@ import java.util.concurrent.CancellationException
 data class Peak(val min: Short, val max: Short)
 
 object PeakExtractor {
-    internal fun extract(wav: File, bucketCount: Int, isCancelled: () -> Boolean): List<Peak> {
+    /** Min/max per bucket over frames [firstFrame, endFrame), read straight from the file. */
+    internal fun extract(
+        wav: File,
+        bucketCount: Int,
+        isCancelled: () -> Boolean,
+        firstFrame: Long = 0L,
+        endFrame: Long = Long.MAX_VALUE
+    ): List<Peak> {
         require(bucketCount > 0)
         val format = wav.inputStream().use(WavFormat::read)
         val align = format.blockAlign
-        val frameCount = format.frameCount
+        val offset = firstFrame.coerceIn(0L, format.frameCount)
+        val frameCount = endFrame.coerceIn(offset, format.frameCount) - offset
         return RandomAccessFile(wav, "r").use { input ->
             val buffer = ByteArray((8192 / align * align).coerceAtLeast(align))
             List(bucketCount) { bucket ->
                 checkCancelled(isCancelled)
-                val first = bucket.toLong() * frameCount / bucketCount
-                val end = (bucket + 1L) * frameCount / bucketCount
+                val first = offset + bucket.toLong() * frameCount / bucketCount
+                val end = offset + (bucket + 1L) * frameCount / bucketCount
                 if (first == end) return@List Peak(0, 0)
                 input.seek(format.dataOffset + first * align)
                 var remaining = (end - first) * align

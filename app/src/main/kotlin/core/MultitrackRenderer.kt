@@ -27,6 +27,9 @@ object MultitrackRenderer {
         } ?: 0L
     }
 
+    /** Clip edges that cut into their source ramp over 5 ms so they do not click. */
+    fun fadeFrames(sampleRate: Int): Int = sampleRate / 200
+
     fun clipFrameCount(clip: ProjectClip, sampleRate: Int): Long =
         resampledFrames(clip.trim.frameCount, clip.source.sampleRate, sampleRate, clip.rateCorrectionPpm)
 
@@ -165,8 +168,15 @@ object MultitrackRenderer {
             random.readFully(bytes)
 
             val combinedGain = clip.gainPermille.toDouble() * trackGainPermille.toDouble() / 1_000_000.0
+            val fade = minOf(fadeFrames(targetRate).toLong(), clipFrames / 2)
+            val fadeIn = clip.trim.startFrame > 0L
+            val fadeOut = clip.trim.endFrame < clip.source.totalFrames
             var position = firstPosition
             for (outputFrame in start until end) {
+                val local = outputFrame - clip.positionFrames
+                var envelope = 1.0
+                if (fadeIn && local < fade) envelope = (local + 1).toDouble() / (fade + 1)
+                if (fadeOut && clipFrames - local <= fade) envelope = minOf(envelope, (clipFrames - local).toDouble() / (fade + 1))
                 val lowerFrame = clip.trim.startFrame + position.offset
                 val upperFrame = minOf(clip.trim.endFrame - 1L, lowerFrame + 1L)
                 val fraction = position.remainder.toDouble() / ratio.denominator
@@ -176,7 +186,7 @@ object MultitrackRenderer {
                     val lower = sample(bytes, firstFrame, lowerFrame, sourceChannel)
                     val upper = sample(bytes, firstFrame, upperFrame, sourceChannel)
                     val interpolated = lower + (upper - lower) * fraction
-                    sums[outputIndex + channel] += interpolated * combinedGain
+                    sums[outputIndex + channel] += interpolated * combinedGain * envelope
                 }
                 position = advance(position, 1, ratio)
             }

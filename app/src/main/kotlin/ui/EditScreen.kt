@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
@@ -51,6 +54,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -94,7 +98,7 @@ internal fun EditScreen(
     onUndo: () -> Unit,
     onMix: (levelSteps: Int, eq: Eq) -> Unit,
     onSave: (asNew: Boolean) -> Unit,
-    onSplice: () -> Unit
+    onClip: () -> Unit
 ) {
     val context = LocalContext.current
     val rate = project.sampleRate
@@ -158,7 +162,7 @@ internal fun EditScreen(
     val waveform: @Composable ColumnScope.() -> Unit = {
         SynthTopBar("Edit") {
             // Clip joins saved audio, so pending changes are saved first.
-            Key("Clip", { player?.stop(); onSplice() }, icon = SynthIcon.Clip, height = KeyHeight.Small, enabled = !saving && !session.pending,
+            Key("Clip", { player?.stop(); onClip() }, icon = SynthIcon.Clip, height = KeyHeight.Small, enabled = !saving && !session.pending,
                 description = if (session.pending) "Save your edits before clipping" else "Clip with other recordings")
         }
         Text(
@@ -253,9 +257,17 @@ internal fun EditScreen(
                 Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp), content = waveform)
                 Column(Modifier.width(360.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom), content = controls)
             }
-        } else {
-            Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), content = waveform)
-            controls()
+        } else BoxWithConstraints(Modifier.fillMaxSize()) {
+            // Short screens and large fonts scroll instead of squeezing the waveform below a usable height.
+            // ponytail: the keys' height is estimated from the font scale; measure them if this misjudges a device.
+            val roomy = maxHeight / LocalDensity.current.fontScale >= 500.dp
+            Column(
+                Modifier.fillMaxSize().then(if (roomy) Modifier else Modifier.verticalScroll(rememberScrollState())),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Column(Modifier.fillMaxWidth().then(if (roomy) Modifier.weight(1f) else Modifier.height(320.dp)), verticalArrangement = Arrangement.spacedBy(8.dp), content = waveform)
+                controls()
+            }
         }
     }
 
@@ -277,7 +289,7 @@ internal fun EditScreen(
 
 /** The whole timeline with the visible window outlined; a tap moves the window there. */
 @Composable
-private fun Overview(peaks: List<Peak>, length: Long, viewStart: Long, viewEnd: Long, selection: TrimRange, modifier: Modifier, onCenter: (Long) -> Unit) {
+internal fun Overview(peaks: List<Peak>, length: Long, viewStart: Long, viewEnd: Long, selection: TrimRange, modifier: Modifier, onCenter: (Long) -> Unit) {
     Canvas(
         modifier.height(40.dp)
             .pointerInput(length) { detectTapGestures { onCenter((it.x / size.width * length).roundToLong()) } }
@@ -315,8 +327,12 @@ internal fun Waveform(
     val detail by produceState<Pair<LongRange, List<Peak>>?>(null, file, viewStart, viewEnd, widthPx) {
         if (file == null || viewEnd - viewStart >= length) return@produceState
         delay(120)
+        // A Clip lane's view can reach past its source; only the audio inside it is read, at the view's density.
+        val from = viewStart.coerceIn(0L, length)
+        val to = viewEnd.coerceIn(from, length)
+        val buckets = (widthPx * (to - from) / (viewEnd - viewStart)).toInt().coerceAtLeast(1)
         value = withContext(Dispatchers.IO) {
-            runCatching { viewStart..viewEnd to PeakExtractor.extract(file, widthPx, { !isActive }, viewStart, viewEnd) }.getOrNull()
+            runCatching { viewStart..viewEnd to PeakExtractor.extract(file, buckets, { !isActive }, from, to) }.getOrNull()
         }
     }
     val loupeCenter = dragging?.let { if (it == TrimEdge.Start) selection.startFrame else selection.endFrame }
@@ -343,8 +359,10 @@ internal fun Waveform(
                         val (start, end, range) = current
                         fun frameAt(x: Float) = (start + x / size.width * (end - start)).roundToLong().coerceIn(0L, length)
                         fun xOf(frame: Long) = (frame - start).toFloat() / (end - start) * size.width
-                        val nearStart = abs(down.position.x - xOf(range.startFrame)) <= slop
-                        val nearEnd = abs(down.position.x - xOf(range.endFrame)) <= slop
+                        // A narrow range shrinks the handle zones so its middle stays free to drag.
+                        val zone = minOf(slop, abs(xOf(range.endFrame) - xOf(range.startFrame)) / 3f)
+                        val nearStart = abs(down.position.x - xOf(range.startFrame)) <= zone
+                        val nearEnd = abs(down.position.x - xOf(range.endFrame)) <= zone
                         var edge: TrimEdge? = null
                         var travelled = 0f
                         do {
@@ -382,7 +400,7 @@ internal fun Waveform(
             fun x(frame: Long) = (frame - viewStart).toFloat() / (viewEnd - viewStart) * size.width
             drawRect(Synth.cyan.copy(alpha = 0.12f), Offset(x(selection.startFrame), 0f), Size(x(selection.endFrame) - x(selection.startFrame), size.height))
             val close = detail?.takeIf { it.first == viewStart..viewEnd }
-            if (close != null) drawPeaks(close.second, viewStart, viewEnd, viewStart, viewEnd, Synth.cyan)
+            if (close != null) drawPeaks(close.second, viewStart.coerceIn(0L, length), viewEnd.coerceIn(0L, length), viewStart, viewEnd, Synth.cyan)
             else drawPeaks(overview, 0L, length, viewStart, viewEnd, Synth.cyan)
             for (edge in TrimEdge.entries) {
                 val at = x(if (edge == TrimEdge.Start) selection.startFrame else selection.endFrame)

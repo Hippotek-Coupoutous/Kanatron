@@ -4,6 +4,8 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -126,8 +128,11 @@ fun Key(
             .padding(horizontal = 8.dp, vertical = 6.dp)
         val content: @Composable () -> Unit = {
             icon?.let { SynthGlyph(it, ink, Modifier.size(if (stacked) 28.dp else 22.dp)) }
-            // A lone symbol such as − or + stands in for an icon, so it gets icon size.
-            label?.let { Text(it.uppercase(), color = ink, style = if (it.length == 1) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.labelLarge, maxLines = 1) }
+            // A lone symbol such as − or + stands in for an icon, so it gets icon size; long labels shrink to fit large fonts.
+            label?.let {
+                val style = if (it.length == 1) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.labelLarge
+                BasicText(it.uppercase(), style = style.copy(color = ink), maxLines = 1, autoSize = TextAutoSize.StepBased(minFontSize = 10.sp, maxFontSize = style.fontSize))
+            }
             sublabel?.let { Text(it, color = ink, style = MaterialTheme.typography.bodyMedium, maxLines = 1) }
         }
         Box(Modifier.padding(bottom = KEY_DEPTH), propagateMinConstraints = true) {

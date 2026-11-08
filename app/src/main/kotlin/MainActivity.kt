@@ -55,6 +55,7 @@ import com.kanatron.app.core.firstClip
 import com.kanatron.app.core.ResumeStartGate
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.data.AppViewModel
+import com.kanatron.app.data.ClipPart
 import com.kanatron.app.data.EditSession
 import com.kanatron.app.data.ImportStage
 import com.kanatron.app.data.MicrophoneAction
@@ -69,6 +70,7 @@ import com.kanatron.app.recording.RecordingPhase
 import com.kanatron.app.recording.RecordingService
 import com.kanatron.app.ui.KanatronTheme
 import com.kanatron.app.ui.LibraryScreen
+import com.kanatron.app.ui.ClipScreen
 import com.kanatron.app.ui.EditScreen
 import com.kanatron.app.ui.Key
 import com.kanatron.app.ui.LibraryHeader
@@ -78,7 +80,6 @@ import com.kanatron.app.ui.SynthTopBar
 import com.kanatron.app.ui.OverdubCalibrationScreen
 import com.kanatron.app.ui.OverdubScreen
 import com.kanatron.app.ui.SketchScreen
-import com.kanatron.app.ui.SpliceScreen
 import com.kanatron.app.ui.Synth
 import com.kanatron.app.ui.SynthGlyph
 import com.kanatron.app.ui.SynthIcon
@@ -310,14 +311,14 @@ private fun KanatronApp(
     var shareFailure by remember { mutableStateOf<String?>(null) }
     var shareFailureProject by remember { mutableStateOf<Project?>(null) }
     var discardAndThen by remember { mutableStateOf<(() -> Unit)?>(null) }
-    /** Unsaved cuts or a chosen splice are only dropped after the user agrees. */
+    /** Unsaved edits or a clip in progress are only dropped after the user agrees. */
     fun leavingEdits(then: () -> Unit) {
         when {
             appState.editSaving -> Unit
             // Only an untouched single part is nothing to lose.
-            route == Route.SPLICE && appState.splice.singleOrNull()?.let { it.range == it.project.firstClip.trim } != true ->
-                discardAndThen = { appViewModel.closeSplice(); then() }
-            route == Route.SPLICE -> { appViewModel.closeSplice(); then() }
+            route == Route.CLIP && appState.clip.singleOrNull()?.let { it == ClipPart(it.project, it.project.firstClip.trim, 0L) } != true ->
+                discardAndThen = { appViewModel.closeClip(); then() }
+            route == Route.CLIP -> { appViewModel.closeClip(); then() }
             route == Route.OVERDUB_REVIEW -> discardAndThen = { appViewModel.discardOverdub(); then() }
             appState.edit != null -> discardAndThen = { appViewModel.discardEdits(); then() }
             else -> then()
@@ -381,8 +382,8 @@ private fun KanatronApp(
             Route.SKETCH -> if (!takeRunning) appViewModel.leave(Route.LIBRARY)
             Route.TUNER -> appViewModel.leave(Route.LIBRARY)
             Route.EDIT -> leavingEdits { appViewModel.leave(Route.LIBRARY) }
-            Route.SPLICE -> leavingEdits {}
-            Route.SPLICE_PICK -> appViewModel.navigate(Route.SPLICE)
+            Route.CLIP -> leavingEdits {}
+            Route.CLIP_PICK -> appViewModel.navigate(Route.CLIP)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.SKETCH)
             Route.OVERDUB_REVIEW -> leavingEdits {}
             Route.LIBRARY -> Unit
@@ -485,32 +486,31 @@ private fun KanatronApp(
                                 onUndo = appViewModel::undoCut,
                                 onMix = { level, eq -> appViewModel.mix(project, level, eq) },
                                 onSave = { asNew -> appViewModel.saveEdits(project, asNew) },
-                                onSplice = { appViewModel.startSplice(project) }
+                                onClip = { appViewModel.startClip(project) }
                             )
                         }
                     }
                 }
-                Route.SPLICE -> SpliceScreen(
-                    parts = appState.splice,
+                Route.CLIP -> ClipScreen(
+                    parts = appState.clip,
                     repository = repository,
                     playbackAllowed = playbackAllowed(recording.phase),
                     saving = appState.editSaving,
                     error = appState.editError,
-                    onRange = appViewModel::setSpliceRange,
-                    onChooseNext = { appViewModel.navigate(Route.SPLICE_PICK) },
-                    onMoveEarlier = appViewModel::moveSplicePartEarlier,
-                    onRemove = appViewModel::removeSplicePart,
-                    onSave = appViewModel::saveSplice,
+                    onPart = appViewModel::setClipPart,
+                    onAdd = { appViewModel.navigate(Route.CLIP_PICK) },
+                    onRemove = appViewModel::removeClipPart,
+                    onSave = appViewModel::saveClip,
                     onClose = { leavingEdits {} }
                 )
-                Route.SPLICE_PICK -> Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                Route.CLIP_PICK -> Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                     Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
-                        SynthTopBar("Add part", { appViewModel.navigate(Route.SPLICE) }, backLabel = "Clip")
+                        SynthTopBar("Add part", { appViewModel.navigate(Route.CLIP) }, backLabel = "Clip")
                     }
                     // A comp may reuse a phrase from the same take, so no recording is excluded.
                     LibraryScreen(
                         projects = projects.filter { it.tracks.size == 1 && it.tracks[0].clips.size == 1 },
-                        onTap = appViewModel::addToSplice
+                        onTap = appViewModel::addToClip
                     )
                 }
                 Route.TUNER -> TunerScreen(
@@ -667,7 +667,7 @@ private fun KanatronApp(
                 title = { Text("Discard changes?") },
                 text = {
                     Text(when (route) {
-                        Route.SPLICE -> "The splice is not saved yet."
+                        Route.CLIP -> "The clip is not saved yet."
                         Route.OVERDUB_REVIEW -> "The mix is not saved. The take stays in the Library on its own."
                         else -> "Your unsaved edits will be lost."
                     })

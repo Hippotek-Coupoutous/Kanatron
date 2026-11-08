@@ -7,7 +7,10 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.kanatron.app.core.Cuts
 import com.kanatron.app.core.Eq
+import com.kanatron.app.core.MultitrackRenderer
 import com.kanatron.app.core.OverdubMix
+import com.kanatron.app.core.ProjectClip
+import com.kanatron.app.core.ProjectTrack
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.firstClip
@@ -28,17 +31,35 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal enum class Route {
-    LIBRARY, SKETCH, EDIT, TUNER, SPLICE, SPLICE_PICK, OVERDUB_CALIBRATION, OVERDUB_REVIEW;
+    LIBRARY, SKETCH, EDIT, TUNER, CLIP, CLIP_PICK, OVERDUB_CALIBRATION, OVERDUB_REVIEW;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == EDIT || this == TUNER
 }
 
-/** One recording's chosen range in a splice. */
-internal data class SplicePart(val project: Project, val range: TrimRange)
+/**
+ * One recording's kept [range] on Clip's timeline: it starts playing at [positionFrames], counted at the first
+ * part's rate, lowered by [levelSteps] and shaped by [eq].
+ */
+internal data class ClipPart(
+    val project: Project,
+    val range: TrimRange,
+    val positionFrames: Long,
+    val levelSteps: Int = 0,
+    val eq: Eq = Eq.FLAT
+)
+
+/** Every part on one track at the first part's rate; where parts overlap they sum. */
+internal fun clipArrangement(parts: List<ClipPart>): Project {
+    val base = parts.first().project
+    val clips = parts.mapIndexed { index, part ->
+        ProjectClip("clip-$index", part.project.firstClip.source, part.positionFrames, part.range).mixed(part.levelSteps, part.eq)
+    }
+    return base.copy(channels = clips.maxOf { it.source.channels }, tracks = listOf(ProjectTrack("track-main", base.name, clips)))
+}
 
 /** Enough parts to comp a phrase from several takes while every lane stays tall enough to drag. */
-internal const val MAX_SPLICE_PARTS = 4
+internal const val MAX_CLIP_PARTS = 4
 
 /** Unsaved cuts, level and EQ on the Edit subject; they survive rotation but not process death. */
 internal data class EditSession(
@@ -63,8 +84,8 @@ internal data class AppUiState(
     val route: Route = Route.LIBRARY,
     val selectedId: String? = null,
     val edit: EditSession? = null,
-    /** The splice being built from Edit, in playing order; rotation-safe only. */
-    val splice: List<SplicePart> = emptyList(),
+    /** The clip being built from Edit; rotation-safe only. */
+    val clip: List<ClipPart> = emptyList(),
     /** A finished take over its backing, not mixed yet; rotation-safe only, the take itself is already saved. */
     val overdub: OverdubMix? = null,
     val editSaving: Boolean = false,
@@ -143,46 +164,49 @@ internal class AppViewModel(
 
     fun discardEdits() = updateState { it.copy(edit = null, editError = null) }
 
-    fun startSplice(project: Project) = updateState { it.copy(splice = listOf(SplicePart(project, project.firstClip.trim)), route = Route.SPLICE) }
+    fun startClip(project: Project) = updateState { it.copy(clip = listOf(ClipPart(project, project.firstClip.trim, 0L)), route = Route.CLIP) }
 
-    fun addToSplice(project: Project) = editing {
-        if (it.splice.size >= MAX_SPLICE_PARTS) it.copy(route = Route.SPLICE)
-        else it.copy(splice = it.splice + SplicePart(project, project.firstClip.trim), route = Route.SPLICE)
+    /** A new part starts where the timeline ends, overlapping the last fade so the two crossfade. */
+    fun addToClip(project: Project) = editing { state ->
+        val parts = state.clip
+        if (parts.size >= MAX_CLIP_PARTS) return@editing state.copy(route = Route.CLIP)
+        val end = clipArrangement(parts).totalFrames
+        val at = (end - MultitrackRenderer.fadeFrames(parts.first().project.sampleRate)).coerceAtLeast(0L)
+        state.copy(clip = parts + ClipPart(project, project.firstClip.trim, at), route = Route.CLIP)
     }
 
-    fun setSpliceRange(index: Int, range: TrimRange) = editing { state ->
-        state.copy(splice = state.splice.mapIndexed { i, part -> if (i == index) part.copy(range = range) else part })
+    fun setClipPart(index: Int, part: ClipPart) = editing { state ->
+        state.copy(clip = state.clip.mapIndexed { i, old -> if (i == index) part else old })
     }
 
-    fun moveSplicePartEarlier(index: Int) = editing { state ->
-        if (index !in 1 until state.splice.size) state
-        else state.copy(splice = state.splice.toMutableList().apply { add(index - 1, removeAt(index)) })
+    fun removeClipPart(index: Int) = editing { state ->
+        val parts = state.clip
+        if (parts.size <= 1 || index !in parts.indices) return@editing state
+        val left = parts.filterIndexed { i, _ -> i != index }
+        // Positions count frames at the first part's rate, so a new first part at another rate rescales them.
+        val from = parts.first().project.sampleRate
+        val to = left.first().project.sampleRate
+        state.copy(clip = if (from == to) left else left.map { it.copy(positionFrames = it.positionFrames * to / from) })
     }
 
-    fun removeSplicePart(index: Int) = editing { state ->
-        if (state.splice.size <= 1 || index !in state.splice.indices) state
-        else state.copy(splice = state.splice.filterIndexed { i, _ -> i != index })
-    }
+    fun closeClip() = updateState { it.copy(clip = emptyList(), route = Route.EDIT) }
 
-    fun closeSplice() = updateState { it.copy(splice = emptyList(), route = Route.EDIT) }
-
-    /** Saves the splice as a new recording and makes it Edit's subject. */
-    fun saveSplice() {
-        val parts = _state.value.splice
+    /** Saves the clip as a new recording and makes it Edit's subject. */
+    fun saveClip() {
+        val parts = _state.value.clip
         if (parts.size < 2 || _state.value.editSaving) return
         updateState { it.copy(editSaving = true, editError = null) }
         viewModelScope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) {
-                    repository.saveRendered(Cuts.join(parts.first().project, parts.map { it.project.firstClip.source to it.range }))
-                        ?: error("The splice would clip. Shorten or reorder the parts.")
+                    repository.saveRendered(clipArrangement(parts)) ?: error("The clip would clip. Lower a part's level in Mix.")
                 }
                 refreshLibrary(selectId = saved.id).join()
-                updateState { it.copy(selectedProject = saved, splice = emptyList(), editSaving = false, route = Route.EDIT) }
+                updateState { it.copy(selectedProject = saved, clip = emptyList(), editSaving = false, route = Route.EDIT) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the splice.") }
+                updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the clip.") }
             }
         }
     }
@@ -623,7 +647,7 @@ internal class AppViewModel(
     private fun restoredState(): AppUiState = AppUiState(
         route = when (val stored = savedStateHandle.get<String>(KEY_ROUTE)?.let { runCatching { Route.valueOf(it) }.getOrNull() }) {
             null -> Route.LIBRARY
-            Route.SPLICE, Route.SPLICE_PICK -> Route.EDIT
+            Route.CLIP, Route.CLIP_PICK -> Route.EDIT
             Route.OVERDUB_REVIEW -> Route.SKETCH
             else -> stored
         },

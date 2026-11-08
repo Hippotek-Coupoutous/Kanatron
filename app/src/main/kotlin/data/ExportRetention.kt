@@ -60,13 +60,15 @@ internal class ExportRetention(
     private fun canRetire(file: File, time: Long): Boolean = time >= plus(file.lastModified(), SHARE_GRACE_MS)
 
     private fun uniqueTarget(name: String): File {
-        require(name == File(name).name && name.length <= 240) { "Invalid export filename" }
+        require(name == File(name).name) { "Invalid export filename" }
         val extension = name.substringAfterLast('.', "").lowercase()
         require(extension == "wav") { "Unsupported export format" }
         val stem = name.dropLast(extension.length + 1).ifBlank { "Recording" }
         var suffix = 1
         while (true) {
-            val candidate = File(exports, if (suffix == 1) "$stem.$extension" else "$stem ($suffix).$extension")
+            // Truncate before the suffix so a capped stem can never make dedupe loop forever.
+            val tag = if (suffix == 1) "" else " ($suffix)"
+            val candidate = File(exports, stem.take(MAX_NAME - extension.length - 1 - tag.length) + tag + ".$extension")
             if (!candidate.exists()) return candidate
             suffix = Math.addExact(suffix, 1)
         }
@@ -91,6 +93,7 @@ internal class ExportRetention(
 
     private companion object {
         val LOCK = Any()
+        const val MAX_NAME = 240
         const val SHARE_GRACE_MS = 7L * 24 * 60 * 60 * 1000
         const val MAX_BYTES = 512L * 1024 * 1024
     }

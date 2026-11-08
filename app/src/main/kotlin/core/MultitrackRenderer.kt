@@ -8,6 +8,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 /** Sequential PCM16 rendering; working sample memory is limited by one output block and one source block. */
@@ -32,7 +33,8 @@ object MultitrackRenderer {
     fun renderToWav(
         project: Project,
         resolveSource: (ProjectAudioSource) -> File,
-        destination: File
+        destination: File,
+        cancelled: AtomicBoolean = AtomicBoolean(false)
     ) {
         val frames = project.totalFrames
         val channels = project.tracks.flatMap(ProjectTrack::clips).maxOfOrNull { it.source.channels } ?: 1
@@ -64,6 +66,7 @@ object MultitrackRenderer {
                     val pcm = ByteArray(BLOCK_FRAMES * channels * 2)
                     var start = 0L
                     while (start < frames) {
+                        if (cancelled.get()) throw IOException("Render cancelled.")
                         val count = minOf(BLOCK_FRAMES.toLong(), frames - start).toInt()
                         val sums = DoubleArray(count * channels)
                         for ((track, clip) in active) {

@@ -381,10 +381,7 @@ private fun KanatronApp(
                         appViewModel.navigate(Route.MIX)
                     },
                     onRename = { project, name -> appViewModel.renameProject(project.id, name) },
-                    onDelete = {
-                        appViewModel.deleteProject(it.id)
-                        if (it.id == homeId) appViewModel.setHome(null)
-                    }
+                    onDelete = { appViewModel.deleteProject(it.id) }
                 )
                 Route.SKETCH -> {
                     val visibleCurrent = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }

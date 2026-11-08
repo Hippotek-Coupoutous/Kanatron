@@ -1,13 +1,8 @@
 package com.kanatron.app.core
 
 object ProjectArrangementActions {
-    fun addTrack(project: Project, track: ProjectTrack): Project {
-        require(project.tracks.none { it.id == track.id }) { "Track already exists." }
-        require((project.tracks.sumOf { it.clips.size } + track.clips.size) <= Project.MAX_CLIPS) {
-            "A project supports up to ${Project.MAX_CLIPS} clips."
-        }
-        return apply(project, project.tracks + track)
-    }
+    fun addTracks(project: Project, tracks: List<ProjectTrack>): Project =
+        apply(project, project.tracks + tracks)
 
     fun removeTrack(project: Project, trackId: String): Project {
         require(project.tracks.size > 1) { "A project must keep at least one track." }

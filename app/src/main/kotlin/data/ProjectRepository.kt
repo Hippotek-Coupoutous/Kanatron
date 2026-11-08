@@ -25,6 +25,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ProjectRepository(context: Context) {
 
@@ -95,9 +96,9 @@ class ProjectRepository(context: Context) {
     }
 
     /** Returns the raw source for a one-clip project, otherwise its bounded private preview. */
-    fun playbackFile(project: Project): File {
+    fun playbackFile(project: Project, cancelled: AtomicBoolean = AtomicBoolean(false)): File {
         directSource(project)?.let { return sourceFile(it) }
-        return previewCache.render(project, ::sourceFile) {
+        return previewCache.render(project, ::sourceFile, cancelled) {
             if (missingSources(project).isNotEmpty()) {
                 throw IOException("A source WAV is missing or no longer matches its saved format.")
             }
@@ -146,8 +147,8 @@ class ProjectRepository(context: Context) {
                 positionFrames = positionFrames,
                 trim = takeClip.trim
             )
-            val updated = ProjectArrangementActions.addTrack(
-                base, ProjectTrack("track-${UUID.randomUUID()}", take.name, listOf(clip))
+            val updated = ProjectArrangementActions.addTracks(
+                base, listOf(ProjectTrack("track-${UUID.randomUUID()}", take.name, listOf(clip)))
             )
             return saveEditState(updated)
         }

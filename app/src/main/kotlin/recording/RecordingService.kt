@@ -434,6 +434,11 @@ class RecordingService : Service() {
             val player = previewPlayer ?: return
             val snapshot = player.state.value
             if (!snapshot.isPlaying) {
+                snapshot.error?.let { failure ->
+                    mutableState.value = mutableState.value.copy(
+                        alignmentNotice = mergeNotices(mutableState.value.alignmentNotice, "Take preview failed: $failure")
+                    )
+                }
                 stopPreview()
                 return
             }

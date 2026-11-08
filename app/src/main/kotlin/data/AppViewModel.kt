@@ -10,6 +10,7 @@ import com.kanatron.app.core.SUPPORTED_BPM
 import com.kanatron.app.playback.MonitorClick
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,7 @@ internal class AppViewModel(
     private var initialization: Job? = null
     private var libraryGeneration = 0L
     private var selectionGeneration = 0L
+    private var selectionRenderCancel = AtomicBoolean(false)
     private var lastRequestedSelection: String? = null
     private val playbackJobs = mutableMapOf<String, Job>()
     private var importJob: Job? = null
@@ -232,6 +234,9 @@ internal class AppViewModel(
         if (!force && lastRequestedSelection == id) return
         lastRequestedSelection = id
         val generation = ++selectionGeneration
+        val renderCancel = AtomicBoolean(false)
+        selectionRenderCancel.set(true)
+        selectionRenderCancel = renderCancel
         _state.update {
             it.copy(
                 selectedProject = if (sameSelection) it.selectedProject else null,
@@ -244,7 +249,7 @@ internal class AppViewModel(
             try {
                 val (project, wav) = withContext(Dispatchers.IO) {
                     val loaded = repository.get(id) ?: return@withContext null to null
-                    loaded to repository.playbackFile(loaded).takeIf(File::isFile)
+                    loaded to repository.playbackFile(loaded, renderCancel).takeIf(File::isFile)
                 }
                 if (generation == selectionGeneration && _state.value.selectedId == id) {
                     _state.update {
@@ -363,7 +368,7 @@ internal class AppViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repository.rename(id, name) }
-                refreshLibrary(selectId = id)
+                refreshLibrary(selectId = id.takeIf { it == _state.value.selectedId })
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -376,7 +381,13 @@ internal class AppViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repository.delete(id) }
-                selectProject(null, force = true)
+                if (_state.value.selectedId == id) {
+                    invalidatePlayback(id)
+                    selectProject(null, force = true)
+                }
+                if (_state.value.homeId == id) setHome(null)
+                if (_state.value.layerBackingId == id) setLayerBacking(null)
+                if (_state.value.pendingOverdubProjectId == id) clearPendingRecord()
                 refreshLibrary()
             } catch (cancelled: CancellationException) {
                 throw cancelled

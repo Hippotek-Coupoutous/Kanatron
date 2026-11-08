@@ -1,5 +1,6 @@
 package com.kanatron.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -43,13 +44,14 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
     val routeKey = route?.let { "${it.routeKey}|${it.captureSampleRate}|${it.backingSampleRate}|${it.projectSampleRate}" } ?: "no-route"
     var offsetText by rememberSaveable(routeKey) { mutableStateOf(saved?.let { millis(it.offsetFrames, it.projectSampleRate) } ?: "0") }
     var status by rememberSaveable(routeKey) { mutableStateOf<String?>(null) }
-    var busy by rememberSaveable(routeKey) { mutableStateOf(false) }
+    var busy by remember(routeKey) { mutableStateOf(false) }
+    BackHandler(enabled = busy) {}
 
     Column(
         Modifier.fillMaxSize().safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        SynthTopBar("Timing calibration", onBack, backLabel = "Sketch")
+        SynthTopBar("Timing calibration", { if (!busy) onBack() }, backLabel = "Sketch")
         SynthPanel {
             if (route == null) {
                 Text("No identified Layer route yet.", color = Synth.text, style = MaterialTheme.typography.titleMedium)

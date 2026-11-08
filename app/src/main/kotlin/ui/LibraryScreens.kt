@@ -119,10 +119,12 @@ internal fun SketchScreen(
     val playing = playerState?.isPlaying == true
     val playhead = seekPreview ?: (playerState?.positionFrames ?: 0L)
     val phase = recording.phase
+    // Terminal and notice fields describe the last take; they only describe `current` when that take is `current`.
+    val lastTakeShown = recording.projectId != null && recording.projectId == current?.id
     val recordingNow = phase == RecordingPhase.STARTING || phase == RecordingPhase.RECORDING
     val paused = phase == RecordingPhase.PAUSED
     val active = recordingNow || paused
-    val saved = phase == RecordingPhase.COMPLETE
+    val saved = phase == RecordingPhase.COMPLETE && lastTakeShown
     val canSave = phase == RecordingPhase.RECORDING || paused
     val previewing = paused && recording.previewPlaying
     val status = when {
@@ -242,12 +244,15 @@ internal fun SketchScreen(
                 if (active) Notice("${recording.inputDevice} · ${recording.sampleRate} Hz")
                 cue?.let { Notice(it) }
                 if (layering) Notice("Wired headphones are recommended. Bluetooth timing is unverified.")
-                if (recording.silent && recording.projectId != null) Notice("Silent recording saved to your library.", Synth.yellow)
-                recording.interruptionNotice?.let { Notice(it, MaterialTheme.colorScheme.error) }
-                recording.alignmentNotice?.let { Notice(it) }
-                (recording.error ?: startError)?.let { Notice(it, MaterialTheme.colorScheme.error) }
+                if (recording.silent && lastTakeShown) Notice("Silent recording saved to your library.", Synth.yellow)
+                if (active || lastTakeShown) recording.interruptionNotice?.let { Notice(it, MaterialTheme.colorScheme.error) }
+                if (active || lastTakeShown) recording.alignmentNotice?.let { Notice(it) }
+                // startError is not tied to a take and has no other surface; never hide it.
+                val takeError = recording.error.takeIf { active || lastTakeShown }
+                (takeError ?: startError)?.let { Notice(it, MaterialTheme.colorScheme.error) }
+                playerState?.error?.let { Notice(it, MaterialTheme.colorScheme.error) }
                 clickState.error?.let { Notice(it, MaterialTheme.colorScheme.error) }
-                if (recording.phase == RecordingPhase.FAILED && recording.projectId != null) {
+                if (phase == RecordingPhase.FAILED && lastTakeShown) {
                     Notice("A recoverable take is in your library.")
                 }
                 if (!microphoneGranted && !active) {
@@ -258,7 +263,7 @@ internal fun SketchScreen(
                 if (Build.VERSION.SDK_INT >= 33 && !notificationsGranted) {
                     Notice("Notifications are off. Android shows an active recording notice in Task Manager, but not in the notification drawer. Use the app controls to pause or stop.")
                 }
-                if (saved && (recording.projectId != null || current != null)) {
+                if (saved) {
                     TextAction("Open in Mix", onOpenInMix, modifier = Modifier.fillMaxWidth(), description = "Open saved take in Mix", color = Synth.cyan)
                 }
             }
@@ -443,9 +448,9 @@ internal fun LibraryScreen(
     onRename: (Project, String) -> Unit,
     onDelete: (Project) -> Unit
 ) {
-    var renameTarget by remember { mutableStateOf<Project?>(null) }
+    var renameId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteTarget by remember { mutableStateOf<Project?>(null) }
-    var renameName by remember { mutableStateOf("") }
+    var renameName by rememberSaveable { mutableStateOf("") }
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
@@ -460,20 +465,20 @@ internal fun LibraryScreen(
                 LibraryRow(
                     project,
                     onOpen = { onOpen(project) },
-                    onRename = { renameName = project.name; renameTarget = project },
+                    onRename = { renameName = project.name; renameId = project.id },
                     onDelete = { deleteTarget = project }
                 )
             }
         }
     }
-    val rename = renameTarget
+    val rename = projects.firstOrNull { it.id == renameId }
     if (rename != null) {
         AlertDialog(
-            onDismissRequest = { renameTarget = null },
+            onDismissRequest = { renameId = null },
             title = { Text("Rename recording") },
             text = { OutlinedTextField(renameName, { renameName = it }, label = { Text("Name") }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { if (renameName.isNotBlank()) onRename(rename, renameName); renameTarget = null }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } }
+            confirmButton = { TextButton(onClick = { if (renameName.isNotBlank()) onRename(rename, renameName); renameId = null }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { renameId = null }) { Text("Cancel") } }
         )
     }
     val delete = deleteTarget

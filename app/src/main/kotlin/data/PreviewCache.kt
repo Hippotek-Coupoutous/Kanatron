@@ -11,12 +11,18 @@ import com.kanatron.app.core.sha256Hex
 import com.kanatron.app.platform.PlatformPorts
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Bounded on-disk cache of rendered project previews. */
 internal class PreviewCache(private val directory: File) {
 
     /** Renders or reuses the private preview; [check] runs under the cache lock before any preview file is touched. */
-    fun render(project: Project, sourceFile: (ProjectAudioSource) -> File, check: () -> Unit): File {
+    fun render(
+        project: Project,
+        sourceFile: (ProjectAudioSource) -> File,
+        cancelled: AtomicBoolean = AtomicBoolean(false),
+        check: () -> Unit
+    ): File {
         synchronized(PREVIEW_LOCK) {
             check()
             if (!directory.isDirectory && !directory.mkdirs()) {
@@ -38,7 +44,7 @@ internal class PreviewCache(private val directory: File) {
                 throw IOException("Not enough free storage to prepare the project preview.")
             }
             if (target.exists()) target.delete()
-            MultitrackRenderer.renderToWav(project, sourceFile, target)
+            MultitrackRenderer.renderToWav(project, sourceFile, target, cancelled)
             evict(keep = target)
             return target
         }

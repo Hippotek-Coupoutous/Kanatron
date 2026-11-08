@@ -57,7 +57,6 @@ import com.kanatron.app.core.ProjectTrack
 import com.kanatron.app.core.RecordingCore
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.WavFormat
-import com.kanatron.app.core.firstClip
 import com.kanatron.app.data.ProjectRepository
 import com.kanatron.app.data.WavExporter
 import com.kanatron.app.playback.WavPlayer
@@ -224,7 +223,8 @@ private fun MixEditor(
 
     val current = project
     val currentPlayer = player
-    val isPlaying = currentPlayer?.state?.collectAsState()?.value?.isPlaying == true
+    val playerState = currentPlayer?.state?.collectAsState()?.value
+    val isPlaying = playerState?.isPlaying == true
 
     Column(
         Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(20.dp).verticalScroll(rememberScrollState()),
@@ -270,6 +270,7 @@ private fun MixEditor(
                     modifier = Modifier.weight(1f)
                 )
             }
+            playerState?.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
 
         val canRemove = { track: ProjectTrack ->
@@ -293,10 +294,12 @@ private fun MixEditor(
 
         if (current.tracks.size < Project.MAX_TRACKS) {
             val existingSources = current.tracks.flatMap(ProjectTrack::clips).map { it.source.wav }.toSet()
-            val candidates = projects.filter { source ->
-                source.firstClip.source.wav !in existingSources &&
-                    source.firstClip.source.channels <= current.channels
+            val playable = projects.filter { source ->
+                val clips = source.tracks.flatMap(ProjectTrack::clips)
+                clips.none { it.source.wav in existingSources } &&
+                    clips.all { it.source.channels <= current.channels }
             }
+            val candidates = playable.filter { current.tracks.size + it.tracks.size <= Project.MAX_TRACKS }
             // Only offer sources that still match their saved format; reading a WAV is not cheap enough for composition.
             val availableSources by produceState(emptyList<Project>(), candidates) {
                 value = withContext(Dispatchers.IO) { candidates.filter { repository.missingSources(it).isEmpty() } }
@@ -308,20 +311,21 @@ private fun MixEditor(
                         FilterChip(
                             selected = false,
                             onClick = {
-                                val sourceClip = source.firstClip
-                                val track = ProjectTrack(
-                                    id = "track-${UUID.randomUUID()}",
-                                    name = source.name,
-                                    clips = listOf(
-                                        ProjectClip(
-                                            id = "clip-${UUID.randomUUID()}",
-                                            source = sourceClip.source,
-                                            positionFrames = 0L,
-                                            trim = sourceClip.trim
-                                        )
+                                if (busy) return@FilterChip
+                                val tracks = source.tracks.map { track ->
+                                    track.copy(
+                                        id = "track-${UUID.randomUUID()}",
+                                        // Positions are in the source project's frames; the mix may run at another rate.
+                                        clips = track.clips.map {
+                                            it.copy(
+                                                id = "clip-${UUID.randomUUID()}",
+                                                positionFrames = it.positionFrames * current.sampleRate / source.sampleRate
+                                            )
+                                        },
+                                        solo = false
                                     )
-                                )
-                                runCatching { ProjectArrangementActions.addTrack(current, track) }
+                                }
+                                runCatching { ProjectArrangementActions.addTracks(current, tracks) }
                                     .onSuccess(::persist)
                                     .onFailure { error = it.message ?: "Could not add this recording." }
                             },
@@ -329,6 +333,10 @@ private fun MixEditor(
                             label = { Text("Add ${source.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         )
                     }
+                }
+            } else if (candidates.isEmpty() && playable.isNotEmpty()) {
+                SynthPanel {
+                    Text("No recording fits: a mix holds at most ${Project.MAX_TRACKS} tracks and every track of a recording is added.")
                 }
             }
         }

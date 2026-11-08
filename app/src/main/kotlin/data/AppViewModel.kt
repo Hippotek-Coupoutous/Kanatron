@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal enum class Route {
-    LIBRARY, SKETCH, EDIT, TUNER, EDIT_IMPORT, SPLICE, SPLICE_PICK, OVERDUB_CALIBRATION, OVERDUB_REVIEW;
+    LIBRARY, SKETCH, EDIT, TUNER, SPLICE, SPLICE_PICK, OVERDUB_CALIBRATION, OVERDUB_REVIEW;
 
     /** Top-level destinations show the bottom bar; sub-routes hide it and have their own back. */
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == EDIT || this == TUNER
@@ -48,7 +48,6 @@ internal enum class MicrophoneAction { RECORD, TUNER }
 internal data class AppUiState(
     val route: Route = Route.LIBRARY,
     val selectedId: String? = null,
-    val homeId: String? = null,
     val edit: EditSession? = null,
     /** The splice being built from Edit, in playing order; rotation-safe only. */
     val splice: List<SplicePart> = emptyList(),
@@ -108,8 +107,6 @@ internal class AppViewModel(
 
     fun navigate(route: Route) = updateState { it.copy(route = route) }
 
-    fun setHome(id: String?) = updateState { it.copy(homeId = id) }
-
     fun cut(project: Project, pieces: List<TrimRange>) = editing { state ->
         val previous = state.edit?.pieces?.takeIf { state.edit.projectId == project.id } ?: listOf(project.firstClip.trim)
         val undo = state.edit?.undo?.takeIf { state.edit.projectId == project.id }.orEmpty()
@@ -158,7 +155,6 @@ internal class AppViewModel(
                         ?: error("The splice would clip. Shorten or reorder the parts.")
                 }
                 refreshLibrary(selectId = saved.id).join()
-                setHome(saved.id)
                 updateState { it.copy(selectedProject = saved, splice = emptyList(), editSaving = false, route = Route.EDIT) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -187,7 +183,6 @@ internal class AppViewModel(
                 val saved = withContext(Dispatchers.IO) {
                     repository.saveRendered(mix.arrangement()) ?: error("The mix would clip. Lower the backing or the take.")
                 }
-                setHome(saved.id)
                 updateState { it.copy(selectedId = saved.id, selectedProject = saved) }
                 // The take goes only once nothing points at it; if it stays, it is just another Library entry.
                 withContext(Dispatchers.IO) { runCatching { repository.delete(mix.takeProjectId) } }
@@ -220,7 +215,6 @@ internal class AppViewModel(
                 }
                 invalidatePlayback(project.id)
                 refreshLibrary(selectId = saved.id).join()
-                setHome(saved.id)
                 updateState { it.copy(selectedProject = saved, edit = null, editSaving = false) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -290,15 +284,9 @@ internal class AppViewModel(
     }
 
     /** The single exit for editing screens so system Back refreshes exactly like on-screen Back. */
-    fun leave(to: Route, changedProjectId: String? = null) {
-        if (changedProjectId != null) {
-            // refreshLibrary selects the saved project, which is the id the screens should show.
-            refreshLibrary(changedProjectId)
-            updateState { it.copy(homeId = changedProjectId, route = to) }
-        } else {
-            if (to == Route.LIBRARY) refreshLibrary()
-            updateState { it.copy(route = to) }
-        }
+    fun leave(to: Route) {
+        if (to == Route.LIBRARY) refreshLibrary()
+        updateState { it.copy(route = to) }
     }
 
     fun initialize() {
@@ -520,7 +508,6 @@ internal class AppViewModel(
                     invalidatePlayback(id)
                     selectProject(null, force = true)
                 }
-                if (_state.value.homeId == id) setHome(null)
                 if (_state.value.pendingOverdubProjectId == id) clearPendingRecord()
                 if (_state.value.edit?.projectId == id) discardEdits()
                 refreshLibrary()
@@ -545,7 +532,6 @@ internal class AppViewModel(
                 }
                 _state.update { it.copy(drafts = it.drafts.filterNot { draft -> draft.id == id }) }
                 refreshLibrary(selectId = saved.id).join()
-                setHome(saved.id)
                 if (_state.value.route == Route.SKETCH) onSaved()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -568,7 +554,6 @@ internal class AppViewModel(
                 _state.update { it.copy(drafts = it.drafts.filterNot { draft -> draft.id == id }) }
                 invalidatePlayback(id)
                 if (_state.value.selectedId == id) selectProject(null, force = true)
-                if (_state.value.homeId == id) setHome(null)
                 refreshLibrary().join()
                 if (_state.value.route == Route.SKETCH) onDeleted()
             } catch (cancelled: CancellationException) {
@@ -605,7 +590,6 @@ internal class AppViewModel(
     private fun persist(state: AppUiState) {
         savedStateHandle[KEY_ROUTE] = state.route.name
         savedStateHandle[KEY_SELECTED] = state.selectedId
-        savedStateHandle[KEY_HOME] = state.homeId
         savedStateHandle[KEY_PENDING_MIC] = state.pendingMicrophoneAction?.name
         savedStateHandle[KEY_PENDING_OVERDUB] = state.pendingOverdubProjectId
         savedStateHandle[KEY_CLICK_BPM] = state.pendingClick?.bpm
@@ -621,7 +605,6 @@ internal class AppViewModel(
             else -> stored
         },
         selectedId = savedStateHandle.get<String>(KEY_SELECTED),
-        homeId = savedStateHandle.get<String>(KEY_HOME),
         pendingMicrophoneAction = savedStateHandle.get<String>(KEY_PENDING_MIC)
             ?.let { stored -> runCatching { MicrophoneAction.valueOf(stored) }.getOrNull() },
         pendingOverdubProjectId = savedStateHandle.get<String>(KEY_PENDING_OVERDUB),
@@ -648,7 +631,6 @@ internal class AppViewModel(
     private companion object {
         const val KEY_ROUTE = "route"
         const val KEY_SELECTED = "selectedProjectId"
-        const val KEY_HOME = "homeProjectId"
         const val KEY_PENDING_MIC = "pendingMicrophoneAction"
         const val KEY_PENDING_OVERDUB = "pendingOverdubProjectId"
         const val KEY_CLICK_BPM = "pendingClickBpm"

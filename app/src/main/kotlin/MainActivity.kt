@@ -12,7 +12,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,12 +24,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -42,8 +42,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -69,6 +69,9 @@ import com.kanatron.app.recording.RecordingService
 import com.kanatron.app.ui.KanatronTheme
 import com.kanatron.app.ui.LibraryScreen
 import com.kanatron.app.ui.EditScreen
+import com.kanatron.app.ui.Key
+import com.kanatron.app.ui.LibraryHeader
+import com.kanatron.app.ui.LibraryKeys
 import com.kanatron.app.ui.MissingAudioScreen
 import com.kanatron.app.ui.SynthTopBar
 import com.kanatron.app.ui.OverdubCalibrationScreen
@@ -301,7 +304,6 @@ private fun KanatronApp(
     val unreadableProjectCount = appState.unreadableProjectCount
     val route = appState.route
     val selectedId = appState.selectedId
-    val homeId = appState.homeId
     val selected = appState.selectedProject
     var dismissedTakeError by remember { mutableStateOf<String?>(null) }
     var shareFailure by remember { mutableStateOf<String?>(null) }
@@ -321,6 +323,7 @@ private fun KanatronApp(
         }
     }
     val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
 
     fun share(project: Project) {
         shareFailure = null
@@ -356,13 +359,11 @@ private fun KanatronApp(
         val completion = RecordingService.takeCompletion() ?: return@LaunchedEffect
         // Select the finished take; it is a new recording the library has not read yet.
         appViewModel.refreshLibrary(completion.projectId)
-        appViewModel.setHome(completion.projectId)
         completion.overdub?.let(appViewModel::startOverdubReview)
     }
     LaunchedEffect(appState.importedProjectId) {
         appState.importedProjectId?.let { id ->
             appViewModel.selectProject(id)
-            appViewModel.setHome(id)
             appViewModel.navigate(Route.EDIT)
             appViewModel.consumeImportedProject(id)
         }
@@ -379,7 +380,6 @@ private fun KanatronApp(
             Route.SKETCH -> if (!takeRunning) appViewModel.leave(Route.LIBRARY)
             Route.TUNER -> appViewModel.leave(Route.LIBRARY)
             Route.EDIT -> leavingEdits { appViewModel.leave(Route.LIBRARY) }
-            Route.EDIT_IMPORT -> appViewModel.navigate(Route.EDIT)
             Route.SPLICE -> leavingEdits {}
             Route.SPLICE_PICK -> appViewModel.navigate(Route.SPLICE)
             Route.OVERDUB_CALIBRATION -> appViewModel.leave(Route.SKETCH)
@@ -398,18 +398,23 @@ private fun KanatronApp(
             when (route) {
                 Route.LIBRARY -> LibraryScreen(
                     projects = projects,
-                    // A tap chooses the recording that Sketch, Edit and Share work on.
-                    onOpen = {
-                        appViewModel.selectProject(it.id)
-                        appViewModel.setHome(it.id)
-                    },
-                    onRename = { project, name -> appViewModel.renameProject(project.id, name) },
-                    onDelete = { appViewModel.deleteProject(it.id) },
+                    // A tap chooses the recording that Sketch, Edit and Share work on; a second tap lets it go.
+                    onTap = { appViewModel.selectProject(it.id.takeIf { id -> id != selectedId }) },
                     selectedId = selectedId,
-                    onShare = ::share
+                    header = { LibraryHeader(onImportRequest) },
+                    selectedKeys = { project ->
+                        LibraryKeys(
+                            project = project,
+                            wav = appState.audioFiles[project.id],
+                            onEdit = { appViewModel.navigate(Route.EDIT) },
+                            onShare = { share(project) },
+                            onRename = { appViewModel.renameProject(project.id, it) },
+                            onDelete = { appViewModel.deleteProject(project.id) }
+                        )
+                    }
                 )
                 Route.SKETCH -> {
-                    val visibleCurrent = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
+                    val visibleCurrent = projects.firstOrNull { it.id == selectedId }
                     val draft = appState.drafts.firstOrNull()
                     // An unsaved take is what Sketch shows and plays; it is saved before it can be overdubbed.
                     val current = draft ?: visibleCurrent
@@ -441,24 +446,16 @@ private fun KanatronApp(
                         },
                         onPreview = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_PREVIEW)) },
                         onSave = { context.startService(Intent(context, RecordingService::class.java).setAction(RecordingService.ACTION_STOP)) },
+                        onNew = { appViewModel.selectProject(null) },
                         onShare = ::share,
-                        onImport = onImportRequest,
                         onCalibration = { appViewModel.navigate(Route.OVERDUB_CALIBRATION) },
-                        onOpenSettings = onOpenSettings,
-                        onOpenInEdit = {
-                            val projectId = recording.projectId ?: visibleCurrent?.id
-                            if (projectId != null) {
-                                appViewModel.selectProject(projectId)
-                                appViewModel.setHome(projectId)
-                                appViewModel.navigate(Route.EDIT)
-                            }
-                        }
+                        onOpenSettings = onOpenSettings
                     )
                 }
                 Route.EDIT -> {
-                    // Edit works on the chosen recording, else the newest unsaved take, else the newest recording.
+                    // Edit works on the chosen recording, else the newest unsaved take.
                     val known = selectedId?.takeIf { id -> projects.any { it.id == id } || appState.drafts.any { it.id == id } }
-                    val subjectId = known ?: appState.drafts.firstOrNull()?.id ?: projects.firstOrNull()?.id
+                    val subjectId = known ?: appState.drafts.firstOrNull()?.id
                     LaunchedEffect(subjectId) { if (subjectId != null && subjectId != selectedId) appViewModel.selectProject(subjectId) }
                     val project = selected?.takeIf { it.id == subjectId }
                     val sourcesMissing by produceState<Boolean?>(null, project) {
@@ -470,7 +467,7 @@ private fun KanatronApp(
                         clip != null && clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.source.sampleRate == project.sampleRate
                     } == true
                     when {
-                        subjectId == null -> EditMessage("Record or import a recording to edit it here.") { appViewModel.leave(Route.LIBRARY) }
+                        subjectId == null -> EditMessage("Choose a recording in the Library to edit it here.") { appViewModel.leave(Route.LIBRARY) }
                         project == null -> EditMessage(appState.selectionError ?: "Loading recording…") { appViewModel.leave(Route.LIBRARY) }
                         sourcesMissing == true -> MissingAudioScreen(project.name) { appViewModel.leave(Route.LIBRARY) }
                         !editable -> EditMessage("${project.name} was placed or speed-corrected by an older version and cannot be edited here.") { appViewModel.leave(Route.LIBRARY) }
@@ -487,9 +484,7 @@ private fun KanatronApp(
                                 onCut = { appViewModel.cut(project, it) },
                                 onUndo = appViewModel::undoCut,
                                 onSave = { asNew -> appViewModel.saveEdits(project, asNew) },
-                                onImport = { appViewModel.navigate(Route.EDIT_IMPORT) },
-                                onSplice = { appViewModel.startSplice(project) },
-                                onBack = { leavingEdits { appViewModel.leave(Route.LIBRARY) } }
+                                onSplice = { appViewModel.startSplice(project) }
                             )
                         }
                     }
@@ -509,32 +504,12 @@ private fun KanatronApp(
                 )
                 Route.SPLICE_PICK -> Column(Modifier.fillMaxSize().safeDrawingPadding()) {
                     Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
-                        SynthTopBar("Join", { appViewModel.navigate(Route.SPLICE) }, backLabel = "Splice")
+                        SynthTopBar("Add part", { appViewModel.navigate(Route.SPLICE) }, backLabel = "Clip")
                     }
                     // A comp may reuse a phrase from the same take, so no recording is excluded.
                     LibraryScreen(
                         projects = projects.filter { it.tracks.size == 1 && it.tracks[0].clips.size == 1 },
-                        onOpen = appViewModel::addToSplice,
-                        onRename = null,
-                        onDelete = null
-                    )
-                }
-                Route.EDIT_IMPORT -> Column(Modifier.fillMaxSize().safeDrawingPadding()) {
-                    Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
-                        SynthTopBar("Import", { appViewModel.navigate(Route.EDIT) }, backLabel = "Edit")
-                    }
-                    LibraryScreen(
-                        projects = projects,
-                        onOpen = { picked ->
-                            val open = {
-                                appViewModel.discardEdits()
-                                appViewModel.selectProject(picked.id)
-                                appViewModel.navigate(Route.EDIT)
-                            }
-                            if (picked.id == selectedId) appViewModel.navigate(Route.EDIT) else leavingEdits(open)
-                        },
-                        onRename = { project, name -> appViewModel.renameProject(project.id, name) },
-                        onDelete = { appViewModel.deleteProject(it.id) }
+                        onTap = appViewModel::addToSplice
                     )
                 }
                 Route.TUNER -> TunerScreen(
@@ -547,8 +522,7 @@ private fun KanatronApp(
                         else -> null
                     },
                     onRequestMicrophone = onTunerMicRequest,
-                    onOpenSettings = onOpenSettings,
-                    onBack = { appViewModel.leave(Route.LIBRARY) }
+                    onOpenSettings = onOpenSettings
                 )
                 // The route and its mix are always set and cleared together.
                 Route.OVERDUB_REVIEW -> appState.overdub?.let { mix ->
@@ -570,10 +544,16 @@ private fun KanatronApp(
                     onBack = { appViewModel.leave(Route.SKETCH) }
                 )
             }
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
         }
-        if (route.isTopLevel) TopLevelBar(route, itemsEnabled = !appState.editSaving && !takeRunning) { destination ->
+        if (route.isTopLevel) TopLevelBar(route, itemsEnabled = !appState.editSaving) { destination ->
             val go = { if (destination == Route.LIBRARY) appViewModel.leave(Route.LIBRARY) else appViewModel.navigate(destination) }
-            if (route == Route.EDIT) leavingEdits(go) else go()
+            when {
+                // A running take keeps the microphone, so Sketch stays put and says why.
+                takeRunning -> scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar("Save the take first.") }
+                route == Route.EDIT -> leavingEdits(go)
+                else -> go()
+            }
         }
     }
     val takeErrorKey = "${recording.projectId ?: "no-project"}:${recording.error}"
@@ -738,10 +718,11 @@ private val TOP_DESTINATIONS = listOf(
 
 /** What Edit shows when it has nothing it can edit. */
 @Composable
-private fun EditMessage(text: String, onBack: () -> Unit) {
+private fun EditMessage(text: String, onLibrary: () -> Unit) {
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        SynthTopBar("Edit", onBack, backLabel = "Library")
+        SynthTopBar("Edit")
         Text(text, color = Synth.night)
+        Key("Library", onLibrary, icon = SynthIcon.Library)
     }
 }
 
@@ -755,7 +736,7 @@ private fun TopLevelBar(current: Route, itemsEnabled: Boolean, onNavigate: (Rout
                 enabled = itemsEnabled,
                 onClick = { if (!selected) onNavigate(destination.route) },
                 icon = { SynthGlyph(destination.icon, if (selected) Synth.cyan else Synth.muted) },
-                label = { Text(destination.label) },
+                label = { Text(destination.label.uppercase()) },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = Synth.cyan,
                     selectedTextColor = Synth.cyan,

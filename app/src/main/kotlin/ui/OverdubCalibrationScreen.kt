@@ -65,7 +65,7 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
                 )
                 MeasurementField("Timing offset (ms)", offsetText, { offsetText = it }, "Within ±5000 ms")
                 status?.let { Text(it, color = if (it.startsWith("Saved")) Synth.cyan else MaterialTheme.colorScheme.error) }
-                BigButton(
+                Key(
                     "Save timing offset",
                     onClick = {
                         val offset = offsetText.toDoubleOrNull()
@@ -95,9 +95,9 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
                             }
                         }
                     },
-                    Modifier.fillMaxWidth(), primary = true, enabled = !busy
+                    Modifier.fillMaxWidth(), face = Synth.yellow, enabled = !busy
                 )
-                BigButton("Clear saved offset", {
+                Key("Clear saved offset", {
                     busy = true
                     scope.launch {
                         try {

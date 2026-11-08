@@ -10,10 +10,12 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kanatron.app.R
 
 /** Shared app palette. */
 internal object Synth {
@@ -55,11 +57,18 @@ fun KanatronTheme(content: @Composable () -> Unit) {
         error = Color(0xFFFF8FA8)
     )
     val base = Typography()
-    val display = FontFamily.SansSerif
+    // The tall display face carries titles, readouts and key labels; body text stays in the system face.
+    val display = FontFamily(Font(R.font.big_shoulders_extrabold, FontWeight.ExtraBold))
+    fun TextStyle.inDisplay(size: Int, tracking: Double = 1.0) =
+        copy(fontFamily = display, fontWeight = FontWeight.ExtraBold, fontSize = size.sp, lineHeight = (size * 1.1).sp, letterSpacing = tracking.sp)
     val typography = base.copy(
-        headlineSmall = base.headlineSmall.copy(fontFamily = display, fontWeight = FontWeight.Bold, letterSpacing = 1.sp),
-        titleLarge = TextStyle(fontFamily = display, fontWeight = FontWeight.Bold, fontSize = 22.sp, letterSpacing = 2.sp),
-        labelLarge = base.labelLarge.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        displayLarge = base.displayLarge.inDisplay(64, 0.0),
+        headlineMedium = base.headlineMedium.inDisplay(34, 1.5),
+        headlineSmall = base.headlineSmall.inDisplay(26),
+        titleLarge = base.titleLarge.inDisplay(24, 1.5),
+        titleMedium = base.titleMedium.inDisplay(20),
+        labelLarge = base.labelLarge.inDisplay(17, 1.5),
+        labelMedium = base.labelMedium.inDisplay(14, 1.2)
     )
     val shapes = Shapes(small = RoundedCornerShape(14.dp), medium = RoundedCornerShape(18.dp), large = RoundedCornerShape(22.dp))
     MaterialTheme(colorScheme = colors, typography = typography, shapes = shapes) {

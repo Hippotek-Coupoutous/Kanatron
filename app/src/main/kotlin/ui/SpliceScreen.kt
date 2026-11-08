@@ -1,6 +1,5 @@
 package com.kanatron.app.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -10,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -32,13 +30,11 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -96,7 +92,7 @@ internal fun SpliceScreen(
         Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        SynthTopBar("Splice", { player?.stop(); onClose() }, backLabel = "Edit")
+        SynthTopBar("Clip", { player?.stop(); onClose() }, backLabel = "Edit")
         Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             parts.forEachIndexed { index, part ->
                 Lane(index, part, repository, index == selected, onSelect = { selection = index }, onRange = { onRange(index, it) })
@@ -104,10 +100,10 @@ internal fun SpliceScreen(
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val idle = !saving
-            PartKey("Add", "Add a recording", idle && parts.size < MAX_SPLICE_PARTS, Modifier.weight(1f)) { player?.stop(); onChooseNext() }
-            PartKey("Earlier", "Play part ${selected + 1} earlier", idle && selected > 0, Modifier.weight(1f)) { move(selected, selected - 1) }
-            PartKey("Later", "Play part ${selected + 1} later", idle && selected < parts.lastIndex, Modifier.weight(1f)) { move(selected, selected + 1) }
-            PartKey("Remove", "Remove part ${selected + 1}", idle && parts.size > 1, Modifier.weight(1f)) { player?.stop(); onRemove(selected) }
+            Key("Add", { player?.stop(); onChooseNext() }, Modifier.weight(1f), enabled = idle && parts.size < MAX_SPLICE_PARTS, description = "Add a recording", height = KeyHeight.Small)
+            Key("Earlier", { move(selected, selected - 1) }, Modifier.weight(1f), enabled = idle && selected > 0, description = "Play part ${selected + 1} earlier", height = KeyHeight.Small)
+            Key("Later", { move(selected, selected + 1) }, Modifier.weight(1f), enabled = idle && selected < parts.lastIndex, description = "Play part ${selected + 1} later", height = KeyHeight.Small)
+            Key("Remove", { player?.stop(); onRemove(selected) }, Modifier.weight(1f), enabled = idle && parts.size > 1, description = "Remove part ${selected + 1}", height = KeyHeight.Small)
         }
         val notice = when {
             saving -> "Saving…"
@@ -121,17 +117,17 @@ internal fun SpliceScreen(
         if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val file = preview?.getOrNull()
-            Tile(
-                if (playing) SynthIcon.Pause else SynthIcon.Play, if (playing) "Pause" else "Preview",
+            Key(
+                if (playing) "Pause" else "Preview",
                 {
-                    val wav = file ?: return@Tile
+                    val wav = file ?: return@Key
                     val current = player ?: WavPlayer(context, wav).also { player = it }
                     if (playing) current.pause() else { current.seek(0L); current.play() }
                 },
-                Modifier.weight(1f), enabled = file != null && !saving && playbackAllowed, minHeight = 76.dp,
+                Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan, enabled = file != null && !saving && playbackAllowed,
                 description = if (playing) "Pause preview" else "Preview the splice"
             )
-            BigButton("Save as new", { player?.stop(); onSave() }, Modifier.weight(2f).heightIn(min = 76.dp), primary = true, enabled = complete && !saving)
+            Key("Save as new", { player?.stop(); onSave() }, Modifier.weight(2f), icon = SynthIcon.Save, face = Synth.yellow, enabled = complete && !saving)
         }
     }
 }
@@ -173,14 +169,4 @@ private fun Lane(index: Int, part: SplicePart, repository: ProjectRepository, se
         }
         Text("${clockMillis(part.range.startFrame, rate)} – ${clockMillis(part.range.endFrame, rate)}", color = Synth.muted, style = MaterialTheme.typography.bodySmall)
     }
-}
-
-/** Acts on the selected part. */
-@Composable
-private fun PartKey(text: String, description: String, enabled: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Box(
-        modifier.heightIn(min = 56.dp).clip(RoundedCornerShape(14.dp)).background(Synth.surface).border(1.dp, Synth.line, RoundedCornerShape(14.dp))
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = description },
-        contentAlignment = Alignment.Center
-    ) { Text(text, color = if (enabled) Synth.text else Synth.text.copy(alpha = 0.35f), fontWeight = FontWeight.SemiBold) }
 }

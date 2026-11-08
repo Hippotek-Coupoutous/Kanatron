@@ -3,6 +3,7 @@ package com.kanatron.app.ui
 import android.content.Context
 import android.os.Build
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,7 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -44,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -55,8 +57,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kanatron.app.R
 import com.kanatron.app.core.Peak
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
@@ -96,18 +100,17 @@ internal fun SketchScreen(
     onPauseResume: () -> Unit,
     onPreview: () -> Unit,
     onSave: () -> Unit,
+    onNew: () -> Unit,
     onShare: (Project) -> Unit,
-    onImport: () -> Unit,
     onCalibration: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onOpenInEdit: () -> Unit
+    onOpenSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val wav = currentWav
     val player = rememberWavPlayer(context, wav)
     val playerState = player?.state?.collectAsState()?.value
     val clickState by click.state.collectAsState()
-    var clickPanel by rememberSaveable { mutableStateOf(false) }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
     var countInBars by rememberSaveable { mutableStateOf(0) }
     var draftPrompt by rememberSaveable(draft?.id) { mutableStateOf<DraftPrompt?>(null) }
     var overdubbing by rememberSaveable { mutableStateOf(false) }
@@ -151,77 +154,68 @@ internal fun SketchScreen(
         else -> current.totalFrames
     }
     val timerRate = if (active) recording.sampleRate else current?.sampleRate ?: recording.sampleRate
-    val cue = when {
-        !active -> null
-        recording.inputSilenced -> "Android has silenced microphone input. Check microphone access and routing."
-        recording.silenceWarning -> "Sustained silence detected. Check microphone access and routing."
-        recording.level.isClipping -> "Clipping — move the microphone farther away."
-        recording.level.isLow -> "Low signal — check microphone distance."
-        else -> null
-    }
+    val error = MaterialTheme.colorScheme.error
+    // One line under the clock, most urgent first; the rest wait their turn.
+    val notice: Pair<String, Color>? = listOfNotNull(
+        (recording.error.takeIf { active || lastTakeShown } ?: startError)?.let { it to error },
+        recording.interruptionNotice?.takeIf { active || lastTakeShown }?.let { it to error },
+        playerState?.error?.let { it to error },
+        clickState.error?.let { it to error },
+        when {
+            !active -> null
+            recording.inputSilenced -> "Android has silenced microphone input. Check microphone access and routing."
+            recording.silenceWarning -> "Sustained silence detected. Check microphone access and routing."
+            recording.level.isClipping -> "Clipping — move the microphone farther away."
+            recording.level.isLow -> "Low signal — check microphone distance."
+            else -> null
+        }?.let { it to Synth.yellow },
+        "A recoverable take is in your library.".takeIf { phase == RecordingPhase.FAILED && lastTakeShown }?.let { it to Synth.muted },
+        recording.alignmentNotice?.takeIf { active || lastTakeShown }?.let { it to Synth.muted },
+        "Silent recording saved to your library.".takeIf { recording.silent && lastTakeShown }?.let { it to Synth.yellow },
+        when {
+            microphoneGranted || active -> null
+            microphoneDenied -> "Microphone access is off. Allow it in app settings to record."
+            shortcutRequested -> "Record now waits for microphone and notification permissions on first use."
+            else -> "Kanatron needs microphone access to record."
+        }?.let { it to Synth.muted },
+        "Wired headphones are recommended. Bluetooth timing is unverified.".takeIf { overdubbing && active }?.let { it to Synth.muted },
+        "Notifications are off, so pause and save from here.".takeIf { Build.VERSION.SDK_INT >= 33 && !notificationsGranted }?.let { it to Synth.muted },
+        (if (active) "${recording.inputDevice} · ${recording.sampleRate} Hz" else null)?.let { it to Synth.muted }
+    ).firstOrNull()
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Kanatron", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black,
-                    letterSpacing = 2.sp, modifier = Modifier.weight(1f).padding(end = 8.dp)
-                )
-                StatusWord(status, recordingNow, paused, saved)
-            }
+            SynthTopBar("Sketch", action = { StatusWord(status, recordingNow, paused, saved) })
             val recovered = draft
             if (recovered != null && !active) {
                 SynthPanel {
-                    Text(
-                        "Recovered unsaved take · ${draftClock(recovered)}",
-                        color = Synth.yellow,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text("Recovered unsaved take · ${draftClock(recovered)}", color = Synth.yellow, fontWeight = FontWeight.SemiBold)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextAction(
-                            "Save",
-                            {
-                                player?.stop()
-                                onSaveDraft(recovered)
-                            },
-                            Modifier.weight(1f),
-                            description = "Save recovered take",
-                            color = Synth.cyan
-                        )
-                        TextAction(
+                        Key("Save", { player?.stop(); onSaveDraft(recovered) }, Modifier.weight(1f), description = "Save recovered take", height = KeyHeight.Small)
+                        Key(
                             if (playing) "Pause" else "Play",
                             {
-                                val p = player ?: return@TextAction
-                                if (playing) {
-                                    p.pause()
-                                } else {
+                                val p = player ?: return@Key
+                                if (playing) p.pause() else {
                                     val position = playerState?.positionFrames ?: 0L
                                     if (position !in 0L until recovered.totalFrames) p.seek(0L)
                                     p.play(recovered.totalFrames)
                                 }
                             },
-                            Modifier.weight(1f),
-                            enabled = player != null,
-                            description = if (playing) "Pause recovered take" else "Play recovered take",
-                            color = Synth.cyan
+                            Modifier.weight(1f), enabled = player != null, height = KeyHeight.Small,
+                            description = if (playing) "Pause recovered take" else "Play recovered take"
                         )
-                        TextAction(
-                            "Discard",
-                            { draftPrompt = DraftPrompt.DISCARD },
-                            Modifier.weight(1f),
-                            description = "Discard recovered take",
-                            color = MaterialTheme.colorScheme.error
-                        )
+                        Key("Discard", { draftPrompt = DraftPrompt.DISCARD }, Modifier.weight(1f), description = "Discard recovered take", height = KeyHeight.Small)
                     }
                 }
             }
             SynthPanel {
-                Text(current?.name ?: "No take yet", color = Synth.muted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                Text(
+                Text(current?.name ?: "New take", color = Synth.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Readout(
                     RecordingCore.formatClock(RecordingCore.elapsedMillis(timerFrames.coerceAtLeast(0L), timerRate)),
-                    color = if (active) Synth.pink else Synth.cyan, fontSize = 56.sp, fontFamily = FontFamily.Monospace
+                    if (active) Synth.pink else Synth.cyan, 64.sp
                 )
                 if (active) {
                     LevelMeter(recording.level.peak, recording.level.isClipping, Modifier.fillMaxWidth().height(54.dp))
@@ -245,54 +239,33 @@ internal fun SketchScreen(
                         )
                     }
                 }
-                if (active) Notice("${recording.inputDevice} · ${recording.sampleRate} Hz")
-                cue?.let { Notice(it) }
-                if (overdubbing && active) Notice("Wired headphones are recommended. Bluetooth timing is unverified.")
-                if (recording.silent && lastTakeShown) Notice("Silent recording saved to your library.", Synth.yellow)
-                if (active || lastTakeShown) recording.interruptionNotice?.let { Notice(it, MaterialTheme.colorScheme.error) }
-                if (active || lastTakeShown) recording.alignmentNotice?.let { Notice(it) }
-                // startError is not tied to a take and has no other surface; never hide it.
-                val takeError = recording.error.takeIf { active || lastTakeShown }
-                (takeError ?: startError)?.let { Notice(it, MaterialTheme.colorScheme.error) }
-                playerState?.error?.let { Notice(it, MaterialTheme.colorScheme.error) }
-                clickState.error?.let { Notice(it, MaterialTheme.colorScheme.error) }
-                if (phase == RecordingPhase.FAILED && lastTakeShown) {
-                    Notice("A recoverable take is in your library.")
-                }
-                if (!microphoneGranted && !active) {
-                    Notice(if (microphoneDenied) "Microphone access is off. The library remains available; allow access to record." else "Kanatron needs microphone access to record.")
-                    if (microphoneDenied) TextAction("Open app settings", onOpenSettings, description = "Open app settings for microphone access", color = Synth.cyan)
-                    if (shortcutRequested) Notice("On first use, Record now waits for microphone and notification permissions before recording.")
-                }
-                if (Build.VERSION.SDK_INT >= 33 && !notificationsGranted) {
-                    Notice("Notifications are off. Android shows an active recording notice in Task Manager, but not in the notification drawer. Use the app controls to pause or stop.")
-                }
-                if (saved) {
-                    TextAction("Open in Edit", onOpenInEdit, modifier = Modifier.fillMaxWidth(), description = "Open saved take in Edit", color = Synth.cyan)
+                notice?.let { (text, color) -> Text(text, color = color, style = MaterialTheme.typography.bodySmall) }
+                if (microphoneDenied && !microphoneGranted && !active) {
+                    Key("App settings", onOpenSettings, Modifier.fillMaxWidth(), description = "Open app settings for microphone access", height = KeyHeight.Small)
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                RoundButton(
-                    if (previewing || (playing && !active)) SynthIcon.Pause else SynthIcon.Play,
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Key(
                     when {
                         previewing -> "Stop"
-                        paused -> "Play take so far"
                         playing && !active -> "Pause"
                         else -> "Play"
                     },
-                    Synth.cyan,
-                    onClick = {
+                    {
                         if (paused) {
                             onPreview()
-                            return@RoundButton
+                            return@Key
                         }
-                        val p = player ?: return@RoundButton
+                        val p = player ?: return@Key
                         if (playing) p.pause() else {
                             if (playerState!!.positionFrames !in 0L until current!!.totalFrames) p.seek(0L)
                             p.play(current!!.totalFrames)
                         }
                     },
-                    size = 56.dp, enabled = paused || (player != null && current != null && !active),
+                    Modifier.weight(1f),
+                    icon = if (previewing || (playing && !active)) SynthIcon.Pause else SynthIcon.Play,
+                    face = Synth.cyan, height = KeyHeight.Transport,
+                    enabled = paused || (player != null && current != null && !active),
                     description = when {
                         previewing -> "Stop"
                         paused -> "Play take so far"
@@ -306,18 +279,25 @@ internal fun SketchScreen(
                         else -> status
                     }
                 )
-                RoundButton(
-                    if (recordingNow) SynthIcon.Pause else SynthIcon.Rec, if (recordingNow) "Pause" else if (paused) "Resume" else "Record",
-                    if (recordingNow) Synth.surfaceHi else Synth.pink,
-                    onClick = {
+                Key(
+                    when {
+                        recordingNow -> "Pause"
+                        paused -> "Resume"
+                        else -> "Rec"
+                    },
+                    {
                         when {
                             active -> onPauseResume()
                             draft != null -> draftPrompt = DraftPrompt.RECORD
                             else -> startTake(null, onRecord)
                         }
                     },
+                    Modifier.weight(1f),
+                    icon = if (recordingNow) SynthIcon.Pause else SynthIcon.Rec,
+                    face = Synth.pink, height = KeyHeight.Transport,
                     // While a take is starting there is no recorder to pause yet.
-                    size = 72.dp, enabled = phase != RecordingPhase.STARTING, contentColor = if (recordingNow) Synth.text else Color.White,
+                    enabled = phase != RecordingPhase.STARTING,
+                    selected = recordingNow,
                     description = when {
                         recordingNow -> "Pause recording"
                         paused -> "Resume recording"
@@ -325,52 +305,67 @@ internal fun SketchScreen(
                     },
                     state = status
                 )
-                RoundButton(
-                    SynthIcon.Stop, "Save to Library", Synth.pink, onSave,
-                    size = 56.dp, enabled = canSave, contentColor = Color.White,
-                    description = "Save to Library", state = status
+                Key(
+                    "New",
+                    {
+                        player?.stop()
+                        if (draft != null) draftPrompt = DraftPrompt.NEW else onNew()
+                    },
+                    Modifier.weight(1f), icon = SynthIcon.New, height = KeyHeight.Transport,
+                    enabled = !active && current != null, description = "Start a new take"
+                )
+                Key(
+                    "Save", onSave, Modifier.weight(1f), icon = SynthIcon.Save, face = Synth.yellow, height = KeyHeight.Transport,
+                    enabled = canSave, description = "Save to Library", state = status
                 )
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Tile(
-                    SynthIcon.Overdub, "Overdub",
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Key(
+                    "Overdub",
                     {
-                        val backing = current ?: return@Tile
+                        val backing = current ?: return@Key
                         if (backing.draft) draftPrompt = DraftPrompt.OVERDUB else startTake(backing) { onOverdub(backing, it) }
                     },
-                    Modifier.weight(1f),
+                    Modifier.weight(1f), icon = SynthIcon.Overdub, height = KeyHeight.Transport,
                     description = "Overdub over this recording",
                     enabled = current != null && current.tracks.size == 1 && !active
                 )
-                Tile(
-                    SynthIcon.Click, "${clickState.bpm}", { if (clickState.running) click.stop() else click.start() }, Modifier.weight(1f),
+                Key(
+                    "${clickState.bpm}", { if (clickState.running) click.stop() else click.start() }, Modifier.weight(1f),
+                    icon = SynthIcon.Click, height = KeyHeight.Transport,
                     selected = clickState.running, description = "Click ${clickState.bpm} BPM", enabled = !active
                 )
-                Tile(SynthIcon.Import, "Import", onImport, Modifier.weight(1f), description = "Import audio", enabled = !active)
-                Tile(SynthIcon.Share, "Share", { current?.let(onShare) }, Modifier.weight(1f), enabled = current != null && !active && draft == null, description = "Share current take")
+                Key(
+                    "Share", { current?.let(onShare) }, Modifier.weight(1f), icon = SynthIcon.Share, height = KeyHeight.Transport,
+                    enabled = current != null && !active && draft == null, description = "Share current take"
+                )
+                Key(
+                    "More", { settingsOpen = !settingsOpen }, Modifier.weight(1f), icon = SynthIcon.More, height = KeyHeight.Transport,
+                    selected = settingsOpen && !active, enabled = !active, description = "Click and timing settings"
+                )
             }
-            Row(Modifier.fillMaxWidth()) {
-                TextAction(if (clickPanel) "Hide click settings" else "Click settings", { clickPanel = !clickPanel }, Modifier.weight(1f), enabled = !active)
-                TextAction("Advanced", onCalibration, Modifier.weight(1f), enabled = !active, description = "Advanced timing calibration")
-            }
-            if (clickPanel && !active) SynthPanel {
+            if (settingsOpen && !active) SynthPanel {
+                Text("Click", style = MaterialTheme.typography.titleMedium)
                 Stepper("${clickState.bpm}", { click.setBpm(clickState.bpm - 5) }, { click.setBpm(clickState.bpm + 5) }, "5 slower", "5 faster")
-                BigButton("Tap", {
+                Key("Tap tempo", {
                     val now = System.currentTimeMillis()
                     if (tapTimes.isNotEmpty() && now - tapTimes.last() > 2000) tapTimes.clear()
                     tapTimes += now
                     while (tapTimes.size > 4) tapTimes.removeAt(0)
                     if (tapTimes.size >= 2) click.setBpm(Math.round(60_000.0 * (tapTimes.size - 1) / (tapTimes.last() - tapTimes.first())).toInt())
                 }, Modifier.fillMaxWidth())
+                Text("Beats per bar", color = Synth.muted)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (n in listOf(2, 3, 4, 6)) BigButton("$n", { click.setBeatsPerBar(n) }, Modifier.weight(1f).semantics { selected = clickState.beatsPerBar == n }, primary = clickState.beatsPerBar == n)
+                    for (n in listOf(2, 3, 4, 6)) Key("$n", { click.setBeatsPerBar(n) }, Modifier.weight(1f), selected = clickState.beatsPerBar == n, description = "$n beats per bar", height = KeyHeight.Small)
                 }
                 Text("Count-in", color = Synth.muted)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(0, 1, 2).forEach { bars ->
-                        BigButton(if (bars == 0) "Off" else "$bars bar${if (bars == 1) "" else "s"}", { countInBars = bars }, Modifier.weight(1f).semantics { selected = countInBars == bars }, primary = countInBars == bars)
+                        val text = if (bars == 0) "Off" else "$bars bar${if (bars == 1) "" else "s"}"
+                        Key(text, { countInBars = bars }, Modifier.weight(1f), selected = countInBars == bars, description = "Count-in $text", height = KeyHeight.Small)
                     }
                 }
+                Key("Timing calibration", onCalibration, Modifier.fillMaxWidth(), description = "Overdub timing calibration", height = KeyHeight.Small)
             }
         }
         val prompt = draftPrompt
@@ -389,7 +384,11 @@ internal fun SketchScreen(
                 dismissButton = { TextButton({ draftPrompt = null }) { Text("Cancel") } }
             )
         } else if (prompt != null && promptedDraft != null) {
-            val recordingAfter = prompt == DraftPrompt.RECORD
+            val then = when (prompt) {
+                DraftPrompt.RECORD -> "Discard and record"
+                DraftPrompt.NEW -> "Discard and start new"
+                else -> "Discard"
+            }
             AlertDialog(
                 onDismissRequest = { draftPrompt = null },
                 title = { Text("Discard unsaved take?") },
@@ -404,24 +403,24 @@ internal fun SketchScreen(
                     TextButton(
                         onClick = {
                             draftPrompt = null
-                            if (recordingAfter) {
-                                startTake(null) { onDiscardAndRecord(promptedDraft, it) }
-                            } else {
-                                player?.stop()
-                                onDiscardDraft(promptedDraft)
+                            when (prompt) {
+                                DraftPrompt.RECORD -> startTake(null) { onDiscardAndRecord(promptedDraft, it) }
+                                else -> {
+                                    player?.stop()
+                                    onDiscardDraft(promptedDraft)
+                                    if (prompt == DraftPrompt.NEW) onNew()
+                                }
                             }
                         },
-                        modifier = Modifier.semantics {
-                            contentDescription = if (recordingAfter) "Discard unsaved take and record" else "Discard unsaved take"
-                        }
-                    ) { Text(if (recordingAfter) "Discard and record" else "Discard") }
+                        modifier = Modifier.semantics { contentDescription = "$then unsaved take" }
+                    ) { Text(then) }
                 }
             )
         }
     }
 }
 
-private enum class DraftPrompt { DISCARD, RECORD, OVERDUB }
+private enum class DraftPrompt { DISCARD, RECORD, NEW, OVERDUB }
 
 @Composable
 private fun StatusWord(status: String, recording: Boolean, paused: Boolean, saved: Boolean) {
@@ -432,129 +431,120 @@ private fun StatusWord(status: String, recording: Boolean, paused: Boolean, save
         else -> Synth.text
     }
     Box(
-        Modifier.clip(RoundedCornerShape(50)).background(Synth.night.copy(alpha = 0.88f)).padding(horizontal = 12.dp, vertical = 5.dp)
-    ) { Text(status, color = tint, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+        Modifier.clip(RoundedCornerShape(50)).background(Synth.night.copy(alpha = 0.88f)).padding(horizontal = 14.dp, vertical = 6.dp)
+    ) { Text(status.uppercase(), color = tint, style = MaterialTheme.typography.labelMedium) }
 }
 
-@Composable
-private fun Notice(text: String, color: Color = Synth.muted) {
-    Text(text, color = color, style = MaterialTheme.typography.bodySmall)
-}
-
-@Composable
-private fun TextAction(
-    text: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    description: String = text,
-    color: Color = Synth.night
-) {
-    Text(
-        text,
-        color = if (enabled) color else color.copy(alpha = 0.5f),
-        fontWeight = FontWeight.SemiBold,
-        modifier = modifier.heightIn(min = 48.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = description }
-            .padding(vertical = 12.dp),
-        textAlign = TextAlign.Center
-    )
-}
-
+/**
+ * Recordings newest first. In the Library a tap highlights the recording every screen works on and opens its keys;
+ * a picker passes no [selectedKeys] and takes the tap as its choice.
+ */
 @Composable
 internal fun LibraryScreen(
     projects: List<Project>,
-    onOpen: (Project) -> Unit,
-    onRename: ((Project, String) -> Unit)?,
-    onDelete: ((Project) -> Unit)?,
+    onTap: (Project) -> Unit,
     selectedId: String? = null,
-    onShare: ((Project) -> Unit)? = null
+    header: (@Composable () -> Unit)? = null,
+    selectedKeys: (@Composable (Project) -> Unit)? = null
 ) {
-    var renameId by rememberSaveable { mutableStateOf<String?>(null) }
-    var deleteTarget by remember { mutableStateOf<Project?>(null) }
-    var renameName by rememberSaveable { mutableStateOf("") }
-    Box(Modifier.fillMaxSize()) {
-        Column(
-            Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Library", color = Synth.night, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                if (onShare != null) {
-                    val chosen = projects.firstOrNull { it.id == selectedId }
-                    IconSquare(SynthIcon.Share, chosen?.let { "Share ${it.name}" } ?: "Choose a recording to share", { chosen?.let(onShare) }, enabled = chosen != null)
-                }
+    Column(
+        Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        header?.invoke()
+        if (projects.isEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Image(painterResource(R.drawable.kanatron_logo), null, Modifier.height(180.dp))
+                Text("Your recordings live here", color = Synth.night, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
             }
-            if (projects.isEmpty()) {
-                Text("Your recordings live here", color = Synth.night, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp))
-            } else projects.sortedByDescending { it.createdAtEpochMillis }.forEach { project ->
-                LibraryRow(
-                    project,
-                    selected = project.id == selectedId,
-                    onOpen = { onOpen(project) },
-                    onRename = onRename?.let { { renameName = project.name; renameId = project.id } },
-                    onDelete = onDelete?.let { { deleteTarget = project } }
-                )
+        } else projects.sortedByDescending { it.createdAtEpochMillis }.forEach { project ->
+            val selected = project.id == selectedId
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (selected) Synth.surfaceHi else Synth.surface)
+                    .border(if (selected) 2.dp else 1.dp, if (selected) Synth.cyan else Synth.line, RoundedCornerShape(16.dp))
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(role = Role.Button) { onTap(project) }.padding(horizontal = 16.dp, vertical = 10.dp)
+                        .clearAndSetSemantics {
+                            contentDescription = "${project.name}, ${duration(project)}"
+                            this.selected = selected
+                        },
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(project.name, color = if (selected) Synth.cyan else Synth.text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (project.silent) "${duration(project)} · silent" else duration(project), color = Synth.muted, fontFamily = FontFamily.Monospace)
+                }
+                if (selected && selectedKeys != null) Box(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) { selectedKeys(project) }
             }
         }
-    }
-    val rename = projects.firstOrNull { it.id == renameId }
-    if (rename != null) {
-        AlertDialog(
-            onDismissRequest = { renameId = null },
-            title = { Text("Rename recording") },
-            text = { OutlinedTextField(renameName, { renameName = it }, label = { Text("Name") }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { if (renameName.isNotBlank()) onRename?.invoke(rename, renameName); renameId = null }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { renameId = null }) { Text("Cancel") } }
-        )
-    }
-    val delete = deleteTarget
-    if (delete != null) {
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("Delete recording?") },
-            text = { Text("${delete.name} will be removed. Audio still used by another recording is kept.") },
-            confirmButton = { TextButton(onClick = { deleteTarget = null; onDelete?.invoke(delete) }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } }
-        )
     }
 }
 
+/** The Library's own header: the in-app logo, the wordmark and Import. */
 @Composable
-private fun LibraryRow(project: Project, selected: Boolean, onOpen: () -> Unit, onRename: (() -> Unit)?, onDelete: (() -> Unit)?) {
+internal fun LibraryHeader(onImport: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Image(painterResource(R.drawable.kanatron_logo), null, Modifier.height(64.dp))
+        Text("KANATRON", style = MaterialTheme.typography.headlineMedium, color = Synth.night, maxLines = 1, modifier = Modifier.weight(1f))
+        Key("Import", onImport, icon = SynthIcon.Import, height = KeyHeight.Small, description = "Import audio")
+    }
+}
+
+/** Play, Edit, Share and the rest for the highlighted recording. */
+@Composable
+internal fun LibraryKeys(
+    project: Project,
+    wav: File?,
+    onEdit: () -> Unit,
+    onShare: () -> Unit,
+    onRename: (String) -> Unit,
+    onDelete: () -> Unit
+) {
+    val context = LocalContext.current
+    val player = rememberWavPlayer(context, wav)
+    val playing = player?.state?.collectAsState()?.value?.isPlaying == true
     var menuOpen by remember { mutableStateOf(false) }
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (selected) Synth.surfaceHi else Synth.surface)
-            .border(if (selected) 2.dp else 1.dp, if (selected) Synth.cyan else Synth.line, RoundedCornerShape(16.dp)),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(
-            Modifier.weight(1f).heightIn(min = 68.dp).clickable(onClick = onOpen).padding(horizontal = 16.dp, vertical = 10.dp)
-                .clearAndSetSemantics {
-                    contentDescription = "${project.name}, ${duration(project)}"
-                    this.selected = selected
-                },
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(project.name, color = Synth.text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            Text(if (project.silent) "${duration(project)} · silent" else duration(project), color = Synth.muted, fontFamily = FontFamily.Monospace)
-        }
-        if (onRename != null && onDelete != null) Box {
-            Box(
-                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).clickable(role = Role.Button, onClick = { menuOpen = true })
-                    .semantics { contentDescription = "More options for ${project.name}" },
-                contentAlignment = Alignment.Center
-            ) { Text("⋮", color = Synth.text, fontSize = 26.sp) }
+    var renaming by rememberSaveable(project.id) { mutableStateOf<String?>(null) }
+    var deleting by remember(project.id) { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Key(
+            if (playing) "Pause" else "Play",
+            {
+                val p = player ?: return@Key
+                if (playing) p.pause() else {
+                    if (p.state.value.positionFrames !in 0L until project.totalFrames) p.seek(0L)
+                    p.play(project.totalFrames)
+                }
+            },
+            Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan, height = KeyHeight.Small,
+            enabled = player != null, description = if (playing) "Pause ${project.name}" else "Play ${project.name}"
+        )
+        Key("Edit", { player?.stop(); onEdit() }, Modifier.weight(1f), icon = SynthIcon.Trim, height = KeyHeight.Small, description = "Edit ${project.name}")
+        Key("Share", { player?.stop(); onShare() }, Modifier.weight(1f), icon = SynthIcon.Share, height = KeyHeight.Small, description = "Share ${project.name}")
+        Box {
+            Key(null, { player?.stop(); menuOpen = true }, Modifier.width(52.dp), icon = SynthIcon.More, height = KeyHeight.Small, description = "More options for ${project.name}")
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(text = { Text("Rename") }, onClick = { menuOpen = false; onRename() })
-                DropdownMenuItem(text = { Text("Delete") }, onClick = { menuOpen = false; onDelete() })
+                DropdownMenuItem(text = { Text("Rename") }, onClick = { menuOpen = false; renaming = project.name })
+                DropdownMenuItem(text = { Text("Delete") }, onClick = { menuOpen = false; deleting = true })
             }
         }
     }
+    renaming?.let { name ->
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Rename recording") },
+            text = { OutlinedTextField(name, { renaming = it }, label = { Text("Name") }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { if (name.isNotBlank()) onRename(name); renaming = null }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } }
+        )
+    }
+    if (deleting) AlertDialog(
+        onDismissRequest = { deleting = false },
+        title = { Text("Delete recording?") },
+        text = { Text("${project.name} will be removed. Audio still used by another recording is kept.") },
+        confirmButton = { TextButton(onClick = { deleting = false; player?.stop(); onDelete() }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { deleting = false }) { Text("Cancel") } }
+    )
 }
 
 @Composable

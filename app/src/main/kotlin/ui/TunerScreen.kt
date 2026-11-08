@@ -29,7 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,8 +46,7 @@ fun TunerScreen(
     microphoneBlockedReason: String?,
     lifecycle: Lifecycle,
     onRequestMicrophone: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onBack: () -> Unit
+    onOpenSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val session = androidx.compose.runtime.remember(context) {
@@ -106,7 +104,7 @@ fun TunerScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        SynthTopBar("Tuner", onBack, backLabel = "Library")
+        SynthTopBar("Tuner")
 
         SynthPanel(Modifier.fillMaxWidth()) {
             Text(
@@ -115,9 +113,9 @@ fun TunerScreen(
                     contentDescription = reading?.let { if (audio.holding) "Held note ${it.note}" else "Detected note ${it.note}" } ?: "No stable note detected"
                 },
                 color = Synth.cyan,
-                fontSize = 68.sp,
-                lineHeight = 76.sp,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.displayLarge,
+                fontSize = 96.sp,
+                lineHeight = 100.sp,
                 textAlign = TextAlign.Center
             )
             Text(
@@ -161,10 +159,10 @@ fun TunerScreen(
         when {
             microphoneBusy -> Unit
             !microphoneGranted -> {
-                if (microphoneDenied) BigButton("Open app settings", onOpenSettings, Modifier.fillMaxWidth())
-                BigButton("Allow microphone", onRequestMicrophone, Modifier.fillMaxWidth(), primary = true)
+                if (microphoneDenied) Key("App settings", onOpenSettings, Modifier.fillMaxWidth(), description = "Open app settings")
+                Key("Allow microphone", onRequestMicrophone, Modifier.fillMaxWidth(), face = Synth.yellow)
             }
-            audio.error != null -> BigButton("Try again", { session.start() }, Modifier.fillMaxWidth(), primary = true)
+            audio.error != null -> Key("Try again", { session.start() }, Modifier.fillMaxWidth(), face = Synth.yellow)
         }
     }
 }

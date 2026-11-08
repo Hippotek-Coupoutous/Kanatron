@@ -4,7 +4,6 @@ import android.content.res.Configuration
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -58,12 +56,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.kanatron.app.core.Cuts
 import com.kanatron.app.core.Peak
 import com.kanatron.app.core.PeakExtractor
@@ -96,9 +91,7 @@ internal fun EditScreen(
     onCut: (List<TrimRange>) -> Unit,
     onUndo: () -> Unit,
     onSave: (asNew: Boolean) -> Unit,
-    onImport: () -> Unit,
-    onSplice: () -> Unit,
-    onBack: () -> Unit
+    onSplice: () -> Unit
 ) {
     val context = LocalContext.current
     val rate = project.sampleRate
@@ -158,12 +151,10 @@ internal fun EditScreen(
         else -> null
     }
     val waveform: @Composable ColumnScope.() -> Unit = {
-        SynthTopBar("Edit", onBack, backLabel = "Library") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // A splice joins saved audio, so pending cuts are saved first.
-                IconSquare(SynthIcon.Splice, if (canUndo) "Save your cuts before splicing" else "Splice with another recording", { player?.stop(); onSplice() }, enabled = !saving && !canUndo)
-                IconSquare(SynthIcon.Import, "Import a recording to edit", { player?.stop(); onImport() }, enabled = !saving)
-            }
+        SynthTopBar("Edit") {
+            // A splice joins saved audio, so pending cuts are saved first.
+            Key("Clip", { player?.stop(); onSplice() }, icon = SynthIcon.Clip, height = KeyHeight.Small, enabled = !saving && !canUndo,
+                description = if (canUndo) "Save your cuts before clipping" else "Clip with other recordings")
         }
         Text(
             buildString {
@@ -180,8 +171,8 @@ internal fun EditScreen(
                     viewEnd = viewStart + span
                 }
                 val anchor = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
-                SmallKey("−", "Zoom out") { zoom(4.0, anchor) }
-                SmallKey("+", "Zoom in") { zoom(0.25, anchor) }
+                Key("−", { zoom(4.0, anchor) }, Modifier.width(48.dp), description = "Zoom out", height = KeyHeight.Small)
+                Key("+", { zoom(0.25, anchor) }, Modifier.width(48.dp), description = "Zoom in", height = KeyHeight.Small)
             }
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 Waveform(
@@ -215,31 +206,31 @@ internal fun EditScreen(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (edge in TrimEdge.entries) {
                 val frame = if (edge == TrimEdge.Start) selectionStart else selectionEnd
-                EdgeChip(edge, clockMillis(frame, rate), edge == activeEdge, Modifier.weight(1f)) { activeEdge = edge }
+                Key(edge.name, { activeEdge = edge }, Modifier.weight(1f), selected = edge == activeEdge, role = Role.Tab, sublabel = clockMillis(frame, rate), description = "${edge.name} ${clockMillis(frame, rate)}")
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for ((label, unit, frames) in nudges(rate)) {
-                NudgeKey(label, unit, "Move edge $label $unit", Modifier.weight(1f)) {
+                Key(label, {
                     val current = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
                     setEdge(activeEdge, current + frames)
-                }
+                }, Modifier.weight(1f), sublabel = unit, description = "Move edge $label $unit", height = KeyHeight.Small)
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val idle = !saving && file != null
-            Tile(
-                if (playing) SynthIcon.Pause else SynthIcon.Play, if (playing) "Pause" else "Preview", ::preview, Modifier.weight(1f),
-                enabled = idle && playbackAllowed, description = if (playing) "Pause preview" else "Preview selection", minHeight = ACTION_HEIGHT
+            Key(
+                if (playing) "Pause" else "Play", ::preview, Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan,
+                height = KeyHeight.Transport, enabled = idle && playbackAllowed, description = if (playing) "Pause preview" else "Preview selection"
             )
-            Tile(SynthIcon.Trim, "Keep", { cut(Cuts.keep(pieces, selection)) }, Modifier.weight(1f), enabled = idle && !wholeSelected, description = "Keep only the selection", minHeight = ACTION_HEIGHT)
-            Tile(SynthIcon.Delete, "Delete", { cut(Cuts.delete(pieces, selection)) }, Modifier.weight(1f), enabled = idle && !wholeSelected, description = "Delete the selection", minHeight = ACTION_HEIGHT)
-            Tile(SynthIcon.Undo, "Undo", { player?.stop(); onUndo() }, Modifier.weight(1f), enabled = !saving && canUndo, description = "Undo last cut", minHeight = ACTION_HEIGHT)
+            Key("Keep", { cut(Cuts.keep(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Trim, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Keep only the selection")
+            Key("Delete", { cut(Cuts.delete(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Delete, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Delete the selection")
+            Key("Undo", { player?.stop(); onUndo() }, Modifier.weight(1f), icon = SynthIcon.Undo, height = KeyHeight.Transport, enabled = !saving && canUndo, description = "Undo last cut")
         }
-        BigButton(
+        Key(
             if (project.draft) "Save to Library" else "Save",
             { if (project.draft) onSave(false) else askSave = true },
-            Modifier.fillMaxWidth(), primary = true, enabled = !saving && (project.draft || canUndo)
+            Modifier.fillMaxWidth(), icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving && (project.draft || canUndo)
         )
     }
 
@@ -421,43 +412,6 @@ private fun DrawScope.drawPeaks(peaks: List<Peak>, from: Long, to: Long, viewSta
     }
 }
 
-@Composable
-private fun EdgeChip(edge: TrimEdge, time: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Column(
-        modifier.heightIn(min = 56.dp).clip(RoundedCornerShape(14.dp))
-            .background(if (active) Synth.violet else Synth.surface)
-            .border(1.dp, if (active) Synth.violet else Synth.line, RoundedCornerShape(14.dp))
-            .clickable(role = Role.Tab, onClick = onClick)
-            .semantics { selected = active; contentDescription = "${edge.name} $time" }
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        val tint = if (active) Synth.night else Synth.muted
-        Text(edge.name, color = tint, style = MaterialTheme.typography.labelMedium)
-        Text(time, color = if (active) Synth.night else Synth.text, fontFamily = FontFamily.Monospace, fontSize = 16.sp)
-    }
-}
-
-@Composable
-internal fun NudgeKey(label: String, unit: String, description: String, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
-    Column(
-        modifier.heightIn(min = 52.dp).clip(RoundedCornerShape(12.dp)).background(Synth.surface).border(1.dp, Synth.line, RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = description },
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
-    ) {
-        Text(label, color = if (enabled) Synth.text else Synth.text.copy(alpha = 0.35f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, textAlign = TextAlign.Center)
-        Text(unit, color = Synth.muted, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun SmallKey(label: String, description: String, onClick: () -> Unit) {
-    Box(
-        Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(Synth.surfaceHi.copy(alpha = 0.85f))
-            .clickable(role = Role.Button, onClick = onClick).semantics { contentDescription = description },
-        contentAlignment = Alignment.Center
-    ) { Text(label, color = Synth.text, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
-}
-
 private fun nudges(rate: Int) = listOf(
     Triple("−100", "ms", -rate / 10L), Triple("−10", "ms", -rate / 100L), Triple("−1", "frame", -1L),
     Triple("+1", "frame", 1L), Triple("+10", "ms", rate / 100L), Triple("+100", "ms", rate / 10L)
@@ -497,7 +451,6 @@ internal fun producePlaybackRender(
     return render
 }
 
-private val ACTION_HEIGHT = 76.dp
 /** The tightest zoom still shows a few dozen samples per handle drag. */
 private const val MIN_VIEW_FRAMES = 64L
 /** The loupe spans ±1/200 s (5 ms) around the dragged handle. */

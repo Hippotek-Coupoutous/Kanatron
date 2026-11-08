@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
@@ -77,10 +76,11 @@ internal fun OverdubScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 for (millis in NUDGES) {
                     val label = "${if (millis > 0) "+" else "−"}${abs(millis)}"
-                    NudgeKey(
-                        label, "ms", "Take ${abs(millis)} ms ${if (millis > 0) "later" else "earlier"}", Modifier.weight(1f),
+                    Key(
+                        "$label ms", { onNudge(millis) }, Modifier.weight(1f), height = KeyHeight.Small,
+                        description = "Take ${abs(millis)} ms ${if (millis > 0) "later" else "earlier"}",
                         enabled = !saving && mix.nudged(millis) != null
-                    ) { onNudge(millis) }
+                    )
                 }
             }
         }
@@ -116,18 +116,18 @@ internal fun OverdubScreen(
         if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val file = preview?.getOrNull()
-            Tile(
-                if (playing) SynthIcon.Pause else SynthIcon.Play, if (playing) "Pause" else "Preview",
+            Key(
+                if (playing) "Pause" else "Preview",
                 {
-                    val wav = file ?: return@Tile
+                    val wav = file ?: return@Key
                     val current = player ?: WavPlayer(context, wav).also { player = it }
                     // A second of backing before the take is enough to judge its timing.
                     if (playing) current.pause() else { current.seek((mix.takePositionFrames - rate).coerceAtLeast(0L)); current.play() }
                 },
-                Modifier.weight(1f), enabled = file != null && !saving && playbackAllowed, minHeight = 76.dp,
+                Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan, enabled = file != null && !saving && playbackAllowed,
                 description = if (playing) "Pause preview" else "Preview from just before the take"
             )
-            BigButton("Save as new", { player?.stop(); onSave() }, Modifier.weight(2f).heightIn(min = 76.dp), primary = true, enabled = !saving)
+            Key("Save as new", { player?.stop(); onSave() }, Modifier.weight(2f), icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving)
         }
     }
 }

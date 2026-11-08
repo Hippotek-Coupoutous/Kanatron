@@ -78,6 +78,7 @@ import com.kanatron.app.data.ProjectRepository
 import com.kanatron.app.data.WavExporter
 import com.kanatron.app.playback.WavPlayer
 import java.io.File
+import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -244,7 +245,8 @@ private fun TrimEditorLoaded(
     val undoCount = project.undoHistory.size
     var activeEdge by remember(initial.id) { mutableStateOf(TrimEdge.Start) }
     var coarseStepSelected by remember(initial.id) { mutableStateOf(false) }
-    var holdingZoom by remember(initial.id) { mutableStateOf(false) }
+    // Non-null during a detail drag; the window it maps against must stay put.
+    var detailAnchor by remember(initial.id) { mutableStateOf<Long?>(null) }
     var showMore by remember(initial.id) { mutableStateOf(false) }
     var editingEdge by remember(initial.id) { mutableStateOf<TrimEdge?>(null) }
     var exactTime by remember(initial.id) { mutableStateOf("") }
@@ -293,13 +295,14 @@ private fun TrimEditorLoaded(
     val savePending = savesInFlight > 0
 
     fun edit(persist: Boolean = true, command: TrimActions.() -> TrimRange?) {
-        val clip = targetClip
+        // Pointer events can arrive twice per frame; read the clip from live state, not the composition snapshot.
+        val clip = project.trimTarget(trackId, clipId)?.clip ?: return
         val actions = TrimActions(clip.trim, clip.source.totalFrames, clip.source.sampleRate)
         val next = actions.command() ?: return
         if (next == clip.trim) return
-        val edited = ProjectArrangementActions.setClipTrim(project, targetTrack.id, clip.id, next)
-        // One gesture is one undo step: later unsaved drag updates keep the snapshot taken at its start.
-        val dragInProgress = !persist && project.undoHistory.size > persistedProject.undoHistory.size
+        val edited = ProjectArrangementActions.setClipTrim(project, trackId, clipId, next)
+        // One gesture is one undo step: later unsaved drag updates keep the snapshot taken at its first move.
+        val dragInProgress = !persist && project != persistedProject
         project = if (dragInProgress) edited.copy(undoHistory = project.undoHistory) else edited
         editFailure = null
         if (persist) persistEditState()
@@ -371,18 +374,18 @@ private fun TrimEditorLoaded(
     val latestAnnounce = rememberUpdatedState<(TrimEdge) -> Unit>(::announce)
     val latestPersistEdits = rememberUpdatedState<() -> Unit>(::persistEditState)
     val latestActiveEdge = rememberUpdatedState(activeEdge)
-    val latestHoldingZoom = rememberUpdatedState<(Boolean) -> Unit> { holdingZoom = it }
+    val latestDetailAnchor = rememberUpdatedState<(Long?) -> Unit> { detailAnchor = it }
     val latestDetailStart = rememberUpdatedState(
         run {
-            val span = (total / if (holdingZoom) 32L else 8L).coerceAtLeast(1L).coerceAtMost(total)
-            val edgeFrame = if (activeEdge == TrimEdge.Start) trim.startFrame else trim.endFrame
+            val span = (total / if (detailAnchor != null) 32L else 8L).coerceAtLeast(1L).coerceAtMost(total)
+            val edgeFrame = detailAnchor ?: if (activeEdge == TrimEdge.Start) trim.startFrame else trim.endFrame
             (edgeFrame - span / 2L).coerceIn(0L, (total - span).coerceAtLeast(0L))
         }
     )
     val latestDetailEnd = rememberUpdatedState(
         run {
-            val span = (total / if (holdingZoom) 32L else 8L).coerceAtLeast(1L).coerceAtMost(total)
-            val edgeFrame = if (activeEdge == TrimEdge.Start) trim.startFrame else trim.endFrame
+            val span = (total / if (detailAnchor != null) 32L else 8L).coerceAtLeast(1L).coerceAtMost(total)
+            val edgeFrame = detailAnchor ?: if (activeEdge == TrimEdge.Start) trim.startFrame else trim.endFrame
             (edgeFrame - span / 2L).coerceIn(0L, (total - span).coerceAtLeast(0L)) + span
         }
     )
@@ -452,7 +455,12 @@ private fun TrimEditorLoaded(
                     .pointerInput(project.id) {
                         var dragging = false
                         detectDragGesturesAfterLongPress(
-                            onDragStart = { dragging = true; latestHoldingZoom.value(true) },
+                            onDragStart = {
+                                dragging = true
+                                latestDetailAnchor.value(
+                                    if (latestActiveEdge.value == TrimEdge.Start) latestTrim.value.startFrame else latestTrim.value.endFrame
+                                )
+                            },
                             onDrag = { change, _ ->
                                 if (dragging) {
                                     val frame = latestDetailStart.value +
@@ -467,9 +475,9 @@ private fun TrimEditorLoaded(
                                     latestPersistEdits.value()
                                 }
                                 dragging = false
-                                latestHoldingZoom.value(false)
+                                latestDetailAnchor.value(null)
                             },
-                            onDragCancel = { if (dragging) latestPersistEdits.value(); dragging = false; latestHoldingZoom.value(false) }
+                            onDragCancel = { if (dragging) latestPersistEdits.value(); dragging = false; latestDetailAnchor.value(null) }
                         )
                     }
             ) {
@@ -559,6 +567,17 @@ private fun TrimEditorLoaded(
     }
 
     editingEdge?.let { edge ->
+        val millis = parseExactTimeMillis(exactTime)
+        fun commit() {
+            // Reparse: composition-time state can lag the last keystroke.
+            val parsed = parseExactTimeMillis(exactTime) ?: return
+            val frame = if (edge == TrimEdge.Start) trim.startFrame else trim.endFrame
+            editingEdge = null
+            // A millisecond cannot name every frame; an unchanged instant must not move it.
+            if (parsed.compareTo(BigDecimal.valueOf(RecordingCore.elapsedMillis(frame, sampleRate))) != 0) {
+                edit { setRangeMs(parsed, parsed, edge) }
+            }
+        }
         AlertDialog(
             onDismissRequest = { editingEdge = null },
             title = { Text("Set ${edge.name.lowercase()} time") },
@@ -567,24 +586,13 @@ private fun TrimEditorLoaded(
                     value = exactTime,
                     onValueChange = { exactTime = it },
                     label = { Text("HH:MM:SS.mmm") },
+                    isError = millis == null,
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = {
-                        parseExactTimeMillis(exactTime)?.let { millis ->
-                            edit { setRangeMs(millis, millis, edge) }
-                            editingEdge = null
-                        }
-                    })
+                    keyboardActions = KeyboardActions(onDone = { commit() })
                 )
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    parseExactTimeMillis(exactTime)?.let { millis ->
-                        edit { setRangeMs(millis, millis, edge) }
-                        editingEdge = null
-                    }
-                }) { Text("Set time") }
-            },
+            confirmButton = { TextButton(enabled = millis != null, onClick = { commit() }) { Text("Set time") } },
             dismissButton = { TextButton(onClick = { editingEdge = null }) { Text("Cancel") } }
         )
     }

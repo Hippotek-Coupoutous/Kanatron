@@ -41,7 +41,8 @@ object MultitrackRenderer {
         cancelled: AtomicBoolean = AtomicBoolean(false)
     ): Boolean {
         val frames = project.totalFrames
-        val channels = project.tracks.flatMap(ProjectTrack::clips).maxOfOrNull { it.source.channels } ?: 1
+        val clips = project.tracks.single().clips
+        val channels = clips.maxOf { it.source.channels }
         require(channels == project.channels) { "Project channel count does not match its sources." }
         val dataBytes = Math.multiplyExact(Math.multiplyExact(frames, channels.toLong()), 2L)
         if (dataBytes > WavFormat.MAX_WAV_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
@@ -49,18 +50,13 @@ object MultitrackRenderer {
         val target = destination.absoluteFile
         val parent = target.parentFile ?: throw IOException("No parent directory for the mix output.")
         if (!parent.isDirectory && !parent.mkdirs()) throw IOException("Could not create the mix output folder.")
-        val inputs = project.tracks.flatMap(ProjectTrack::clips).map { clip -> Triple(clip, clip.source, resolveSource(clip.source)) }
+        val inputs = clips.map { clip -> Triple(clip, clip.source, resolveSource(clip.source)) }
         val targetCanonical = target.canonicalFile
         require(inputs.none { (_, _, file) -> file.canonicalFile == targetCanonical }) { "Mix output must not overwrite an original source." }
         val readers = mutableListOf<ClipReader>()
         try {
             for ((clip, source, file) in inputs) readers += ClipReader(clip.id, source, file, project.sampleRate, frames)
             val byClipId = readers.associateBy { it.clipId }
-            val soloExists = project.tracks.any { it.solo && !it.muted }
-            val active = project.tracks.flatMap { track ->
-                if (track.muted || (soloExists && !track.solo)) emptyList()
-                else track.clips.filterNot(ProjectClip::muted).map { track to it }
-            }
 
             val temp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, parent)
             var committed = false
@@ -74,9 +70,7 @@ object MultitrackRenderer {
                         if (cancelled.get()) throw IOException("Render cancelled.")
                         val count = minOf(BLOCK_FRAMES.toLong(), frames - start).toInt()
                         val sums = DoubleArray(count * channels)
-                        for ((track, clip) in active) {
-                            byClipId.getValue(clip.id).addBlock(clip, track.gainPermille, start, count, channels, sums)
-                        }
+                        for (clip in clips) byClipId.getValue(clip.id).addBlock(clip, start, count, channels, sums)
                         var byteOffset = 0
                         for (sum in sums) {
                             val rounded = Math.round(sum)
@@ -149,7 +143,6 @@ object MultitrackRenderer {
 
         fun addBlock(
             clip: ProjectClip,
-            trackGainPermille: Int,
             blockStart: Long,
             blockCount: Int,
             outputChannels: Int,
@@ -173,7 +166,6 @@ object MultitrackRenderer {
             random.seek(format.dataOffset + firstFrame * format.blockAlign)
             random.readFully(bytes)
 
-            val combinedGain = clip.gainPermille.toDouble() * trackGainPermille.toDouble() / 1_000_000.0
             val fade = minOf(fadeFrames(targetRate).toLong(), clipFrames / 2)
             // An edge cut from its source, or met by other audio inside the timeline, would click.
             val fadeIn = clip.trim.startFrame > 0L || clip.positionFrames > 0L
@@ -193,7 +185,7 @@ object MultitrackRenderer {
                     val lower = sample(bytes, firstFrame, lowerFrame, sourceChannel)
                     val upper = sample(bytes, firstFrame, upperFrame, sourceChannel)
                     val interpolated = lower + (upper - lower) * fraction
-                    sums[outputIndex + channel] += interpolated * combinedGain * envelope
+                    sums[outputIndex + channel] += interpolated * envelope
                 }
                 position = advance(position, 1, ratio)
             }

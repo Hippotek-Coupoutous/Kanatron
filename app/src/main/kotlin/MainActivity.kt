@@ -461,14 +461,13 @@ private fun KanatronApp(
                     // Edit rebuilds the recording from its one source, so anything else it would silently drop.
                     val editable = project?.tracks?.singleOrNull()?.let { track ->
                         val clip = track.clips.singleOrNull()
-                        clip != null && clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.gainPermille == 1_000 && !clip.muted &&
-                            track.gainPermille == 1_000 && !track.muted && clip.source.sampleRate == project.sampleRate
+                        clip != null && clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.source.sampleRate == project.sampleRate
                     } == true
                     when {
                         subjectId == null -> EditMessage("Record or import a recording to edit it here.") { appViewModel.leave(Route.LIBRARY) }
                         project == null -> EditMessage(appState.selectionError ?: "Loading recording…") { appViewModel.leave(Route.LIBRARY) }
                         sourcesMissing == true -> MissingAudioScreen(project.name) { appViewModel.leave(Route.LIBRARY) }
-                        !editable -> EditMessage("${project.name} was made with an older multi-track version and cannot be edited.") { appViewModel.leave(Route.LIBRARY) }
+                        !editable -> EditMessage("${project.name} was placed or speed-corrected by an older version and cannot be edited here.") { appViewModel.leave(Route.LIBRARY) }
                         else -> {
                             val session = appState.edit?.takeIf { it.projectId == project.id }
                             EditScreen(

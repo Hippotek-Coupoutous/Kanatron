@@ -14,7 +14,7 @@ class MultitrackRendererMixTest {
     val tempFolder = TemporaryFolder()
 
     @Test
-    fun `mix places trims gains mono and mutes`() {
+    fun `mix places trims and mono sources and clamps the sum`() {
         val root = tempFolder.root
         writeWav(
             File(root, "a.wav"), channels = 2, sampleRate = 48_000, samples = listOf(
@@ -28,8 +28,6 @@ class MultitrackRendererMixTest {
         )
         writeWav(File(root, "b.wav"), channels = 1, sampleRate = 48_000, samples = listOf(999, 3, -2_000, 300))
         writeWav(File(root, "c.wav"), channels = 1, sampleRate = 48_000, samples = listOf(1_000))
-        writeWav(File(root, "d.wav"), channels = 1, sampleRate = 48_000, samples = listOf(32_767))
-        writeWav(File(root, "e.wav"), channels = 1, sampleRate = 48_000, samples = listOf(-1_000))
 
         val project = Project(
             id = "p",
@@ -39,31 +37,11 @@ class MultitrackRendererMixTest {
             createdAtEpochMillis = 0L,
             tracks = listOf(
                 ProjectTrack(
-                    "a", "A", listOf(
-                        ProjectClip("c1", ProjectAudioSource("a.wav", 48_000, 2, 6), 0L, TrimRange(0, 6))
+                    "track-main", "Mix", listOf(
+                        ProjectClip("c1", ProjectAudioSource("a.wav", 48_000, 2, 6), 0L, TrimRange(0, 6)),
+                        ProjectClip("c2", ProjectAudioSource("b.wav", 48_000, 1, 4), 2L, TrimRange(1, 4)),
+                        ProjectClip("c3", ProjectAudioSource("c.wav", 48_000, 1, 1), 0L, TrimRange(0, 1))
                     )
-                ),
-                ProjectTrack(
-                    "b", "B", listOf(
-                        ProjectClip(
-                            "c2", ProjectAudioSource("b.wav", 48_000, 1, 4), 2L, TrimRange(1, 4),
-                            gainPermille = 250
-                        )
-                    ), gainPermille = 2_000
-                ),
-                ProjectTrack(
-                    "c", "C", listOf(
-                        ProjectClip("c3", ProjectAudioSource("c.wav", 48_000, 1, 1), 0L, TrimRange(0, 1)),
-                        ProjectClip(
-                            "c4", ProjectAudioSource("d.wav", 48_000, 1, 1), 0L, TrimRange(0, 1),
-                            muted = true
-                        )
-                    )
-                ),
-                ProjectTrack(
-                    "d", "D", listOf(
-                        ProjectClip("c5", ProjectAudioSource("e.wav", 48_000, 1, 1), 5L, TrimRange(0, 1))
-                    ), muted = true
                 )
             )
         )
@@ -79,21 +57,19 @@ class MultitrackRendererMixTest {
         val format = destination.inputStream().use(WavFormat::read)
         assertEquals(2, format.channels)
         assertEquals(48_000, format.sampleRate)
-        assertEquals(24L, format.dataSize)
         assertEquals(6L, format.frameCount)
 
-        val actual = IntArray(12) { pcm16At(bytes, 44 + it * 2) }
+        // b's 3 frames sit inside the timeline and are cut from their source, so each end ramps over 1 frame (x 1/2).
         assertEquals(
             listOf(
                 32_767, -31_000, // 32000 + 1000 clamps; -32000 + 1000
                 32_000, -32_000,
-                // b is cut at its start; its 3 frames hold a 1-frame fade-in: 3 x 0.5 x 1/2 = 0.75.
-                32_001, 1,
-                -32_768, 31_000, // -32000 - 1000 clamps; 32000 - 1000
-                175, -25, // b ends inside the timeline, so its last frame fades too: ±100 + 300 x 0.5 x 1/2
+                32_002, 2, // 3 x 1/2 = 1.5 rounds half up
+                -32_768, 30_000, // -32000 - 2000 clamps; 32000 - 2000
+                250, 50, // ±100 + 300 x 1/2
                 0, 0
             ),
-            actual.toList()
+            pcm(destination)
         )
 
         val source = File(root, "a.wav")

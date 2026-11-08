@@ -35,8 +35,7 @@ object Cuts {
         }
         return base.copy(
             channels = clips.maxOf { it.source.channels },
-            tracks = listOf(ProjectTrack("track-main", base.name, clips)),
-            undoHistory = emptyList()
+            tracks = listOf(ProjectTrack("track-main", base.name, clips))
         )
     }
 

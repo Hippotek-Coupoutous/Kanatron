@@ -3,7 +3,6 @@ package com.kanatron.app.data
 import com.kanatron.app.core.PROJECT_ID
 import com.kanatron.app.core.PROJECT_ID_PATTERN
 import com.kanatron.app.core.Project
-import com.kanatron.app.core.ProjectArrangementSnapshot
 import com.kanatron.app.core.ProjectTrack
 import com.kanatron.app.core.RecordingCore
 import com.kanatron.app.core.SUPPORTED_SAMPLE_RATES
@@ -45,9 +44,8 @@ internal class TakeRecovery(
         for (file in bases.values) {
             if (excludeProjectId != null && file.name == "$excludeProjectId.json") continue
             try {
-                val project = ProjectStore(file).load()
-                val liveTracks = project.tracks + project.undoHistory.flatMap(ProjectArrangementSnapshot::tracks)
-                liveTracks.flatMap(ProjectTrack::clips).mapTo(sources) { it.source.wav }
+                val project = ProjectStore(file).loadSupported() ?: continue
+                project.tracks.flatMap(ProjectTrack::clips).mapTo(sources) { it.source.wav }
             } catch (_: Exception) {
                 fullyReadable = false
             }

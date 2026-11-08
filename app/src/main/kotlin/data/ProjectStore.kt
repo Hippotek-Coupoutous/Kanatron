@@ -2,12 +2,24 @@ package com.kanatron.app.data
 
 import android.util.AtomicFile
 import com.kanatron.app.core.Project
+import com.kanatron.app.core.UnsupportedProjectException
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.StandardCharsets
 
-class ProjectStore(file: File) {
+class ProjectStore(private val file: File) {
     private val storage = AtomicFile(file)
+
+    /** A file this version cannot play is set aside, so it neither lists as damage nor blocks recovery. */
+    fun loadSupported(): Project? = try {
+        load()
+    } catch (unsupported: UnsupportedProjectException) {
+        synchronized(IO_LOCK) {
+            file.renameTo(File(file.path + ".unsupported"))
+            File(file.path + ".bak").delete()
+        }
+        null
+    }
 
     fun save(project: Project) = synchronized(IO_LOCK) {
         val bytes = project.toJson().toByteArray(StandardCharsets.UTF_8)

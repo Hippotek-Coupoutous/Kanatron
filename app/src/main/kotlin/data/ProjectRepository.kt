@@ -8,7 +8,6 @@ import com.kanatron.app.core.PROJECT_ID_PATTERN
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.ProjectArrangementActions
-import com.kanatron.app.core.ProjectArrangementSnapshot
 import com.kanatron.app.core.ProjectAudioSource
 import com.kanatron.app.core.ProjectClip
 import com.kanatron.app.core.ProjectTrack
@@ -48,7 +47,7 @@ class ProjectRepository(context: Context) {
     fun readLibrary(): LibraryContents {
         var unreadable = 0
         val loaded = projects.listFiles { file -> file.extension == "json" }.orEmpty().mapNotNull { file ->
-            try { ProjectStore(file).load() } catch (_: Exception) { unreadable++; null }
+            try { ProjectStore(file).loadSupported() } catch (_: Exception) { unreadable++; null }
         }.sortedByDescending(Project::createdAtEpochMillis)
         return LibraryContents(
             projects = loaded.filterNot(Project::draft),
@@ -86,8 +85,7 @@ class ProjectRepository(context: Context) {
     private fun directSource(project: Project): ProjectAudioSource? {
         val track = project.tracks.singleOrNull() ?: return null
         val clip = track.clips.singleOrNull() ?: return null
-        val untouched = clip.positionFrames == 0L && clip.gainPermille == 1_000 && !clip.muted &&
-            clip.rateCorrectionPpm == 0 && track.gainPermille == 1_000 && !track.muted &&
+        val untouched = clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 &&
             clip.source.sampleRate == project.sampleRate &&
             clip.trim.startFrame == 0L && clip.trim.endFrame == clip.source.totalFrames
         return clip.source.takeIf { untouched }
@@ -149,8 +147,7 @@ class ProjectRepository(context: Context) {
                 sampleRate = arrangement.sampleRate,
                 channels = arrangement.channels,
                 draft = false,
-                tracks = listOf(ProjectTrack("track-main", project.name, listOf(ProjectClip("clip-main", source, 0L, TrimRange(0L, frames))))),
-                undoHistory = emptyList()
+                tracks = listOf(ProjectTrack("track-main", project.name, listOf(ProjectClip("clip-main", source, 0L, TrimRange(0L, frames)))))
             )
             ProjectStore(projectFile(project.id)).save(replaced)
             previewCache.delete(project.id)
@@ -247,7 +244,7 @@ class ProjectRepository(context: Context) {
     }
 
     private fun Project.sources(): List<ProjectAudioSource> =
-        (tracks + undoHistory.flatMap(ProjectArrangementSnapshot::tracks)).flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
+        tracks.flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
 
     /** Caller holds PROJECT_LOCK. */
     private fun deleteUnreferenced(sources: List<ProjectAudioSource>, excludeProjectId: String?) {

@@ -31,15 +31,12 @@ data class ProjectClip(
     val source: ProjectAudioSource,
     val positionFrames: Long,
     val trim: TrimRange,
-    val gainPermille: Int = 1_000,
-    val muted: Boolean = false,
     val rateCorrectionPpm: Int = 0
 ) {
     init {
         require(id.matches(PROJECT_ID))
         require(positionFrames >= 0L)
         trim.requireValidFor(source.totalFrames)
-        require(gainPermille in 0..2_000)
         require(rateCorrectionPpm in -MAX_RATE_CORRECTION_PPM..MAX_RATE_CORRECTION_PPM) {
             "Rate correction must be within ±$MAX_RATE_CORRECTION_PPM ppm."
         }
@@ -51,28 +48,23 @@ data class ProjectClip(
 data class ProjectTrack(
     val id: String,
     val name: String,
-    val clips: List<ProjectClip>,
-    val gainPermille: Int = 1_000,
-    val muted: Boolean = false,
-    val solo: Boolean = false
+    val clips: List<ProjectClip>
 ) {
     init {
         require(id.matches(PROJECT_ID))
         require(name.isNotBlank())
         require(clips.isNotEmpty())
-        require(gainPermille in 0..2_000)
     }
 }
-
-/** One undoable track layout of a project. */
-data class ProjectArrangementSnapshot(val tracks: List<ProjectTrack>)
 
 /** The first track's first clip; every project starts from one recording. */
 val Project.firstClip: ProjectClip get() = tracks.first().clips.first()
 
+/** A saved recording this version no longer plays the way it was made. */
+class UnsupportedProjectException(message: String) : IllegalArgumentException(message)
+
 private fun requireValidTracks(tracks: List<ProjectTrack>, channels: Int, sampleRate: Int) {
-    require(tracks.isNotEmpty()) { "A project must contain at least one track." }
-    require(tracks.size <= Project.MAX_TRACKS) { "A project supports up to ${Project.MAX_TRACKS} tracks." }
+    require(tracks.size == 1) { "A project has exactly one track." }
     require(tracks.map(ProjectTrack::id).distinct().size == tracks.size) { "Track ids must be unique." }
     val clips = tracks.flatMap(ProjectTrack::clips)
     require(clips.map(ProjectClip::id).distinct().size == clips.size) { "Clip ids must be unique." }
@@ -91,8 +83,7 @@ data class Project(
     val silent: Boolean = false,
     /** A recovered, unsaved take: stored on disk but hidden from the Library until explicitly saved. */
     val draft: Boolean = false,
-    val tracks: List<ProjectTrack>,
-    val undoHistory: List<ProjectArrangementSnapshot> = emptyList()
+    val tracks: List<ProjectTrack>
 ) {
     init {
         require(id.matches(PROJECT_ID))
@@ -100,10 +91,6 @@ data class Project(
         require(sampleRate in SUPPORTED_SAMPLE_RATES)
         require(channels in 1..2)
         requireValidTracks(tracks, channels, sampleRate)
-        require(undoHistory.size <= MAX_UNDO) { "Undo history exceeds its limit" }
-        undoHistory.forEach { snapshot ->
-            requireValidTracks(snapshot.tracks, channels, sampleRate)
-        }
     }
 
     /** The exact project length implied by its clips; clip trims do the trimming. */
@@ -111,42 +98,37 @@ data class Project(
 
     fun toJson(): String = buildString {
         append('{')
-        append("\"schemaVersion\":3,")
+        append("\"schemaVersion\":4,")
         append("\"id\":").append(quote(id)).append(',')
         append("\"name\":").append(quote(name)).append(',')
         append("\"sampleRate\":").append(sampleRate).append(',')
         append("\"channels\":").append(channels).append(',')
         append("\"silent\":").append(silent).append(',')
         append("\"draft\":").append(draft).append(',')
-        append("\"tracks\":").append(tracks.tracksToJson()).append(',')
-        append("\"undoHistory\":[")
-        undoHistory.forEachIndexed { index, snapshot ->
-            if (index > 0) append(',')
-            append("{\"tracks\":").append(snapshot.tracks.tracksToJson()).append('}')
-        }
-        append("],\"createdAtEpochMillis\":").append(createdAtEpochMillis)
+        append("\"tracks\":").append(tracks.tracksToJson())
+        append(",\"createdAtEpochMillis\":").append(createdAtEpochMillis)
         append('}')
     }
 
     companion object {
         const val MAX_JSON_BYTES = 64 * 1024
-        const val MAX_TRACKS = 4
         /** Edit's timeline is one clip per kept piece, so this bounds cuts, not tracks. */
         const val MAX_CLIPS = 256
-        const val MAX_UNDO = 20
 
         fun fromJson(json: String): Project {
             require(json.toByteArray(Charsets.UTF_8).size <= MAX_JSON_BYTES) { "Project JSON is too large" }
             val root = JsonReader(json).read() as? Map<*, *> ?: throw IllegalArgumentException("Project JSON must be an object")
             val version = root.long("schemaVersion")
-            require(version == 3L) { "Unsupported project schema version: $version" }
-            val tracks = root["tracks"].asArray("tracks").map { it.asTrack() }
-            val history = root["undoHistory"].asArray("undo history").map {
-                val entry = it.asObject("undo entry")
-                ProjectArrangementSnapshot(
-                    tracks = entry["tracks"].asArray("undo tracks").map { track -> track.asTrack() }
-                )
+            require(version == 3L || version == 4L) { "Unsupported project schema version: $version" }
+            val rawTracks = root["tracks"].asArray("tracks").map { it.asObject("track") }
+            if (rawTracks.size != 1) throw UnsupportedProjectException("Multi-track recordings are no longer supported.")
+            // Version 3 also stored gains, mutes and solo; only their defaults still sound the same.
+            val mixed = rawTracks.any { track ->
+                track["gainPermille"] != 1_000L || track["muted"] == true || track["solo"] == true ||
+                    track["clips"].asArray("clips").any { val clip = it.asObject("clip"); clip["gainPermille"] != 1_000L || clip["muted"] == true }
             }
+            if (version == 3L && mixed) throw UnsupportedProjectException("Recordings with mixer settings are no longer supported.")
+            val tracks = rawTracks.map { it.asTrack() }
             return Project(
                 id = root.string("id"),
                 name = root.string("name"),
@@ -155,8 +137,7 @@ data class Project(
                 createdAtEpochMillis = root.long("createdAtEpochMillis"),
                 silent = if (root.containsKey("silent")) root.boolean("silent") else false,
                 draft = if (root.containsKey("draft")) root.boolean("draft") else false,
-                tracks = tracks,
-                undoHistory = history
+                tracks = tracks
             )
         }
 
@@ -216,8 +197,6 @@ data class Project(
                     ),
                     positionFrames = clip.long("positionFrames"),
                     trim = clip["trim"].asObject("clip trim").toTrimRange(),
-                    gainPermille = clip.long("gainPermille").toIntExact("clip.gainPermille"),
-                    muted = clip.boolean("muted"),
                     rateCorrectionPpm = if (clip.containsKey("rateCorrectionPpm")) {
                         clip.long("rateCorrectionPpm").toIntExact("clip.rateCorrectionPpm")
                     } else 0
@@ -226,10 +205,7 @@ data class Project(
             return ProjectTrack(
                 id = track.string("id"),
                 name = track.string("name"),
-                clips = clips,
-                gainPermille = track.long("gainPermille").toIntExact("track.gainPermille"),
-                muted = track.boolean("muted"),
-                solo = track.boolean("solo")
+                clips = clips
             )
         }
 
@@ -240,9 +216,6 @@ data class Project(
             buildString {
                 append("{\"id\":").append(quote(track.id))
                 append(",\"name\":").append(quote(track.name))
-                append(",\"gainPermille\":").append(track.gainPermille)
-                append(",\"muted\":").append(track.muted)
-                append(",\"solo\":").append(track.solo)
                 append(",\"clips\":[")
                 track.clips.forEachIndexed { index, clip ->
                     if (index > 0) append(',')
@@ -253,9 +226,7 @@ data class Project(
                     append(",\"totalFrames\":").append(clip.source.totalFrames).append('}')
                     append(",\"positionFrames\":").append(clip.positionFrames)
                     append(",\"trim\":").append(clip.trim.toJsonObject())
-                    append(",\"gainPermille\":").append(clip.gainPermille)
-                    append(",\"rateCorrectionPpm\":").append(clip.rateCorrectionPpm)
-                    append(",\"muted\":").append(clip.muted).append('}')
+                    append(",\"rateCorrectionPpm\":").append(clip.rateCorrectionPpm).append('}')
                 }
                 append("]}")
             }

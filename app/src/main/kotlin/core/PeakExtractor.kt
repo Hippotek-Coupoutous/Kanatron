@@ -58,6 +58,21 @@ object PeakExtractor {
         return peaks
     }
 
+    /** Removes the caches derived from [wav]; call when the WAV itself is deleted. */
+    fun deleteCaches(wav: File) {
+        wav.parentFile?.listFiles().orEmpty().forEach { file ->
+            if (CACHE_PATH.matchEntire(file.name)?.groupValues?.get(1) == wav.name) file.delete()
+        }
+    }
+
+    /** Deletes caches left behind by deleted or evicted WAVs. */
+    fun sweepOrphans(directory: File) {
+        directory.listFiles().orEmpty().forEach { file ->
+            val source = CACHE_PATH.matchEntire(file.name)?.groupValues?.get(1) ?: return@forEach
+            if (!File(directory, source).isFile) file.delete()
+        }
+    }
+
     private fun readCache(cache: File, wav: File, bucketCount: Int): List<Peak>? = runCatching {
         DataInputStream(BufferedInputStream(FileInputStream(cache))).use { input ->
             if (input.readInt() != CACHE_MAGIC || input.readLong() != wav.length() ||
@@ -93,5 +108,6 @@ object PeakExtractor {
         if (isCancelled()) throw CancellationException("Waveform extraction cancelled")
     }
 
+    private val CACHE_PATH = Regex("\\.(.+)\\.\\d+\\.peaks")
     private const val CACHE_MAGIC = 0x41575031
 }

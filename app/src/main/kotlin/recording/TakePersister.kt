@@ -35,6 +35,7 @@ internal class TakePersister(private val context: Context) {
         var project: Project? = null
         var alignmentNotice: String? = null
         var error = take.error
+        var appended = false
         try {
             val repository = ProjectRepository(context)
             val savedTake = repository.saveTake(
@@ -64,13 +65,13 @@ internal class TakePersister(private val context: Context) {
                     )
                 }
                 if (leadInTrim >= savedTake.totalFrames) {
-                    project = savedTake
                     alignmentNotice = "The take would start before frame zero. Its original WAV was kept in the library without shifting its audio."
                 } else {
                     val arrangement = repository.appendRecordedTake(base.id, savedTake.id, calibratedPlacement.positionFrames)
+                    project = arrangement
+                    appended = true
                     // The take now lives in the backing project; drop its duplicate Library entry and keep the WAV.
                     runCatching { repository.delete(savedTake.id) }
-                    project = arrangement
                     var edited = arrangement
                     val takeSource = savedTake.firstClip.source.wav
                     val track = arrangement.tracks.firstOrNull { candidate ->
@@ -82,9 +83,8 @@ internal class TakePersister(private val context: Context) {
                             edited = ProjectArrangementActions.setRateCorrection(edited, track.id, clip.id, correction)
                         }
                         if (leadInTrim > 0L) {
-                            val safeStart = leadInTrim.coerceAtMost(savedTake.totalFrames - 1L)
                             edited = ProjectArrangementActions.setClipTrim(
-                                edited, track.id, clip.id, TrimRange(safeStart, savedTake.totalFrames)
+                                edited, track.id, clip.id, TrimRange(leadInTrim, savedTake.totalFrames)
                             )
                         }
                     }
@@ -100,8 +100,10 @@ internal class TakePersister(private val context: Context) {
             }
             if (project == null) error = error ?: "Could not save recording"
         } catch (failure: Throwable) {
-            error = error ?: failure.message ?: "Could not save recording"
-            alignmentNotice = if (project != null) {
+            if (!appended) error = error ?: failure.message ?: "Could not save recording"
+            alignmentNotice = if (appended) {
+                "The take was added to the backing project, but its timing corrections could not be saved."
+            } else if (project != null) {
                 "The take was saved in your library, but could not be added to the backing project."
             } else if (failure.message.orEmpty().contains("header does not match", ignoreCase = true)) {
                 "The WAV header did not match the captured audio. Its retained partial was kept for recovery at startup."

@@ -5,6 +5,7 @@ import com.kanatron.app.core.ExportPreflight
 import com.kanatron.app.core.MultitrackRenderer
 import com.kanatron.app.core.PROJECT_ID
 import com.kanatron.app.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.ProjectArrangementActions
 import com.kanatron.app.core.ProjectArrangementSnapshot
@@ -210,6 +211,7 @@ class ProjectRepository(context: Context) {
             activeDecodePaths,
             activeStagingPaths
         )
+        PeakExtractor.sweepOrphans(recordings)
         exportRetention.cleanup()
         previewCache.cleanup()
         synchronized(ARRANGEMENT_WORK_LOCK) { cleanupArrangementWorkTemps() }
@@ -230,14 +232,18 @@ class ProjectRepository(context: Context) {
             if (project != null) {
                 val sources = (project.tracks + project.undoHistory.flatMap(ProjectArrangementSnapshot::tracks))
                     .flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
+                // Metadata goes last: a crash must not leave WAVs that startup recovery rebuilds as projects.
+                previewCache.delete(id)
+                val references = recovery.sourceReferences(excludeProjectId = id)
+                sources.forEach { source ->
+                    if (!references.isReferenced(source.wav)) runCatching {
+                        val file = sourceFile(source)
+                        if (file.delete()) PeakExtractor.deleteCaches(file)
+                    }
+                }
                 val metadata = projectFile(id)
                 if (!metadata.delete() && metadata.exists()) throw IOException("Could not delete the project metadata.")
                 File(metadata.path + ".bak").delete()
-                previewCache.delete(id)
-                val references = recovery.sourceReferences()
-                sources.forEach { source ->
-                    if (!references.isReferenced(source.wav)) runCatching { sourceFile(source).delete() }
-                }
             }
         }
     }

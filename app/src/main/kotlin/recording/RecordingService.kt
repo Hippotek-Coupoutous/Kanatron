@@ -23,6 +23,7 @@ import com.kanatron.app.core.SharedAudioTimeline
 import com.kanatron.app.core.SUPPORTED_BPM
 import com.kanatron.app.core.WavFormat
 import com.kanatron.app.data.ProjectRepository
+import com.kanatron.app.data.RecordingActivePath
 import com.kanatron.app.platform.MICROPHONE_PERMISSION_ERROR
 import com.kanatron.app.platform.PcmInput
 import com.kanatron.app.platform.PlatformPorts
@@ -85,7 +86,7 @@ class RecordingService : Service() {
     private var recorder: WavRecorder? = null
     private var latestStartId = 0
     private var recordingCallback: AudioManager.AudioRecordingCallback? = null
-    private var backingPlayer: WavPlayer? = null
+    @Volatile private var backingPlayer: WavPlayer? = null
     private var previewPlayer: WavPlayer? = null
     private var clickOnlyPlayer: ClickOnlyPlayer? = null
     private var monitorClick: MonitorClick? = null
@@ -121,6 +122,7 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        transportStopped = true
         startToken++
         stopPreview()
         unregisterRecordingCallback()
@@ -292,6 +294,11 @@ class RecordingService : Service() {
                     return@Thread
                 }
                 backingPlayer = player
+                if (transportStopped) {
+                    player.release()
+                    if (backingPlayer === player) backingPlayer = null
+                    return@Thread
+                }
                 player.seek(0L)
                 player.play(project.totalFrames)
                 main.postDelayed({ reportBackingStatus(player) }, 1_000L)
@@ -370,6 +377,8 @@ class RecordingService : Service() {
         releaseBackingPlayer()
         releaseClickOnlyPlayer()
         recorder?.requestStop()
+        // Nothing else publishes a terminal phase before the take starts, so the cancel is reported here.
+        if (recorder == null && mutableState.value.phase == RecordingPhase.STARTING) mutableState.value = RecordingServiceState()
     }
 
     private fun snapshotOutputFailure() {
@@ -491,6 +500,8 @@ class RecordingService : Service() {
         interruptionNotice: String? = null,
         alignmentNotice: String? = null
     ) {
+        // The take is saved or abandoned now, so startup recovery may adopt its file.
+        if (RecordingActivePath.path == take.file.absolutePath) RecordingActivePath.path = null
         if (recorder === completedRecorder) recorder = null
         val terminalNotice = mergeNotices(alignmentNotice, outputFailureNotice, mutableState.value.alignmentNotice)
         mutableState.value = RecordingServiceState(

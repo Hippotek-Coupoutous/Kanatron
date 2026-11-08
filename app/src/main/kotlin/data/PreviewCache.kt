@@ -3,6 +3,7 @@ package com.kanatron.app.data
 import com.kanatron.app.core.ExportPreflight
 import com.kanatron.app.core.MultitrackRenderer
 import com.kanatron.app.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.ProjectAudioSource
 import com.kanatron.app.core.WavFormat
@@ -44,12 +45,18 @@ internal class PreviewCache(private val directory: File) {
     }
 
     /** Evicts old renders down to the cache limits. */
-    fun cleanup() = synchronized(PREVIEW_LOCK) { evict(keep = null) }
+    fun cleanup() = synchronized(PREVIEW_LOCK) {
+        evict(keep = null)
+        PeakExtractor.sweepOrphans(directory)
+    }
 
     /** Removes every cached render of [projectId] once its metadata is gone. */
     fun delete(projectId: String) = synchronized(PREVIEW_LOCK) {
         directory.listFiles { file -> file.name.startsWith("$projectId.") && file.name.endsWith(".wav") }
-            .orEmpty().forEach { it.delete() }
+            .orEmpty().forEach { file ->
+                file.delete()
+                PeakExtractor.deleteCaches(file)
+            }
     }
 
     /** Only the fields MultitrackRenderer reads: names and ids must not invalidate a cached render. */
@@ -87,6 +94,7 @@ internal class PreviewCache(private val directory: File) {
             if (count <= MAX_PREVIEW_COUNT && total <= MAX_PREVIEW_BYTES) break
             val size = file.length()
             if (file.delete()) {
+                PeakExtractor.deleteCaches(file)
                 count--
                 total = (total - size).coerceAtLeast(0L)
             }

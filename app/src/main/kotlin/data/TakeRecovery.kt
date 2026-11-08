@@ -29,7 +29,7 @@ internal class TakeRecovery(
     }
 
     /** Scans all project metadata once; callers reuse the result for every candidate in one pass. */
-    fun sourceReferences(): SourceReferences {
+    fun sourceReferences(excludeProjectId: String? = null): SourceReferences {
         val bases = linkedMapOf<String, File>()
         projects.listFiles().orEmpty().forEach { file ->
             val baseName = when {
@@ -43,6 +43,7 @@ internal class TakeRecovery(
         val sources = mutableSetOf<String>()
         var fullyReadable = true
         for (file in bases.values) {
+            if (excludeProjectId != null && file.name == "$excludeProjectId.json") continue
             try {
                 val project = ProjectStore(file).load()
                 val liveTracks = project.tracks + project.undoHistory.flatMap(ProjectArrangementSnapshot::tracks)
@@ -54,9 +55,9 @@ internal class TakeRecovery(
         return SourceReferences(sources, fullyReadable)
     }
 
-    fun recoverTakes(activePath: String? = null): List<Project> {
+    fun recoverTakes(): List<Project> {
         val references = sourceReferences()
-        return recoverPartials(references, activePath) + recoverOrphanTakes(references)
+        return recoverPartials(references) + recoverOrphanTakes(references)
     }
 
     /** Rebuilds project records from imported WAVs committed before a process death. */
@@ -75,9 +76,9 @@ internal class TakeRecovery(
     }
 
     /** Repairs crash-left partial WAVs before exposing the library. */
-    private fun recoverPartials(references: SourceReferences, activePath: String?): List<Project> {
+    private fun recoverPartials(references: SourceReferences): List<Project> {
         return recordings.listFiles { file -> file.name.matches(TAKE_PARTIAL_PATH) }.orEmpty().mapNotNull { partial ->
-            runCatching { recoverPartial(partial, activePath, references) }.getOrNull()
+            runCatching { recoverPartial(partial, references) }.getOrNull()
         }
     }
 
@@ -87,8 +88,7 @@ internal class TakeRecovery(
             .orEmpty().mapNotNull { wav -> runCatching { recoverOrphan(wav, references) }.getOrNull() }
     }
 
-    private fun recoverPartial(partial: File, activePath: String?, references: SourceReferences): Project? {
-        if (partial.absolutePath == activePath) return null
+    private fun recoverPartial(partial: File, references: SourceReferences): Project? {
         if (!partial.name.matches(TAKE_PARTIAL_PATH)) return null
         if (references.isReferenced("recordings/${partial.name}")) return null
         val id = partial.name.removePrefix("take-").removeSuffix(".partial.wav")
@@ -97,14 +97,22 @@ internal class TakeRecovery(
         if (dataBytes < 2L) return null
         val allZero = RecordingCore.allSamplesZero(partial, WavFormat.HEADER_BYTES.toLong(), dataBytes)
         val sampleRate = readRateFromPlaceholderOrDefault(partial)
-        RandomAccessFile(partial, "rw").use { file ->
-            file.setLength(WavFormat.HEADER_BYTES + dataBytes)
-            file.seek(0)
-            file.write(RecordingCore.header(sampleRate = sampleRate, channels = 1, dataBytes = dataBytes))
-            file.fd.sync()
-        }
         val finalFile = File(recordings, "take-$id.wav")
-        if (!partial.renameTo(finalFile)) error("Could not recover partial recording")
+        // Recheck under the registration lock: the recorder may own the file, or its save may have renamed it.
+        val repaired = RecordingActivePath.exclusive {
+            if (!partial.isFile || partial.absolutePath == RecordingActivePath.path || loadProject(id) != null) {
+                return@exclusive false
+            }
+            RandomAccessFile(partial, "rw").use { file ->
+                file.setLength(WavFormat.HEADER_BYTES + dataBytes)
+                file.seek(0)
+                file.write(RecordingCore.header(sampleRate = sampleRate, channels = 1, dataBytes = dataBytes))
+                file.fd.sync()
+            }
+            if (!partial.renameTo(finalFile)) error("Could not recover partial recording")
+            true
+        }
+        if (!repaired) return null
         return try {
             createProject(id, finalFile, sampleRate, 1, dataBytes / 2, takeName(finalFile.lastModified()), allZero, true)
         } catch (failure: Throwable) {
@@ -117,10 +125,14 @@ internal class TakeRecovery(
         if (references.isReferenced("recordings/${wav.name}")) return null
         val id = wav.name.removePrefix("take-").removeSuffix(".wav")
         if (!id.matches(PROJECT_ID) || loadProject(id) != null) return null
+        // saveTake renames the in-flight partial to this name before its metadata lands.
+        if (File(recordings, "take-$id.partial.wav").absolutePath == RecordingActivePath.path) return null
         val format = wav.inputStream().use(WavFormat::read)
         require(format.channels == 1 && format.frameCount > 0L) { "Invalid recovered take format" }
         require(format.dataOffset + format.dataSize <= wav.length()) { "Truncated recovered take" }
         val allZero = RecordingCore.allSamplesZero(wav, format.dataOffset, format.dataSize)
+        // The scan above is slow; do not overwrite metadata that a completed save wrote meanwhile.
+        if (loadProject(id) != null) return null
         return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, takeName(wav.lastModified()), allZero, true)
     }
 

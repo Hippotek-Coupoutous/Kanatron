@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.updateAndGet
 
 data class RecordingTake(
     val id: String,
@@ -79,7 +80,6 @@ class WavRecorder(
     private var capturedBytes = 0L
     private var silentFrames = 0L
     private var allSamplesZero = true
-    @Volatile private var inputSilenced = false
     @Volatile private var pcmWriteFailed = false
     private var microphoneLease: MicrophoneOwnership.Lease? = null
 
@@ -95,12 +95,14 @@ class WavRecorder(
             recorder = opened
             openedRate = opened.sampleRate
             openedChannels = opened.channels.coerceAtLeast(1)
-            RandomAccessFile(file, "rw").use { output ->
-                output.setLength(0)
-                output.write(RecordingCore.header(openedRate, openedChannels, 0))
-                output.fd.sync()
+            RecordingActivePath.exclusive {
+                RandomAccessFile(file, "rw").use { output ->
+                    output.setLength(0)
+                    output.write(RecordingCore.header(openedRate, openedChannels, 0))
+                    output.fd.sync()
+                }
+                RecordingActivePath.path = file.absolutePath
             }
-            RecordingActivePath.path = file.absolutePath
             beforeRecording(opened)
             opened.start()
             inputDevice = opened.inputDevice
@@ -112,9 +114,11 @@ class WavRecorder(
             microphoneLease?.close()
             microphoneLease = null
             recorder = null
-            RecordingActivePath.path = null
+            RecordingActivePath.exclusive {
+                file.delete()
+                if (RecordingActivePath.path == file.absolutePath) RecordingActivePath.path = null
+            }
             // No worker has consumed audio yet; a failed start must not leave an empty take behind.
-            file.delete()
             throw failure
         }
     }
@@ -140,7 +144,6 @@ class WavRecorder(
     }
 
     fun setInputSilenced(silenced: Boolean) {
-        inputSilenced = silenced
         publish(mutableState.value.copy(inputSilenced = silenced))
     }
 
@@ -213,12 +216,13 @@ class WavRecorder(
                 allSamplesZero = allSamplesZero && RecordingCore.allSamplesZero(alignedBuffer, aligned)
                 val level = RecordingCore.level(alignedBuffer, aligned)
                 silentFrames = if (level.isLow) silentFrames + frames else 0L
-                publish(WavRecorderState(
-                    RecordingPhase.RECORDING, capturedFrames, openedRate, level,
-                    inputDevice = inputDevice,
-                    silenceWarning = RecordingCore.isSustainedSilence(silentFrames, openedRate),
-                    inputSilenced = inputSilenced
-                ))
+                merge {
+                    it.copy(
+                        frames = capturedFrames,
+                        level = if (paused) RecordingLevel(0f) else level,
+                        silenceWarning = RecordingCore.isSustainedSilence(silentFrames, openedRate)
+                    )
+                }
             }
         } catch (failure: Throwable) {
             this.failure = failure.message ?: "Recording failed"
@@ -240,7 +244,6 @@ class WavRecorder(
                 releaseRecorder = {
                     try { recorder?.release() } finally {
                         recorder = null
-                        RecordingActivePath.path = null
                         microphoneLease?.close()
                         microphoneLease = null
                     }
@@ -258,6 +261,11 @@ class WavRecorder(
     private fun publish(state: WavRecorderState) {
         mutableState.value = state
         onState(state)
+    }
+
+    /** Worker blocks merge into the state so a concurrent pause/resume publish is never overwritten. */
+    private fun merge(change: (WavRecorderState) -> WavRecorderState) {
+        onState(mutableState.updateAndGet(change))
     }
 
     private fun spaceAvailable(reserve: Long): Boolean {

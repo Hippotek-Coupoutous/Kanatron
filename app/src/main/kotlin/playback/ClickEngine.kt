@@ -18,6 +18,7 @@ data class ClickState(
     val running: Boolean = false,
     val bpm: Int = 120,
     val beatsPerBar: Int = 4,
+    val error: String? = null,
 )
 
 /** Click track: two synthesized clicks mixed into one low-latency streaming [AudioTrack] by a dedicated thread. */
@@ -32,6 +33,7 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
     private val normal = synthesizeClick(sampleRate, NORMAL_CLICK_HZ, NORMAL_CLICK_AMPLITUDE)
     private val lock = Any()
     private var track: AudioTrack? = null
+    @Volatile
     private var thread: Thread? = null
     private var framePosition = 0L
     private var anchorFrame = 0L
@@ -46,14 +48,21 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
     fun start() {
         synchronized(lock) {
             if (running) return
-            val t = openTrack() ?: return
+            val t = openTrack()
+            if (t == null) {
+                _state.update { it.copy(error = "Could not start the click track.") }
+                return
+            }
             track = t
             framePosition = 0L
             anchorFrame = 0L
             anchorBeat = 0L
             running = true
-            _state.update { it.copy(running = true) }
-            thread = Thread({ loop() }, "click-engine").apply { start() }
+            _state.update { it.copy(running = true, error = null) }
+            // Publish before start so the worker cannot read a stale null.
+            val worker = Thread({ loop() }, "click-engine")
+            thread = worker
+            worker.start()
         }
     }
 
@@ -156,33 +165,41 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
         return true
     }
 
-    private fun openTrack(): AudioTrack? = try {
-        val min = AudioTrack.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
-        AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build(),
+    private fun openTrack(): AudioTrack? {
+        val audioTrack = try {
+            val min = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
             )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .setSampleRate(sampleRate)
-                    .build(),
-            )
-            .setBufferSizeInBytes(maxOf(min, sampleRate / 10 * 2))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .build()
-            .also { it.play() }
-    } catch (_: Exception) {
-        null
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build(),
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .setSampleRate(sampleRate)
+                        .build(),
+                )
+                .setBufferSizeInBytes(maxOf(min, sampleRate / 10 * 2))
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                .build()
+        } catch (_: Exception) {
+            return null
+        }
+        return try {
+            audioTrack.play()
+            audioTrack
+        } catch (_: Exception) {
+            runCatching { audioTrack.release() }
+            null
+        }
     }
 
     private fun closeTrack(t: AudioTrack) {

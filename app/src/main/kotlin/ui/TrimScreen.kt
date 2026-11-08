@@ -262,17 +262,35 @@ private fun TrimEditorLoaded(
     }
     LaunchedEffect(playerState.isPlaying) { if (!playerState.isPlaying) edgeAudition = false }
 
+    val saveChain = remember(initial.id) { AtomicReference<Job?>(null) }
+    var savesInFlight by remember(initial.id) { mutableStateOf(0) }
+
+    // One serial writer off the main thread; each save reads the newest trim, so a burst of taps settles to one fsync.
     fun persistEditState() {
-        if (project == persistedProject) return
-        try {
-            persistedProject = repository.saveEditState(project)
-            latestOnProjectChanged.value(persistedProject)
-            editFailure = null
-        } catch (failure: Throwable) {
-            project = persistedProject
-            editFailure = failure.message ?: "Could not save this trim change."
+        val previous = saveChain.get()
+        savesInFlight++
+        val job = scope.launch {
+            try {
+                previous?.join()
+                val snapshot = project
+                if (snapshot == persistedProject) return@launch
+                try {
+                    persistedProject = withContext(Dispatchers.IO) { repository.saveEditState(snapshot) }
+                    latestOnProjectChanged.value(persistedProject)
+                    editFailure = null
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    if (project == snapshot) project = persistedProject
+                    editFailure = failure.message ?: "Could not save this trim change."
+                }
+            } finally {
+                savesInFlight--
+            }
         }
+        saveChain.set(job)
     }
+    val savePending = savesInFlight > 0
 
     fun edit(persist: Boolean = true, command: TrimActions.() -> TrimRange?) {
         val clip = targetClip
@@ -373,15 +391,15 @@ private fun TrimEditorLoaded(
     val waveDim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.48f)
     val overlay = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
 
-    // Sharing reads the selection from the same files an exit would tear down.
-    BackHandler(enabled = shareInProgress) {}
+    // Sharing reads the selection from the same files an exit would tear down; a pending save must land first.
+    BackHandler(enabled = shareInProgress || savePending) {}
     Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
         Column(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(enabled = !shareInProgress, onClick = { player.stop(); onBack() }) { Text("Back") }
+                TextButton(enabled = !shareInProgress && !savePending, onClick = { player.stop(); onBack() }) { Text("Back") }
                 Text("Trim", style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.weight(1f))
                 TextButton(enabled = undoCount > 0, onClick = ::undo) { Text("Undo") }

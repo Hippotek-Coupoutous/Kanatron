@@ -136,6 +136,8 @@ class WavPlayer(
         if (closed) return
         closed = true
         pause()
+        // pause leaves a blocking write waiting for space; flush frees it so the join stays short.
+        runCatching { track?.flush() }
         worker.join(500L)
         runCatching { track?.release() }
         track = null

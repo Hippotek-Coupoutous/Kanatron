@@ -57,8 +57,9 @@ internal class ClickOnlyPlayer(
             playing = false
         }
         runCatching { output.pause() }
+        runCatching { output.flush() }
         try { worker?.join(500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
-        runCatching { output.flush(); output.release() }
+        runCatching { output.release() }
     }
 
     private fun loop() {
@@ -84,8 +85,9 @@ internal class ClickOnlyPlayer(
                     if (written < 0) error("Audio output failed ($written)")
                     if (written > 0) offset += written
                 }
+                // Resume after the frames the track already took; replaying them would repeat the click.
+                startFrame += offset / 2
                 if (offset < block.size) continue
-                startFrame += frames
                 routeFrames += frames
                 if (routeFrames >= routeCheckFrames) {
                     routeFrames = 0L

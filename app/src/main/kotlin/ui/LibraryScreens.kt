@@ -246,6 +246,7 @@ internal fun SketchScreen(
                 recording.interruptionNotice?.let { Notice(it, MaterialTheme.colorScheme.error) }
                 recording.alignmentNotice?.let { Notice(it) }
                 (recording.error ?: startError)?.let { Notice(it, MaterialTheme.colorScheme.error) }
+                clickState.error?.let { Notice(it, MaterialTheme.colorScheme.error) }
                 if (recording.phase == RecordingPhase.FAILED && recording.projectId != null) {
                     Notice("A recoverable take is in your library.")
                 }

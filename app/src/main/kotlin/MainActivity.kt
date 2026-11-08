@@ -80,6 +80,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    private val click = ClickEngine()
     private val recordingStartGate = ResumeStartGate()
     private var shortcutRequestPending = false
     private var shortcutRecordAction: (() -> Unit)? = null
@@ -159,6 +160,7 @@ class MainActivity : ComponentActivity() {
                 KanatronApp(
                     hostLifecycle = lifecycle,
                     appViewModel = appViewModel,
+                    click = click,
                     onContinueMicrophoneRationale = {
                         appViewModel.setMicrophoneRationale(false)
                         when (appViewModel.state.value.pendingMicrophoneAction ?: MicrophoneAction.RECORD) {
@@ -183,6 +185,17 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         updatePermissionState()
         if (recordingStartGate.onResume(appViewModel.state.value.microphoneGranted)) startRecordingServiceNow()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // A metronome must not keep ticking behind a backgrounded app.
+        click.stop()
+    }
+
+    override fun onDestroy() {
+        click.release()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -225,6 +238,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startRecordingServiceNow() {
+        // Every take starts here; the metronome must be silent before the microphone opens.
+        click.stop()
         appViewModel.clearShortcutRequest()
         val pending = appViewModel.state.value
         runCatching {
@@ -261,6 +276,7 @@ private fun playbackAllowed(recordingPhase: RecordingPhase): Boolean =
 private fun KanatronApp(
     hostLifecycle: Lifecycle,
     appViewModel: AppViewModel,
+    click: ClickEngine,
     onContinueMicrophoneRationale: () -> Unit,
     onDismissMicrophoneRationale: () -> Unit,
     onRecordRequest: (String?, MonitorClick?) -> Unit,
@@ -284,8 +300,6 @@ private fun KanatronApp(
     var shareFailureProject by remember { mutableStateOf<Project?>(null) }
     var mixBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val click = remember { ClickEngine() }
-    androidx.compose.runtime.DisposableEffect(click) { onDispose { click.release() } }
 
     fun share(project: Project) {
         shareFailure = null
@@ -337,6 +351,9 @@ private fun KanatronApp(
 
     // A running take keeps its controls (and the microphone) on Sketch.
     val takeRunning = recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED)
+
+    // The click belongs to idle Sketch only; leaving it silences the metronome.
+    LaunchedEffect(route) { if (route != Route.SKETCH) click.stop() }
 
     BackHandler(enabled = route != Route.LIBRARY) {
         when (route) {

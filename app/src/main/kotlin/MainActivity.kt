@@ -329,13 +329,12 @@ private fun KanatronApp(
 
     LaunchedEffect(recording.phase) {
         if (recording.phase != RecordingPhase.FAILED) dismissedTakeError = null
-        if (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED) appViewModel.setLayerBacking(null)
     }
 
     LaunchedEffect(recording.projectId, recording.phase) {
         val finishedProjectId = recording.projectId
         if (finishedProjectId != null && (recording.phase == RecordingPhase.COMPLETE || recording.phase == RecordingPhase.FAILED)) {
-            // Refresh with selection: the backing project gained a track in place, so its cached playback is stale.
+            // Select the finished take; an overdub is a new recording the library has not read yet.
             appViewModel.refreshLibrary(finishedProjectId)
             appViewModel.setHome(finishedProjectId)
         }
@@ -386,7 +385,7 @@ private fun KanatronApp(
                 Route.SKETCH -> {
                     val visibleCurrent = projects.firstOrNull { it.id == (homeId ?: selectedId) } ?: projects.maxByOrNull { it.createdAtEpochMillis }
                     val draft = appState.drafts.firstOrNull()
-                    // An unsaved take is what Sketch shows and plays; Record still backs onto the visible project.
+                    // An unsaved take is what Sketch shows and plays; it is saved before it can be overdubbed.
                     val current = draft ?: visibleCurrent
                     LaunchedEffect(current?.id) { appViewModel.loadPlaybackFile(current?.id) }
                     SketchScreen(
@@ -399,23 +398,16 @@ private fun KanatronApp(
                         current = current,
                         currentWav = current?.let { appState.audioFiles[it.id] },
                         draft = draft,
-                        layering = appState.layerBackingId != null || appState.layerOn,
                         click = click,
-                        layerOn = appState.layerOn,
-                        onLayerToggle = { appViewModel.setLayerEnabled(!appState.layerOn) },
-                        onRecord = { clickSettings ->
-                            val backingId = visibleCurrent?.id?.takeIf { appState.layerOn }
-                            appViewModel.setLayerBacking(backingId)
-                            onRecordRequest(backingId, clickSettings)
-                        },
+                        onRecord = { clickSettings -> onRecordRequest(null, clickSettings) },
+                        onOverdub = { backing, clickSettings -> onRecordRequest(backing.id, clickSettings) },
                         onSaveDraft = { appViewModel.saveRecoveredDraft(it.id) },
+                        onSaveAndOverdub = { backing, clickSettings ->
+                            appViewModel.saveRecoveredDraft(backing.id) { onRecordRequest(backing.id, clickSettings) }
+                        },
                         onDiscardDraft = { appViewModel.discardRecoveredDraft(it.id) },
                         onDiscardAndRecord = { discarded, clickSettings ->
-                            appViewModel.discardRecoveredDraft(discarded.id) {
-                                val backingId = visibleCurrent?.id?.takeIf { appState.layerOn }
-                                appViewModel.setLayerBacking(backingId)
-                                onRecordRequest(backingId, clickSettings)
-                            }
+                            appViewModel.discardRecoveredDraft(discarded.id) { onRecordRequest(null, clickSettings) }
                         },
                         onPauseResume = {
                             val action = if (recording.phase == RecordingPhase.PAUSED) RecordingService.ACTION_RESUME else RecordingService.ACTION_PAUSE
@@ -466,7 +458,6 @@ private fun KanatronApp(
                     microphoneBlockedReason = when {
                         recording.phase in setOf(RecordingPhase.STARTING, RecordingPhase.RECORDING, RecordingPhase.PAUSED) || RecordingActivePath.path != null ->
                             "Stop the active recording before tuning."
-                        appState.layerOn -> "Turn Layer off before tuning."
                         else -> null
                     },
                     onRequestMicrophone = onTunerMicRequest,

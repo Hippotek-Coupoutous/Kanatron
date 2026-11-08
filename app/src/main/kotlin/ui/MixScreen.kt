@@ -201,7 +201,7 @@ private fun MixEditor(
                     val name = ExportFilename.wav("${current.name}-mix", current.name)
                     val estimatedBytes = WavFormat.outputBytes(selection.frameCount, current.channels)
                     repository.exportFile(current.id, name, estimatedBytes) { target ->
-                        repository.withTemporaryWav(current) { source ->
+                        repository.withTemporaryWav(current) { source, _ ->
                             WavExporter.export(source, target, selection)
                         }
                     }

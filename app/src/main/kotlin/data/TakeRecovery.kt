@@ -128,7 +128,8 @@ internal class TakeRecovery(
         // saveTake renames the in-flight partial to this name before its metadata lands.
         if (File(recordings, "take-$id.partial.wav").absolutePath == RecordingActivePath.path) return null
         val format = wav.inputStream().use(WavFormat::read)
-        require(format.channels == 1 && format.frameCount > 0L) { "Invalid recovered take format" }
+        // Recorded takes are mono; overdub mixes and edits may be stereo.
+        require(format.channels in 1..2 && format.frameCount > 0L) { "Invalid recovered take format" }
         require(format.dataOffset + format.dataSize <= wav.length()) { "Truncated recovered take" }
         val allZero = RecordingCore.allSamplesZero(wav, format.dataOffset, format.dataSize)
         // The scan above is slow; do not overwrite metadata that a completed save wrote meanwhile.

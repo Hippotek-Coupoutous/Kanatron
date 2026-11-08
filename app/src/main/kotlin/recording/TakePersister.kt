@@ -5,7 +5,6 @@ import com.kanatron.app.core.OverdubAlignment
 import com.kanatron.app.core.OverdubRoute
 import com.kanatron.app.core.OverdubTiming
 import com.kanatron.app.core.Project
-import com.kanatron.app.core.ProjectArrangementActions
 import com.kanatron.app.core.ProjectClip
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.firstClip
@@ -28,14 +27,13 @@ internal data class SavedTake(
     val alignmentNotice: String?
 )
 
-/** Writes a finished take to disk and appends it to its base project; runs on the saving thread. */
+/** Writes a finished take to disk and, when overdubbing, flattens it with its backing into a new recording. */
 internal class TakePersister(private val context: Context) {
 
     fun persist(take: RecordingTake, snapshot: TakeSnapshot): SavedTake {
         var project: Project? = null
         var alignmentNotice: String? = null
         var error = take.error
-        var appended = false
         try {
             val repository = ProjectRepository(context)
             val savedTake = repository.saveTake(
@@ -64,51 +62,42 @@ internal class TakePersister(private val context: Context) {
                         calibratedPlacement.leadInFrames, savedTake.sampleRate, base.sampleRate, safeCorrection
                     )
                 }
-                if (leadInTrim >= savedTake.totalFrames) {
-                    alignmentNotice = "The take would start before frame zero. Its original WAV was kept in the library without shifting its audio."
+                if (savedTake.silent) {
+                    alignmentNotice = "The take was silent, so it was not mixed."
+                } else if (leadInTrim >= savedTake.totalFrames) {
+                    alignmentNotice = "The take would start before frame zero. It was saved on its own, not mixed."
                 } else {
-                    val arrangement = repository.appendRecordedTake(base.id, savedTake.id, calibratedPlacement.positionFrames)
-                    project = arrangement
-                    appended = true
-                    // The take now lives in the backing project; drop its duplicate Library entry and keep the WAV.
-                    runCatching { repository.delete(savedTake.id) }
-                    var edited = arrangement
-                    val takeSource = savedTake.firstClip.source.wav
-                    val track = arrangement.tracks.firstOrNull { candidate ->
-                        candidate.clips.any { it.source.wav == takeSource }
-                    }
-                    val clip = track?.clips?.firstOrNull { it.source.wav == takeSource }
-                    if (track != null && clip != null) {
-                        if (correction != null && correction in -ProjectClip.MAX_RATE_CORRECTION_PPM..ProjectClip.MAX_RATE_CORRECTION_PPM && correction != 0) {
-                            edited = ProjectArrangementActions.setRateCorrection(edited, track.id, clip.id, correction)
+                    val placed = savedTake.firstClip.copy(
+                        positionFrames = calibratedPlacement.positionFrames,
+                        trim = TrimRange(leadInTrim, savedTake.totalFrames),
+                        rateCorrectionPpm = safeCorrection
+                    )
+                    val mixed = repository.saveOverdub(base, placed)
+                    if (mixed == null) {
+                        alignmentNotice = "The overdub would clip, so it was not mixed. The take was saved on its own."
+                    } else {
+                        project = mixed
+                        // The mix holds the take now; its separate Library entry and WAV go.
+                        runCatching { repository.delete(savedTake.id) }
+                        alignmentNotice = when {
+                            snapshot.routeInvalidated -> "The audio route changed. The take was mixed at the backing start."
+                            alignment == null -> "Timestamps were unavailable. The take was mixed at the backing start."
+                            else -> null
                         }
-                        if (leadInTrim > 0L) {
-                            edited = ProjectArrangementActions.setClipTrim(
-                                edited, track.id, clip.id, TrimRange(leadInTrim, savedTake.totalFrames)
-                            )
-                        }
-                    }
-                    project = if (edited == arrangement) arrangement else repository.saveEditState(edited)
-                    alignmentNotice = when {
-                        snapshot.routeInvalidated ->
-                            "The audio route changed. The take was saved at the backing start."
-                        alignment == null ->
-                            "Timestamps were unavailable. The take was saved at the backing start."
-                        else -> null
                     }
                 }
             }
             if (project == null) error = error ?: "Could not save recording"
         } catch (failure: Throwable) {
-            if (!appended) error = error ?: failure.message ?: "Could not save recording"
-            alignmentNotice = if (appended) {
-                "The take was added to the backing project, but its timing corrections could not be saved."
-            } else if (project != null) {
-                "The take was saved in your library, but could not be added to the backing project."
-            } else if (failure.message.orEmpty().contains("header does not match", ignoreCase = true)) {
-                "The WAV header did not match the captured audio. Its retained partial was kept for recovery at startup."
+            alignmentNotice = if (project != null) {
+                "The take was saved on its own, but could not be mixed with the backing: ${failure.message ?: "unknown error"}"
             } else {
-                "The take was not saved in your library. Its retained partial will be checked for recovery at startup."
+                error = error ?: failure.message ?: "Could not save recording"
+                if (failure.message.orEmpty().contains("header does not match", ignoreCase = true)) {
+                    "The WAV header did not match the captured audio. Its retained partial was kept for recovery at startup."
+                } else {
+                    "The take was not saved in your library. Its retained partial will be checked for recovery at startup."
+                }
             }
         }
         val interruptionNotice = if (snapshot.lostFocus && project != null) {

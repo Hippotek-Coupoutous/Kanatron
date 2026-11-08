@@ -38,8 +38,6 @@ internal data class AppUiState(
     val homeId: String? = null,
     val trimTrackId: String? = null,
     val trimClipId: String? = null,
-    val layerOn: Boolean = false,
-    val layerBackingId: String? = null,
     val microphoneGranted: Boolean = false,
     val microphoneDenied: Boolean = false,
     val notificationGranted: Boolean = true,
@@ -97,10 +95,6 @@ internal class AppViewModel(
 
     fun setTrimTarget(trackId: String?, clipId: String?) =
         updateState { it.copy(trimTrackId = trackId, trimClipId = clipId) }
-
-    fun setLayerEnabled(on: Boolean) = updateState { it.copy(layerOn = on) }
-
-    fun setLayerBacking(backingId: String?) = updateState { it.copy(layerBackingId = backingId) }
 
     fun updatePermissions(granted: Boolean, notificationsGranted: Boolean) = updateState {
         it.copy(
@@ -386,7 +380,6 @@ internal class AppViewModel(
                     selectProject(null, force = true)
                 }
                 if (_state.value.homeId == id) setHome(null)
-                if (_state.value.layerBackingId == id) setLayerBacking(null)
                 if (_state.value.pendingOverdubProjectId == id) clearPendingRecord()
                 refreshLibrary()
             } catch (cancelled: CancellationException) {
@@ -398,7 +391,7 @@ internal class AppViewModel(
     }
 
     /** Promotes a recovered take into the Library and makes it the current take. */
-    fun saveRecoveredDraft(id: String) {
+    fun saveRecoveredDraft(id: String, onSaved: () -> Unit = {}) {
         if (draftActionInFlight) return
         draftActionInFlight = true
         viewModelScope.launch {
@@ -411,6 +404,7 @@ internal class AppViewModel(
                 _state.update { it.copy(drafts = it.drafts.filterNot { draft -> draft.id == id }) }
                 refreshLibrary(selectId = saved.id).join()
                 setHome(saved.id)
+                onSaved()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -461,8 +455,6 @@ internal class AppViewModel(
         savedStateHandle[KEY_HOME] = state.homeId
         savedStateHandle[KEY_TRIM_TRACK] = state.trimTrackId
         savedStateHandle[KEY_TRIM_CLIP] = state.trimClipId
-        savedStateHandle[KEY_LAYER_ON] = state.layerOn
-        savedStateHandle[KEY_LAYER_BACKING] = state.layerBackingId
         savedStateHandle[KEY_PENDING_MIC] = state.pendingMicrophoneAction?.name
         savedStateHandle[KEY_PENDING_OVERDUB] = state.pendingOverdubProjectId
         savedStateHandle[KEY_CLICK_BPM] = state.pendingClick?.bpm
@@ -476,8 +468,6 @@ internal class AppViewModel(
         homeId = savedStateHandle.get<String>(KEY_HOME),
         trimTrackId = savedStateHandle.get<String>(KEY_TRIM_TRACK),
         trimClipId = savedStateHandle.get<String>(KEY_TRIM_CLIP),
-        layerOn = savedStateHandle.get<Boolean>(KEY_LAYER_ON) ?: false,
-        layerBackingId = savedStateHandle.get<String>(KEY_LAYER_BACKING),
         pendingMicrophoneAction = savedStateHandle.get<String>(KEY_PENDING_MIC)
             ?.let { stored -> runCatching { MicrophoneAction.valueOf(stored) }.getOrNull() },
         pendingOverdubProjectId = savedStateHandle.get<String>(KEY_PENDING_OVERDUB),
@@ -507,8 +497,6 @@ internal class AppViewModel(
         const val KEY_HOME = "homeProjectId"
         const val KEY_TRIM_TRACK = "trimTrackId"
         const val KEY_TRIM_CLIP = "trimClipId"
-        const val KEY_LAYER_ON = "layerOn"
-        const val KEY_LAYER_BACKING = "layerBackingId"
         const val KEY_PENDING_MIC = "pendingMicrophoneAction"
         const val KEY_PENDING_OVERDUB = "pendingOverdubProjectId"
         const val KEY_CLICK_BPM = "pendingClickBpm"

@@ -54,8 +54,8 @@ fun OverdubCalibrationScreen(route: OverdubRoute?, onBack: () -> Unit) {
         SynthTopBar("Timing calibration", { if (!busy) onBack() }, backLabel = "Sketch")
         SynthPanel {
             if (route == null) {
-                Text("No identified Layer route yet.", color = Synth.text, style = MaterialTheme.typography.titleMedium)
-                Text("Run one Layer take with the wired route you intend to use. Kanatron will show its route and rates here. Bluetooth timing is not verified.", color = Synth.muted)
+                Text("No identified overdub route yet.", color = Synth.text, style = MaterialTheme.typography.titleMedium)
+                Text("Run one overdub with the wired route you intend to use. Kanatron will show its route and rates here. Bluetooth timing is not verified.", color = Synth.muted)
             } else {
                 Text(route.displayName, color = Synth.text, style = MaterialTheme.typography.titleMedium)
                 Text("Capture ${route.captureSampleRate} Hz · backing ${route.backingSampleRate} Hz · project ${route.projectSampleRate} Hz", color = Synth.muted)

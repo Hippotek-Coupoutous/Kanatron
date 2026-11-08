@@ -109,10 +109,10 @@ class ProjectRepository(context: Context) {
     fun directPlaybackFile(project: Project): File? =
         directSource(project)?.let(::sourceFile)?.takeIf(File::isFile)
 
-    /** Holds the private rendered WAV only while the bounded export callback consumes it. */
+    /** Holds the private rendered WAV, and whether it clipped, only while the bounded callback consumes it. */
     fun <T> withTemporaryWav(
         project: Project,
-        consume: (File) -> T
+        consume: (wav: File, clipped: Boolean) -> T
     ): T = synchronized(ARRANGEMENT_WORK_LOCK) {
         if (!arrangementWork.isDirectory && !arrangementWork.mkdirs()) {
             throw IOException("Could not create the temporary mix folder.")
@@ -125,32 +125,20 @@ class ProjectRepository(context: Context) {
         }
         val temp = File.createTempFile(MIX_SOURCE_PREFIX, MIX_SOURCE_SUFFIX, arrangementWork)
         try {
-            MultitrackRenderer.renderToWav(project, ::sourceFile, temp)
-            consume(temp)
+            consume(temp, MultitrackRenderer.renderToWav(project, ::sourceFile, temp))
         } finally {
             temp.delete()
         }
     }
 
-    /** Persists a completed mic-only take as a new, frame-positioned track on the backing project. */
-    fun appendRecordedTake(baseProjectId: String, takeProjectId: String, positionFrames: Long): Project {
-        require(positionFrames >= 0L)
-        require(baseProjectId != takeProjectId)
-        synchronized(PROJECT_LOCK) {
-            val base = get(baseProjectId) ?: error("The backing project could not be found.")
-            val take = get(takeProjectId) ?: error("The recorded take could not be found.")
-            require(audioFile(take).isFile) { "The recorded take's WAV is missing." }
-            val takeClip = take.firstClip
-            val clip = ProjectClip(
-                id = "clip-${UUID.randomUUID()}",
-                source = takeClip.source,
-                positionFrames = positionFrames,
-                trim = takeClip.trim
-            )
-            val updated = ProjectArrangementActions.addTracks(
-                base, listOf(ProjectTrack("track-${UUID.randomUUID()}", take.name, listOf(clip)))
-            )
-            return saveEditState(updated)
+    /**
+     * Flattens the backing and a placed take into a new recording; both originals stay untouched.
+     * Returns null, committing nothing, when the sum would clip.
+     */
+    fun saveOverdub(base: Project, take: ProjectClip): Project? {
+        val mix = ProjectArrangementActions.overdub(base, take)
+        return withTemporaryWav(mix) { wav, clipped ->
+            if (clipped) null else saveTake(UUID.randomUUID().toString(), wav, mix.sampleRate, mix.channels, mix.totalFrames)
         }
     }
 

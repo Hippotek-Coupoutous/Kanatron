@@ -30,12 +30,13 @@ object MultitrackRenderer {
     fun clipFrameCount(clip: ProjectClip, sampleRate: Int): Long =
         resampledFrames(clip.trim.frameCount, clip.source.sampleRate, sampleRate, clip.rateCorrectionPpm)
 
+    /** Returns true when the sum exceeded PCM16 and some samples were clamped. */
     fun renderToWav(
         project: Project,
         resolveSource: (ProjectAudioSource) -> File,
         destination: File,
         cancelled: AtomicBoolean = AtomicBoolean(false)
-    ) {
+    ): Boolean {
         val frames = project.totalFrames
         val channels = project.tracks.flatMap(ProjectTrack::clips).maxOfOrNull { it.source.channels } ?: 1
         require(channels == project.channels) { "Project channel count does not match its sources." }
@@ -60,6 +61,7 @@ object MultitrackRenderer {
 
             val temp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, parent)
             var committed = false
+            var clipped = false
             try {
                 FileOutputStream(temp).use { output ->
                     WavFormat.writeHeader(output, channels, project.sampleRate, dataBytes)
@@ -76,6 +78,7 @@ object MultitrackRenderer {
                         for (sum in sums) {
                             val rounded = Math.round(sum)
                             val sample = rounded.coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toInt()
+                            if (sample.toLong() != rounded) clipped = true
                             putPcm16(pcm, byteOffset, sample)
                             byteOffset += 2
                         }
@@ -86,6 +89,7 @@ object MultitrackRenderer {
                 }
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 committed = true
+                return clipped
             } finally {
                 if (!committed) Files.deleteIfExists(temp.toPath())
             }

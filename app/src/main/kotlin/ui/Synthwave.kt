@@ -43,7 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** Glyphs drawn on a 24-unit grid, one stroke weight, so no icon dependency is needed. */
-enum class SynthIcon { Play, Pause, Stop, Rec, Import, Share, Click, Layer, Trim, Mix, Back, Delete, Library, Sketch, Tuner }
+enum class SynthIcon { Play, Pause, Stop, Rec, Import, Share, Click, Overdub, Trim, Mix, Back, Delete, Library, Sketch, Tuner }
 
 @Composable
 fun SynthGlyph(icon: SynthIcon, tint: Color, modifier: Modifier = Modifier.size(28.dp)) {
@@ -63,7 +63,7 @@ private fun DrawScope.drawGlyph(icon: SynthIcon, tint: Color) {
         SynthIcon.Import -> { line(12f, 3f, 12f, 15f); line(12f, 15f, 7.5f, 10.5f); line(12f, 15f, 16.5f, 10.5f); line(4f, 15f, 4f, 20f); line(4f, 20f, 20f, 20f); line(20f, 20f, 20f, 15f) }
         SynthIcon.Share -> { drawCircle(tint, 2.5f * u, p(18f, 5f), style = stroke); drawCircle(tint, 2.5f * u, p(6f, 12f), style = stroke); drawCircle(tint, 2.5f * u, p(18f, 19f), style = stroke); line(8.2f, 10.8f, 15.8f, 6.4f); line(8.2f, 13.2f, 15.8f, 17.6f) }
         SynthIcon.Click -> { drawPath(Path().apply { moveTo(9 * u, 3 * u); lineTo(15 * u, 3 * u); lineTo(19 * u, 21 * u); lineTo(5 * u, 21 * u); close() }, tint, style = stroke); line(12f, 15f, 17f, 6f); line(8f, 17f, 16f, 17f) }
-        SynthIcon.Layer -> { drawArc(tint, 180f, 180f, false, p(4f, 4f), Size(16 * u, 16 * u), style = stroke); drawRoundRect(tint, p(3f, 13f), Size(4 * u, 7 * u), androidx.compose.ui.geometry.CornerRadius(1.5f * u)); drawRoundRect(tint, p(17f, 13f), Size(4 * u, 7 * u), androidx.compose.ui.geometry.CornerRadius(1.5f * u)) }
+        SynthIcon.Overdub -> { drawArc(tint, 180f, 180f, false, p(4f, 4f), Size(16 * u, 16 * u), style = stroke); drawRoundRect(tint, p(3f, 13f), Size(4 * u, 7 * u), androidx.compose.ui.geometry.CornerRadius(1.5f * u)); drawRoundRect(tint, p(17f, 13f), Size(4 * u, 7 * u), androidx.compose.ui.geometry.CornerRadius(1.5f * u)) }
         SynthIcon.Trim -> { drawCircle(tint, 3 * u, p(6f, 6f), style = stroke); drawCircle(tint, 3 * u, p(6f, 18f), style = stroke); line(8.5f, 7.5f, 20f, 18f); line(8.5f, 16.5f, 20f, 6f) }
         SynthIcon.Mix -> {
             for (y0 in listOf(8f, 16f)) drawPath(Path().apply {

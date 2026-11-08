@@ -103,6 +103,61 @@ class MultitrackRendererMixTest {
         assertArrayEquals(before, source.readBytes())
     }
 
+    @Test
+    fun `overdub keeps the take offset and duplicates a mono take`() {
+        val root = tempFolder.root
+        writeWav(File(root, "base.wav"), channels = 2, sampleRate = 48_000, samples = listOf(100, -100, 200, -200, 300, -300, 400, -400))
+        writeWav(File(root, "take.wav"), channels = 1, sampleRate = 48_000, samples = listOf(10, 20))
+        val base = project(ProjectTrack("track-main", "Base", listOf(clip("clip-main", "base.wav", 2, 4))), channels = 2)
+        val take = clip("clip-main", "take.wav", 1, 2).copy(positionFrames = 3L)
+
+        val destination = File(root, "mix.wav")
+        val clipped = MultitrackRenderer.renderToWav(ProjectArrangementActions.overdub(base, take), { File(root, it.wav) }, destination)
+
+        assertEquals(false, clipped)
+        assertEquals(listOf(100, -100, 200, -200, 300, -300, 410, -390, 20, 20), pcm(destination))
+    }
+
+    @Test
+    fun `overdub of a stereo take over a mono backing widens the mix to stereo`() {
+        val root = tempFolder.root
+        writeWav(File(root, "base.wav"), channels = 1, sampleRate = 48_000, samples = listOf(100, 200))
+        writeWav(File(root, "take.wav"), channels = 2, sampleRate = 48_000, samples = listOf(1, -1, 2, -2))
+        val base = project(ProjectTrack("track-main", "Base", listOf(clip("clip-main", "base.wav", 1, 2))), channels = 1)
+
+        val mix = ProjectArrangementActions.overdub(base, clip("clip-main", "take.wav", 2, 2))
+        val destination = File(root, "mix.wav")
+        MultitrackRenderer.renderToWav(mix, { File(root, it.wav) }, destination)
+
+        assertEquals(2, mix.channels)
+        assertEquals(listOf(101, 99, 202, 198), pcm(destination))
+    }
+
+    @Test
+    fun `overdub that sums past full scale clamps and reports clipping`() {
+        val root = tempFolder.root
+        writeWav(File(root, "base.wav"), channels = 1, sampleRate = 48_000, samples = listOf(32_767, -32_768))
+        writeWav(File(root, "take.wav"), channels = 1, sampleRate = 48_000, samples = listOf(32_767, -32_768))
+        val base = project(ProjectTrack("track-main", "Base", listOf(clip("clip-main", "base.wav", 1, 2))), channels = 1)
+
+        val mix = ProjectArrangementActions.overdub(base, clip("clip-main", "take.wav", 1, 2))
+        val destination = File(root, "mix.wav")
+
+        assertEquals(true, MultitrackRenderer.renderToWav(mix, { File(root, it.wav) }, destination))
+        assertEquals(listOf(32_767, -32_768), pcm(destination))
+    }
+
+    private fun clip(id: String, wav: String, channels: Int, frames: Long) =
+        ProjectClip(id, ProjectAudioSource(wav, 48_000, channels, frames), 0L, TrimRange(0, frames))
+
+    private fun project(track: ProjectTrack, channels: Int) =
+        Project("p", "Base", 48_000, channels, 0L, tracks = listOf(track))
+
+    private fun pcm(file: File): List<Int> {
+        val bytes = file.readBytes()
+        return List((bytes.size - 44) / 2) { pcm16At(bytes, 44 + it * 2) }
+    }
+
     private fun writeWav(file: File, channels: Int, sampleRate: Int, samples: List<Int>) {
         val payload = ByteArray(samples.size * 2)
         samples.forEachIndexed { index, value -> putPcm16(payload, index * 2, value) }

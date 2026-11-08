@@ -86,12 +86,11 @@ internal fun SketchScreen(
     current: Project?,
     currentWav: File?,
     draft: Project?,
-    layering: Boolean,
     click: ClickEngine,
-    layerOn: Boolean,
-    onLayerToggle: () -> Unit,
     onRecord: (MonitorClick?) -> Unit,
+    onOverdub: (backing: Project, MonitorClick?) -> Unit,
     onSaveDraft: (Project) -> Unit,
+    onSaveAndOverdub: (backing: Project, MonitorClick?) -> Unit,
     onDiscardDraft: (Project) -> Unit,
     onDiscardAndRecord: (Project, MonitorClick?) -> Unit,
     onPauseResume: () -> Unit,
@@ -110,7 +109,8 @@ internal fun SketchScreen(
     val clickState by click.state.collectAsState()
     var clickPanel by rememberSaveable { mutableStateOf(false) }
     var countInBars by rememberSaveable { mutableStateOf(0) }
-    var draftPrompt by remember(draft?.id) { mutableStateOf<DraftPrompt?>(null) }
+    var draftPrompt by rememberSaveable(draft?.id) { mutableStateOf<DraftPrompt?>(null) }
+    var overdubbing by rememberSaveable { mutableStateOf(false) }
     var seekPreview by remember(current?.id) { mutableStateOf<Long?>(null) }
     val tapTimes = remember { mutableListOf<Long>() }
     val peaks by produceState(initialValue = emptyList<Peak>(), key1 = wav?.absolutePath) {
@@ -133,11 +133,15 @@ internal fun SketchScreen(
         saved -> "Saved"
         else -> "Ready"
     }
-    fun startRecording() {
+    fun monitorClick(): MonitorClick? =
+        if (clickState.running) MonitorClick(clickState.bpm, clickState.beatsPerBar, countInBars) else null
+    /** Every take starts silent: playback and the free-running click stop before the microphone opens. */
+    fun startTake(backing: Project?, start: (MonitorClick?) -> Unit) {
         player?.stop()
-        val monitor = if (clickState.running) MonitorClick(clickState.bpm, clickState.beatsPerBar, countInBars) else null
+        val monitor = monitorClick()
         click.stop()
-        onRecord(monitor)
+        overdubbing = backing != null
+        start(monitor)
     }
     val timerFrames = when {
         previewing -> recording.previewFrame
@@ -243,7 +247,7 @@ internal fun SketchScreen(
                 }
                 if (active) Notice("${recording.inputDevice} · ${recording.sampleRate} Hz")
                 cue?.let { Notice(it) }
-                if (layering) Notice("Wired headphones are recommended. Bluetooth timing is unverified.")
+                if (overdubbing && active) Notice("Wired headphones are recommended. Bluetooth timing is unverified.")
                 if (recording.silent && lastTakeShown) Notice("Silent recording saved to your library.", Synth.yellow)
                 if (active || lastTakeShown) recording.interruptionNotice?.let { Notice(it, MaterialTheme.colorScheme.error) }
                 if (active || lastTakeShown) recording.alignmentNotice?.let { Notice(it) }
@@ -309,7 +313,7 @@ internal fun SketchScreen(
                         when {
                             active -> onPauseResume()
                             draft != null -> draftPrompt = DraftPrompt.RECORD
-                            else -> startRecording()
+                            else -> startTake(null, onRecord)
                         }
                     },
                     // While a take is starting there is no recorder to pause yet.
@@ -329,8 +333,14 @@ internal fun SketchScreen(
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Tile(
-                    SynthIcon.Layer, if (layerOn) "Layer on" else "Layer", onLayerToggle, Modifier.weight(1f),
-                    selected = layerOn, description = "Layer overdub", enabled = !active
+                    SynthIcon.Overdub, "Overdub",
+                    {
+                        val backing = current ?: return@Tile
+                        if (backing.draft) draftPrompt = DraftPrompt.OVERDUB else startTake(backing) { onOverdub(backing, it) }
+                    },
+                    Modifier.weight(1f),
+                    description = "Overdub over this recording",
+                    enabled = current != null && current.tracks.size == 1 && !active
                 )
                 Tile(
                     SynthIcon.Click, "${clickState.bpm}", { if (clickState.running) click.stop() else click.start() }, Modifier.weight(1f),
@@ -355,7 +365,7 @@ internal fun SketchScreen(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (n in listOf(2, 3, 4, 6)) BigButton("$n", { click.setBeatsPerBar(n) }, Modifier.weight(1f).semantics { selected = clickState.beatsPerBar == n }, primary = clickState.beatsPerBar == n)
                 }
-                Text("Layer count-in", color = Synth.muted)
+                Text("Count-in", color = Synth.muted)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(0, 1, 2).forEach { bars ->
                         BigButton(if (bars == 0) "Off" else "$bars bar${if (bars == 1) "" else "s"}", { countInBars = bars }, Modifier.weight(1f).semantics { selected = countInBars == bars }, primary = countInBars == bars)
@@ -365,7 +375,20 @@ internal fun SketchScreen(
         }
         val prompt = draftPrompt
         val promptedDraft = draft
-        if (prompt != null && promptedDraft != null) {
+        if (prompt == DraftPrompt.OVERDUB && promptedDraft != null) {
+            AlertDialog(
+                onDismissRequest = { draftPrompt = null },
+                title = { Text("Save original to library first?") },
+                text = { Text("This take is unsaved. Overdubbing saves it to your library, then records over it into a new recording.") },
+                confirmButton = {
+                    TextButton({
+                        draftPrompt = null
+                        startTake(promptedDraft) { onSaveAndOverdub(promptedDraft, it) }
+                    }) { Text("Save and overdub") }
+                },
+                dismissButton = { TextButton({ draftPrompt = null }) { Text("Cancel") } }
+            )
+        } else if (prompt != null && promptedDraft != null) {
             val recordingAfter = prompt == DraftPrompt.RECORD
             AlertDialog(
                 onDismissRequest = { draftPrompt = null },
@@ -381,12 +404,10 @@ internal fun SketchScreen(
                     TextButton(
                         onClick = {
                             draftPrompt = null
-                            player?.stop()
                             if (recordingAfter) {
-                                val monitor = if (clickState.running) MonitorClick(clickState.bpm, clickState.beatsPerBar, countInBars) else null
-                                click.stop()
-                                onDiscardAndRecord(promptedDraft, monitor)
+                                startTake(null) { onDiscardAndRecord(promptedDraft, it) }
                             } else {
+                                player?.stop()
                                 onDiscardDraft(promptedDraft)
                             }
                         },
@@ -400,7 +421,7 @@ internal fun SketchScreen(
     }
 }
 
-private enum class DraftPrompt { DISCARD, RECORD }
+private enum class DraftPrompt { DISCARD, RECORD, OVERDUB }
 
 @Composable
 private fun StatusWord(status: String, recording: Boolean, paused: Boolean, saved: Boolean) {

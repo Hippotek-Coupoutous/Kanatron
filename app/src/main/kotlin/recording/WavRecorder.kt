@@ -35,7 +35,7 @@ data class WavRecorderState(
     val phase: RecordingPhase = RecordingPhase.IDLE,
     val frames: Long = 0,
     val sampleRate: Int = 48_000,
-    val level: RecordingLevel = RecordingLevel(0f, 0f),
+    val level: RecordingLevel = RecordingLevel(0f),
     val error: String? = null,
     val inputDevice: String = "System microphone",
     val silenceWarning: Boolean = false,
@@ -122,7 +122,7 @@ class WavRecorder(
     fun pause() {
         if (worker == null || stopRequested.get()) return
         paused = true
-        publish(mutableState.value.copy(phase = RecordingPhase.PAUSED, level = RecordingLevel(0f, 0f)))
+        publish(mutableState.value.copy(phase = RecordingPhase.PAUSED, level = RecordingLevel(0f)))
     }
 
     fun resume() {
@@ -131,21 +131,10 @@ class WavRecorder(
         publish(mutableState.value.copy(phase = RecordingPhase.RECORDING))
     }
 
-    fun stop() {
-        requestStop()
-        worker?.join(5_000L)
-    }
-
     /** Partial PCM range; pause first so the worker stops appending. */
     fun captured(): CapturedTake = CapturedTake(file, openedRate, openedChannels, capturedFrames)
 
     fun requestStop() {
-        stopRequested.set(true)
-        runCatching { recorder?.stop() }
-    }
-
-    fun interrupt(reason: String) {
-        failure = reason
         stopRequested.set(true)
         runCatching { recorder?.stop() }
     }
@@ -260,7 +249,7 @@ class WavRecorder(
             val result = RecordingTake(id, file, openedRate, openedChannels, capturedFrames, failure, allSamplesZero)
             publish(WavRecorderState(
                 if (failure == null) RecordingPhase.COMPLETE else RecordingPhase.FAILED, capturedFrames, openedRate,
-                RecordingLevel(0f, 0f), failure, inputDevice
+                RecordingLevel(0f), failure, inputDevice
             ))
             onFinished(result)
         }

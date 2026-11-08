@@ -100,7 +100,7 @@ data class Project(
         require(sampleRate in SUPPORTED_SAMPLE_RATES)
         require(channels in 1..2)
         requireValidTracks(tracks, channels, sampleRate)
-        require(undoHistory.size <= UndoPolicy.MAX_UNDO) { "Undo history exceeds its limit" }
+        require(undoHistory.size <= MAX_UNDO) { "Undo history exceeds its limit" }
         undoHistory.forEach { snapshot ->
             requireValidTracks(snapshot.tracks, channels, sampleRate)
         }
@@ -132,6 +132,7 @@ data class Project(
         const val MAX_JSON_BYTES = 64 * 1024
         const val MAX_TRACKS = 4
         const val MAX_CLIPS = 16
+        const val MAX_UNDO = 20
 
         fun fromJson(json: String): Project {
             require(json.toByteArray(Charsets.UTF_8).size <= MAX_JSON_BYTES) { "Project JSON is too large" }

@@ -24,7 +24,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
 
 class ProjectRepository(context: Context) {
 
@@ -111,24 +110,20 @@ class ProjectRepository(context: Context) {
     /** Holds the private rendered WAV only while the bounded export callback consumes it. */
     fun <T> withTemporaryWav(
         project: Project,
-        cancelled: AtomicBoolean = AtomicBoolean(false),
         consume: (File) -> T
     ): T = synchronized(ARRANGEMENT_WORK_LOCK) {
         if (!arrangementWork.isDirectory && !arrangementWork.mkdirs()) {
             throw IOException("Could not create the temporary mix folder.")
         }
         cleanupArrangementWorkTemps()
-        val expectedBytes = Math.addExact(
-            Math.multiplyExact(Math.multiplyExact(project.totalFrames, project.channels.toLong()), 2L),
-            WavFormat.HEADER_BYTES.toLong()
-        )
+        val expectedBytes = WavFormat.outputBytes(project.totalFrames, project.channels)
         if (expectedBytes > WavFormat.MAX_WAV_BYTES) throw IOException("This WAV mix exceeds the supported file size.")
         if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(arrangementWork), expectedBytes)) {
             throw IOException("Not enough free storage to prepare the project for export.")
         }
-        val temp = File.createTempFile("mix-source-", ".wav", arrangementWork)
+        val temp = File.createTempFile(MIX_SOURCE_PREFIX, MIX_SOURCE_SUFFIX, arrangementWork)
         try {
-            MultitrackRenderer.renderToWav(project, ::sourceFile, temp, cancelled)
+            MultitrackRenderer.renderToWav(project, ::sourceFile, temp)
             consume(temp)
         } finally {
             temp.delete()
@@ -173,13 +168,13 @@ class ProjectRepository(context: Context) {
             Math.addExact(format.dataOffset, format.dataSize) <= file.length()
     }.getOrDefault(false)
 
+    private fun isMixSourceTemp(name: String): Boolean =
+        name.startsWith(MIX_SOURCE_PREFIX) && name.endsWith(MIX_SOURCE_SUFFIX)
+
     /** Caller holds ARRANGEMENT_WORK_LOCK to protect any in-flight render/export lease. */
     private fun cleanupArrangementWorkTemps() {
         arrangementWork.listFiles { file ->
-            file.isFile && (
-                file.name.matches(MIX_SOURCE_TEMP) ||
-                    file.name.matches(MIX_RENDER_TEMP)
-                )
+            file.isFile && (isMixSourceTemp(file.name) || MultitrackRenderer.isRenderTemp(file.name))
         }.orEmpty().forEach { it.delete() }
     }
 
@@ -230,10 +225,6 @@ class ProjectRepository(context: Context) {
     }
 
     fun delete(id: String) {
-        // Damaged data must stop the delete before export retention prunes anything.
-        get(id)
-        // Wait for any in-flight export and persist its share pin before removing its source.
-        exportRetention.projectDeleted(id)
         synchronized(PROJECT_LOCK) {
             val project = get(id)
             if (project != null) {
@@ -268,23 +259,11 @@ class ProjectRepository(context: Context) {
             }
             val finalFile = File(recordings, "take-$takeId.wav")
             val partialFile = File(recordings, "take-$takeId.partial.wav")
-            if (wav.absoluteFile != finalFile.absoluteFile && finalFile.exists()) {
-                throw IOException("A recording WAV with this id already exists.")
-            }
+            if (finalFile.exists()) throw IOException("A recording WAV with this id already exists.")
 
-            try {
-                validateCompletedTake(wav, sampleRate, channels, frames)
-            } catch (failure: IOException) {
-                if (wav.absoluteFile == finalFile.absoluteFile && finalFile.isFile && !partialFile.exists()) {
-                    if (finalFile.renameTo(partialFile)) {
-                        throw IOException("${failure.message} The file was kept as a partial recording for startup recovery.", failure)
-                    }
-                    throw IOException("${failure.message} The file could not be moved to a recoverable partial path.", failure)
-                }
-                throw failure
-            }
+            validateCompletedTake(wav, sampleRate, channels, frames)
 
-            if (wav.absoluteFile != finalFile.absoluteFile && !wav.renameTo(finalFile)) {
+            if (!wav.renameTo(finalFile)) {
                 throw IOException("Could not finalize recording; the partial file was kept for startup recovery.")
             }
             return try {
@@ -369,8 +348,8 @@ class ProjectRepository(context: Context) {
 
     internal companion object {
         private val RECORDING_PATH = Regex("(?:take-$PROJECT_ID_PATTERN(?:\\.partial)?|import-$PROJECT_ID_PATTERN)\\.wav")
-        private val MIX_RENDER_TEMP = Regex("mix-render-[A-Za-z0-9]+\\.tmp")
-        private val MIX_SOURCE_TEMP = Regex("mix-source-[A-Za-z0-9]+\\.wav")
+        private const val MIX_SOURCE_PREFIX = "mix-source-"
+        private const val MIX_SOURCE_SUFFIX = ".wav"
         private val PROJECT_LOCK = Any()
         private val ARRANGEMENT_WORK_LOCK = Any()
     }

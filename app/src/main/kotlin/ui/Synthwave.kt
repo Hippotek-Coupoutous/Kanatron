@@ -43,7 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** Glyphs drawn on a 24-unit grid, one stroke weight, so no icon dependency is needed. */
-enum class SynthIcon { Play, Pause, Stop, Rec, Import, Share, Click, Layer, Trim, Mix, Back, Edit, Delete, Library, Sketch, Tuner }
+enum class SynthIcon { Play, Pause, Stop, Rec, Import, Share, Click, Layer, Trim, Mix, Back, Delete, Library, Sketch, Tuner }
 
 @Composable
 fun SynthGlyph(icon: SynthIcon, tint: Color, modifier: Modifier = Modifier.size(28.dp)) {
@@ -73,7 +73,6 @@ private fun DrawScope.drawGlyph(icon: SynthIcon, tint: Color) {
             }, tint, style = stroke)
         }
         SynthIcon.Back -> { line(15f, 5f, 8f, 12f); line(8f, 12f, 15f, 19f) }
-        SynthIcon.Edit -> { drawPath(Path().apply { moveTo(4 * u, 20 * u); lineTo(8 * u, 20 * u); lineTo(19 * u, 9 * u); lineTo(15 * u, 5 * u); lineTo(4 * u, 16 * u); close() }, tint, style = stroke) }
         SynthIcon.Delete -> { line(4f, 7f, 20f, 7f); line(9f, 7f, 10f, 3.5f); line(10f, 3.5f, 14f, 3.5f); line(14f, 3.5f, 15f, 7f); drawPath(Path().apply { moveTo(6 * u, 7 * u); lineTo(7 * u, 20 * u); lineTo(17 * u, 20 * u); lineTo(18 * u, 7 * u) }, tint, style = stroke) }
         SynthIcon.Library -> for (y in listOf(6f, 12f, 18f)) { drawCircle(tint, 1.4f * u, p(4.5f, y)); line(8.5f, y, 20.5f, y) }
         SynthIcon.Sketch -> drawPath(Path().apply {

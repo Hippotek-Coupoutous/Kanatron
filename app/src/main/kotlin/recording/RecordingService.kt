@@ -41,7 +41,7 @@ data class RecordingServiceState(
     val phase: RecordingPhase = RecordingPhase.IDLE,
     val frames: Long = 0L,
     val sampleRate: Int = 48_000,
-    val level: RecordingLevel = RecordingLevel(0f, 0f),
+    val level: RecordingLevel = RecordingLevel(0f),
     val error: String? = null,
     val projectId: String? = null,
     val inputDevice: String = "System microphone",
@@ -212,7 +212,6 @@ class RecordingService : Service() {
                     clockTracker.attach(
                         SharedAudioTimeline(
                             projectSampleRate = project.sampleRate,
-                            projectStartFrame = 0L,
                             captureSampleRate = input.sampleRate,
                             backingSampleRate = project.sampleRate,
                             countInFrames = monitorClick?.countInFrames(project.sampleRate) ?: 0L

@@ -76,7 +76,7 @@ object ProjectArrangementActions {
         require(tracks.size <= Project.MAX_TRACKS) { "A project supports up to ${Project.MAX_TRACKS} tracks." }
         require(tracks.sumOf { it.clips.size } <= Project.MAX_CLIPS) { "A project supports up to ${Project.MAX_CLIPS} clips." }
         require(MultitrackRenderer.frameCount(tracks, project.sampleRate) > 0L) { "A project must contain audio." }
-        var history = (project.undoHistory + ProjectArrangementSnapshot(project.tracks)).takeLast(UndoPolicy.MAX_UNDO)
+        var history = (project.undoHistory + ProjectArrangementSnapshot(project.tracks)).takeLast(Project.MAX_UNDO)
         var updated = project.copy(tracks = tracks, undoHistory = history)
         // A normal edit measures one serialisation; only an oversized edit trims history and re-measures.
         var size = updated.jsonBytes()

@@ -29,7 +29,8 @@ object WavExporter {
         val parent = slice.parent
         val format = slice.format
         val payloadSize = slice.payloadSize
-        if (!ExportPreflight.hasEnoughSpace(PlatformPorts.availableBytes(parent), payloadSize)) {
+        val outputBytes = WavFormat.outputBytes(trim.frameCount, format.channels)
+        if (!ExportPreflight.hasEnoughOutputSpace(PlatformPorts.availableBytes(parent), outputBytes)) {
             throw IOException("Not enough free space to save this export.")
         }
 

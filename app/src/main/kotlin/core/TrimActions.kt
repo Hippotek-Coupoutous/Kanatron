@@ -26,10 +26,9 @@ class TrimActions(
         return apply(TrimRange(start, end))
     }
 
-    fun setRangeMs(startMs: BigDecimal, endMs: BigDecimal, editedEdge: TrimEdge? = null): TrimRange = when (editedEdge) {
+    fun setRangeMs(startMs: BigDecimal, endMs: BigDecimal, editedEdge: TrimEdge): TrimRange = when (editedEdge) {
         TrimEdge.Start -> setStartAtFrame(millisecondsToFrames(startMs))
         TrimEdge.End -> setEndAtFrame(millisecondsToFrames(endMs))
-        null -> setRange(millisecondsToFrames(startMs), millisecondsToFrames(endMs))
     }
 
     /** Moves whichever boundary is currently selected, retaining at least one frame. */

@@ -55,20 +55,17 @@ internal data class AppUiState(
     val audioFiles: Map<String, File> = emptyMap(),
     val unreadableProjectCount: Int = 0,
     val libraryError: String? = null,
-    val silentRecoveryFiles: List<File> = emptyList(),
     val selectedProject: Project? = null,
     val selectionError: String? = null,
     val selectionErrorForId: String? = null,
-    val importUri: Uri? = null,
     val importProgress: ImportProgress? = null,
     val importFailure: String? = null,
-    val importWasRestored: Boolean = false,
     val importedProjectId: String? = null
 )
 
 /**
  * The one owner of app state: screens render it, Activity callbacks write through intents.
- * Retains library reads, the route and a single import across Activity and process recreation.
+ * Retains library reads, the route and a single import across Activity recreation.
  */
 internal class AppViewModel(
     application: Application,
@@ -85,7 +82,6 @@ internal class AppViewModel(
     private val playbackJobs = mutableMapOf<String, Job>()
     private var importJob: Job? = null
     private var importCancellation: ImportCancellation? = null
-    private var lastFinishedImportUri: Uri? = null
     private var draftActionInFlight = false
 
     init {
@@ -198,8 +194,7 @@ internal class AppViewModel(
                     val audioFiles = (library.projects + library.drafts).mapNotNull { project ->
                         runCatching { repository.directPlaybackFile(project)?.let { project.id to it } }.getOrNull()
                     }.toMap()
-                    val silentFiles = if (startup) repository.recovery.silentRecoveryCandidates(RecordingActivePath.path) else emptyList()
-                    LibrarySnapshot(library, audioFiles, silentFiles)
+                    LibrarySnapshot(library, audioFiles)
                 }
                 if (generation == libraryGeneration) {
                     val existingAudioFiles = _state.value.audioFiles
@@ -221,7 +216,6 @@ internal class AppViewModel(
                         }
                     }
                 }
-                if (startup) _state.update { it.copy(silentRecoveryFiles = result.silentFiles) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
@@ -311,21 +305,14 @@ internal class AppViewModel(
         job.start()
     }
 
-    fun startImport(uri: Uri, restored: Boolean = false) {
-        if (importJob?.isActive == true) {
-            if (uri == _state.value.importUri) _state.update { it.copy(importWasRestored = true) }
-            return
-        }
-        if (restored && _state.value.importUri == null && lastFinishedImportUri == uri) return
-        lastFinishedImportUri = null
+    fun startImport(uri: Uri) {
+        if (importJob?.isActive == true) return
         importCancellation = ImportCancellation()
         val cancellation = importCancellation!!
         _state.update {
             it.copy(
-                importUri = uri,
                 importProgress = ImportProgress(ImportStage.COPYING, 0L, null),
                 importFailure = null,
-                importWasRestored = restored,
                 importedProjectId = null
             )
         }
@@ -346,18 +333,17 @@ internal class AppViewModel(
                     repository.saveImported(id, decoded, imported.sampleRate, imported.channels, imported.totalFrames, imported.sourceName)
                 }
                 refreshLibrary(selectId = project.id).join()
-                _state.update { it.copy(importProgress = null, importUri = null, importedProjectId = project.id) }
+                _state.update { it.copy(importProgress = null, importedProjectId = project.id) }
             } catch (_: ImportCancelledException) {
-                _state.update { it.copy(importProgress = null, importFailure = "Import cancelled. No recording was added.", importUri = null) }
+                _state.update { it.copy(importProgress = null, importFailure = "Import cancelled. No recording was added.") }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
-                _state.update { it.copy(importProgress = null, importFailure = failure.message ?: "Could not import this audio file.", importUri = null) }
+                _state.update { it.copy(importProgress = null, importFailure = failure.message ?: "Could not import this audio file.") }
             } finally {
                 decoded.delete()
                 ImportActivePaths.finishOutput(decoded)
                 importCancellation = null
-                lastFinishedImportUri = uri
                 importJob = null
             }
         }
@@ -453,10 +439,6 @@ internal class AppViewModel(
 
     fun dismissUnreadableCount() { _state.update { it.copy(unreadableProjectCount = 0) } }
 
-    fun removeSilentRecovery(file: File) {
-        _state.update { it.copy(silentRecoveryFiles = it.silentRecoveryFiles.filterNot { candidate -> candidate == file }) }
-    }
-
     /** Every write goes through here so the process-death copy never drifts from the visible state. */
     private fun updateState(transform: (AppUiState) -> AppUiState) {
         _state.update(transform)
@@ -506,8 +488,7 @@ internal class AppViewModel(
 
     private data class LibrarySnapshot(
         val library: ProjectRepository.LibraryContents,
-        val audioFiles: Map<String, File>,
-        val silentFiles: List<File>
+        val audioFiles: Map<String, File>
     )
 
     private companion object {

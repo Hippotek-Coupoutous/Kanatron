@@ -22,10 +22,7 @@ internal class PreviewCache(private val directory: File) {
                 throw IOException("Could not create the project preview folder.")
             }
             cleanupRenderTemps()
-            val expectedBytes = Math.addExact(
-                Math.multiplyExact(Math.multiplyExact(project.totalFrames, project.channels.toLong()), 2L),
-                WavFormat.HEADER_BYTES.toLong()
-            )
+            val expectedBytes = WavFormat.outputBytes(project.totalFrames, project.channels)
             if (expectedBytes > MAX_PREVIEW_BYTES) {
                 throw IOException("This project is too large for the preview cache. Shorten its clips and try again.")
             }
@@ -98,13 +95,12 @@ internal class PreviewCache(private val directory: File) {
 
     /** Caller holds PREVIEW_LOCK so no live renderer's scratch file can be removed. */
     private fun cleanupRenderTemps() {
-        directory.listFiles { file -> file.isFile && file.name.matches(MIX_RENDER_TEMP) }
+        directory.listFiles { file -> file.isFile && MultitrackRenderer.isRenderTemp(file.name) }
             .orEmpty().forEach { it.delete() }
     }
 
     private companion object {
         val PREVIEW_PATH = Regex("$PROJECT_ID_PATTERN\\.[a-f0-9]{64}\\.wav")
-        val MIX_RENDER_TEMP = Regex("mix-render-[A-Za-z0-9]+\\.tmp")
         val PREVIEW_LOCK = Any()
         const val MAX_PREVIEW_BYTES = 512L * 1024 * 1024
         const val MAX_PREVIEW_COUNT = 8

@@ -14,7 +14,6 @@ object TunerPitch {
 
     private const val MIN_RMS = 0.008
     private const val CMND_THRESHOLD = 0.15
-    private const val MIN_CLARITY = 0.80
     private const val EDGE_TOLERANCE_CENTS = 2.0
     private const val LN_2 = 0.6931471805599453
     private val noteNames = arrayOf("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B")
@@ -65,10 +64,7 @@ object TunerPitch {
             }
             lag++
         }
-        if (candidate < 0 || 1 >= candidate || candidate >= maxLag) return null
-
-        val clarity = 1.0 - normalized[candidate]
-        if (clarity < MIN_CLARITY) return null
+        if (candidate < 0 || candidate >= maxLag) return null
 
         val left = differences[candidate - 1]
         val center = differences[candidate]

@@ -73,7 +73,6 @@ import com.kanatron.app.core.TrimActions
 import com.kanatron.app.core.TrimEdge
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.core.WavFormat
-import com.kanatron.app.core.firstClip
 import com.kanatron.app.core.parseExactTimeMillis
 import com.kanatron.app.data.ProjectRepository
 import com.kanatron.app.data.WavExporter
@@ -145,9 +144,8 @@ fun TrimScreen(
 
 private data class TrimTarget(val track: ProjectTrack, val clip: ProjectClip)
 
-/** Resolves an explicit clip, or the first clip for the original single-recording route. */
+/** Resolves the clip chosen in Mix; an unset target must never fall back to another clip. */
 private fun Project.trimTarget(trackId: String?, clipId: String?): TrimTarget? {
-    if (trackId == null && clipId == null) return TrimTarget(tracks.first(), firstClip)
     val track = tracks.firstOrNull { it.id == trackId } ?: return null
     val clip = track.clips.firstOrNull { it.id == clipId } ?: return null
     return TrimTarget(track, clip)

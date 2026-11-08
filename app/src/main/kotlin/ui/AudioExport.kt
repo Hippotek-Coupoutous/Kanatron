@@ -29,7 +29,7 @@ private fun isDestinationPermissionFailure(failure: Throwable): Boolean = when (
     is FileNotFoundException -> {
         val message = failure.message.orEmpty()
         message.contains("permission denied", true) || message.contains("EACCES", true) ||
-            message.matches(Regex(".*[\\\\/]\\.(?:wav-export|export-owner)-[A-Za-z0-9]+\\.tmp$")) ||
+            message.matches(Regex(".*[\\\\/]\\.wav-export-[A-Za-z0-9]+\\.tmp$")) ||
             message.matches(Regex(".*[\\\\/]mix-source-[A-Za-z0-9]+\\.wav$"))
     }
     else -> false

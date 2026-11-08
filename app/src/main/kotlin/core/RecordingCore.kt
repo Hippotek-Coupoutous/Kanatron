@@ -5,7 +5,7 @@ import java.io.EOFException
 import java.io.File
 import java.io.RandomAccessFile
 
-data class RecordingLevel(val peak: Float, val rms: Float) {
+data class RecordingLevel(val peak: Float) {
     val isClipping: Boolean get() = peak >= 0.98f
     val isLow: Boolean get() = peak < 0.015f
 }
@@ -71,17 +71,14 @@ object RecordingCore {
 
     fun level(pcm16le: ByteArray, byteCount: Int = pcm16le.size): RecordingLevel {
         require(byteCount in 0..pcm16le.size && byteCount % 2 == 0)
-        if (byteCount == 0) return RecordingLevel(0f, 0f)
+        if (byteCount == 0) return RecordingLevel(0f)
         var peak = 0
-        var squares = 0.0
         val samples = byteCount / 2
         for (i in 0 until samples) {
             val offset = i * 2
-            val sample = pcm16At(pcm16le, offset)
-            val magnitude = kotlin.math.abs(sample)
+            val magnitude = kotlin.math.abs(pcm16At(pcm16le, offset))
             peak = maxOf(peak, magnitude)
-            squares += sample.toDouble() * sample.toDouble()
         }
-        return RecordingLevel(peak / 32768f, kotlin.math.sqrt(squares / samples).toFloat() / 32768f)
+        return RecordingLevel(peak / 32768f)
     }
 }

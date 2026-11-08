@@ -13,12 +13,11 @@ import kotlinx.coroutines.flow.update
 
 private const val BLOCK_FRAMES = 480
 
-/** Metronome state; [beat] is the absolute index of the last beat heard, -1 before the first one. */
+/** Metronome state shared with the UI. */
 data class ClickState(
     val running: Boolean = false,
     val bpm: Int = 120,
     val beatsPerBar: Int = 4,
-    val beat: Long = -1,
 )
 
 /** Click track: two synthesized clicks mixed into one low-latency streaming [AudioTrack] by a dedicated thread. */
@@ -53,7 +52,7 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
             anchorFrame = 0L
             anchorBeat = 0L
             running = true
-            _state.update { it.copy(running = true, beat = -1) }
+            _state.update { it.copy(running = true) }
             thread = Thread({ loop() }, "click-engine").apply { start() }
         }
     }
@@ -112,7 +111,6 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
     private fun loop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
         val block = ShortArray(BLOCK_FRAMES)
-        var lastBeat = -1L
         // A worker that outlived stop() (blocked in write) exits as soon as a new start() replaced it.
         while (running && thread === Thread.currentThread()) {
             val anchor: Long
@@ -140,14 +138,6 @@ class ClickEngine(private val sampleRate: Int = 48_000) {
                 tail.copyInto(block, (-rel).toInt())
             }
             if (!writeBlock(t, block)) { stopFromWorker(); return }
-            val endedAt = rel + BLOCK_FRAMES
-            if (endedAt >= 0L) {
-                val beat = beat0 + beatsAt(endedAt, tempo)
-                if (beat > lastBeat) {
-                    lastBeat = beat
-                    _state.update { it.copy(beat = beat) }
-                }
-            }
             synchronized(lock) { framePosition += BLOCK_FRAMES }
         }
     }

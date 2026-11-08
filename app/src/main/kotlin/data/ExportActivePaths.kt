@@ -2,14 +2,12 @@ package com.kanatron.app.data
 
 import java.io.File
 
-/** Process-wide paths that a startup orphan sweep must leave alone. */
+/** Process-wide temp files that a startup orphan sweep must leave alone. */
 internal object ExportActivePaths {
     private val paths = mutableSetOf<String>()
     private val guard = Any()
 
-    fun begin(file: File) = synchronized(guard) { paths += file.absolutePath }
     fun finish(file: File) = synchronized(guard) { paths -= file.absolutePath }
-    fun snapshot(): Set<String> = synchronized(guard) { paths.toSet() }
     fun createTracked(create: () -> File): File = synchronized(guard) {
         create().also { paths += it.absolutePath }
     }

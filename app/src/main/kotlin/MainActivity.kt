@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -91,9 +90,6 @@ class MainActivity : ComponentActivity() {
         appViewModel = ViewModelProvider(this)[AppViewModel::class.java]
         consumeRecordNowIntent(intent)
         appViewModel.initialize()
-        savedInstanceState?.getString(STATE_PENDING_IMPORT_URI)?.let { savedUri ->
-            appViewModel.startImport(Uri.parse(savedUri), restored = true)
-        }
         enableEdgeToEdge()
         updatePermissionState()
 
@@ -181,14 +177,12 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        window.decorView.post { dispatchShortcutRecordRequest() }
     }
 
     override fun onResume() {
         super.onResume()
         updatePermissionState()
         if (recordingStartGate.onResume(appViewModel.state.value.microphoneGranted)) startRecordingServiceNow()
-        if (shortcutRequestPending) window.decorView.post { dispatchShortcutRecordRequest() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -197,17 +191,12 @@ class MainActivity : ComponentActivity() {
         consumeRecordNowIntent(intent)
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        appViewModel.state.value.importUri?.let { outState.putString(STATE_PENDING_IMPORT_URI, it.toString()) }
-        super.onSaveInstanceState(outState)
-    }
-
     private fun consumeRecordNowIntent(intent: Intent) {
-        if (intent.action == ACTION_RECORD_NOW || intent.getBooleanExtra(EXTRA_RECORD_NOW, false)) {
+        if (intent.action == ACTION_RECORD_NOW) {
             appViewModel.startShortcutRecord()
             shortcutRequestPending = true
-            intent.removeExtra(EXTRA_RECORD_NOW)
-            if (intent.action == ACTION_RECORD_NOW) intent.action = Intent.ACTION_MAIN
+            // Consume the action so an in-process redelivery cannot start a second take.
+            intent.action = Intent.ACTION_MAIN
             window.decorView.post { dispatchShortcutRecordRequest() }
         }
     }
@@ -261,9 +250,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        const val EXTRA_RECORD_NOW = "com.kanatron.app.extra.RECORD_NOW"
         const val ACTION_RECORD_NOW = "com.kanatron.app.action.RECORD_NOW"
-        private const val STATE_PENDING_IMPORT_URI = "pendingImportUri"
     }
 }
 
@@ -293,8 +280,6 @@ private fun KanatronApp(
     val homeId = appState.homeId
     val selected = appState.selectedProject
     var dismissedTakeError by remember { mutableStateOf<String?>(null) }
-    val silentRecoveryFiles = appState.silentRecoveryFiles
-    var silentRecoveryFailure by remember { mutableStateOf<String?>(null) }
     var shareFailure by remember { mutableStateOf<String?>(null) }
     var shareFailureProject by remember { mutableStateOf<Project?>(null) }
     var mixBusy by remember { mutableStateOf(false) }
@@ -381,7 +366,6 @@ private fun KanatronApp(
                     onRename = { project, name -> appViewModel.renameProject(project.id, name) },
                     onDelete = {
                         appViewModel.deleteProject(it.id)
-                        if (it.id == selectedId) appViewModel.selectProject(null)
                         if (it.id == homeId) appViewModel.setHome(null)
                     }
                 )
@@ -529,7 +513,6 @@ private fun KanatronApp(
                             progress = { (progress.completedBytes.toFloat() / progress.totalBytes.coerceAtLeast(1)).coerceIn(0f, 1f) },
                             modifier = Modifier.fillMaxWidth()
                         )
-                        if (appState.importWasRestored) Text("Import continued while this screen was recreated.")
                         Text(if (progress.totalBytes == null) "Working…" else "${(progress.completedBytes.toFloat() / progress.totalBytes.coerceAtLeast(1) * 100).toInt()}%")
                     }
                 },
@@ -569,44 +552,6 @@ private fun KanatronApp(
                 title = { Text("Import") },
                 text = { Text(notice) },
                 confirmButton = { TextButton(onClick = { appViewModel.setImportNotice(null) }) { Text("OK") } }
-            )
-        }
-        silentRecoveryFiles.isNotEmpty() -> {
-            val file = silentRecoveryFiles.first()
-            AlertDialog(
-                onDismissRequest = {},
-                title = { Text("Silent recording found") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("${file.name} contains only zero-valued audio samples. Save it to the library anyway?")
-                        silentRecoveryFailure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        scope.launch {
-                            try {
-                                withContext(Dispatchers.IO) { repository.recovery.recoverSilentTake(file) }
-                                appViewModel.refreshLibrary()
-                                appViewModel.removeSilentRecovery(file)
-                                silentRecoveryFailure = null
-                            } catch (failure: Throwable) {
-                                silentRecoveryFailure = failure.message ?: "Could not recover silent recording"
-                            }
-                        }
-                    }) { Text("Save anyway") }
-                },
-                dismissButton = {
-                    TextButton(onClick = {
-                        scope.launch {
-                            val deleted = withContext(Dispatchers.IO) { file.delete() || !file.exists() }
-                            if (deleted) {
-                                appViewModel.removeSilentRecovery(file)
-                                silentRecoveryFailure = null
-                            } else silentRecoveryFailure = "Could not discard this silent recording"
-                        }
-                    }) { Text("Discard") }
-                }
             )
         }
         unreadableProjectCount > 0 -> {

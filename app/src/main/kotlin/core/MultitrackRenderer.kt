@@ -8,21 +8,16 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
-
-data class MultitrackRenderResult(
-    val sampleRate: Int,
-    val channels: Int,
-    val frames: Long,
-    val clippedSamples: Long
-)
-
-class MultitrackRenderCancelledException : IOException("Mix render cancelled")
 
 /** Sequential PCM16 rendering; working sample memory is limited by one output block and one source block. */
 object MultitrackRenderer {
     const val BLOCK_FRAMES = 1_024
+    private const val TEMP_PREFIX = "mix-render-"
+    private const val TEMP_SUFFIX = ".tmp"
+
+    /** True for scratch files this renderer may leave behind; sweepers delete only these. */
+    fun isRenderTemp(name: String): Boolean = name.startsWith(TEMP_PREFIX) && name.endsWith(TEMP_SUFFIX)
 
     fun frameCount(tracks: List<ProjectTrack>, sampleRate: Int): Long {
         require(sampleRate in SUPPORTED_SAMPLE_RATES)
@@ -37,10 +32,8 @@ object MultitrackRenderer {
     fun renderToWav(
         project: Project,
         resolveSource: (ProjectAudioSource) -> File,
-        destination: File,
-        cancelled: AtomicBoolean = AtomicBoolean(false),
-        onProgress: (completedFrames: Long, totalFrames: Long) -> Unit = { _, _ -> }
-    ): MultitrackRenderResult {
+        destination: File
+    ) {
         val frames = project.totalFrames
         val channels = project.tracks.flatMap(ProjectTrack::clips).maxOfOrNull { it.source.channels } ?: 1
         require(channels == project.channels) { "Project channel count does not match its sources." }
@@ -63,16 +56,14 @@ object MultitrackRenderer {
                 else track.clips.filterNot(ProjectClip::muted).map { track to it }
             }
 
-            val temp = File.createTempFile("mix-render-", ".tmp", parent)
+            val temp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, parent)
             var committed = false
-            var clipped = 0L
             try {
                 FileOutputStream(temp).use { output ->
                     WavFormat.writeHeader(output, channels, project.sampleRate, dataBytes)
                     val pcm = ByteArray(BLOCK_FRAMES * channels * 2)
                     var start = 0L
                     while (start < frames) {
-                        checkCancelled(cancelled)
                         val count = minOf(BLOCK_FRAMES.toLong(), frames - start).toInt()
                         val sums = DoubleArray(count * channels)
                         for ((track, clip) in active) {
@@ -81,22 +72,17 @@ object MultitrackRenderer {
                         var byteOffset = 0
                         for (sum in sums) {
                             val rounded = Math.round(sum)
-                            if (rounded !in Short.MIN_VALUE.toLong()..Short.MAX_VALUE.toLong()) clipped++
                             val sample = rounded.coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toInt()
                             putPcm16(pcm, byteOffset, sample)
                             byteOffset += 2
                         }
                         output.write(pcm, 0, byteOffset)
                         start += count
-                        onProgress(start, frames)
                     }
-                    checkCancelled(cancelled)
                     output.fd.sync()
                 }
-                checkCancelled(cancelled)
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 committed = true
-                return MultitrackRenderResult(project.sampleRate, channels, frames, clipped)
             } finally {
                 if (!committed) Files.deleteIfExists(temp.toPath())
             }
@@ -134,10 +120,6 @@ object MultitrackRenderer {
         return a
     }
 
-    private fun checkCancelled(cancelled: AtomicBoolean) {
-        if (cancelled.get()) throw MultitrackRenderCancelledException()
-    }
-
     private class ClipReader(val clipId: String, source: ProjectAudioSource, file: File, private val targetRate: Int) : AutoCloseable {
         private val format = file.inputStream().use(WavFormat::read)
 
@@ -165,7 +147,6 @@ object MultitrackRenderer {
             if (start >= end) return
 
             val localFirst = start - clip.positionFrames
-            val localLast = end - 1L - clip.positionFrames
             val firstPosition = mappingAt(localFirst, ratio)
             val lastPosition = advance(firstPosition, (end - start - 1L).toInt(), ratio)
             val firstFrame = clip.trim.startFrame + firstPosition.offset

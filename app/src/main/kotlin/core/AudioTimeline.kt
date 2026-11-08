@@ -109,11 +109,9 @@ data class OverdubAlignment(
  */
 class SharedAudioTimeline(
     private val projectSampleRate: Int,
-    private val projectStartFrame: Long,
     private val countInFrames: Long = 0L,
     captureSampleRate: Int = projectSampleRate,
-    backingSampleRate: Int = projectSampleRate,
-    private val backingOriginFrame: Long = 0L
+    backingSampleRate: Int = projectSampleRate
 ) {
     private val captureClock = AudioClockMap(captureSampleRate)
     private val backingClock = AudioClockMap(backingSampleRate)
@@ -126,7 +124,7 @@ class SharedAudioTimeline(
 
     init {
         require(projectSampleRate > 0)
-        require(projectStartFrame >= 0L && countInFrames >= 0L && backingOriginFrame >= 0L)
+        require(countInFrames >= 0L)
     }
 
     @Synchronized
@@ -186,10 +184,9 @@ class SharedAudioTimeline(
 
     private fun calculateAlignment(): OverdubAlignment? {
         val captureStart = captureStartFrame ?: return null
-        if (backingClock.monotonicNanosAt(backingOriginFrame) == null) return null
         val captureTime = captureClock.monotonicNanosAt(captureStart) ?: return null
         val backingFrameAtCapture = backingClock.frameAt(captureTime) ?: return null
-        val position = projectStartFrame + (backingFrameAtCapture - backingOriginFrame - countInFrames)
+        val position = backingFrameAtCapture - countInFrames
         val inputRate = captureClock.rateCorrectionPpm()
         val backingRate = backingClock.rateCorrectionPpm()
         val correction = if (inputRate != null && backingRate != null) inputRate - backingRate else null

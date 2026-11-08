@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 internal data class TunerAudioState(
-    val isListening: Boolean = false,
     val reading: TunerPitchReading? = null,
     val error: String? = null
 )
@@ -42,7 +41,7 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
             return false
         }
         stopRequested = false
-        _state.value = TunerAudioState(isListening = true)
+        _state.value = TunerAudioState()
         Thread(::capture, "tuner-audio").also {
             worker = it
             it.start()
@@ -98,7 +97,7 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
                     samples[sampleCount++] = pcm16At(pair, 0) / 32768f
                     if (sampleCount == samples.size) {
                         val reading = TunerPitch.detect(samples, created.sampleRate, a4Hz)
-                        publishWhileActive(TunerAudioState(isListening = true, reading = reading))
+                        publishWhileActive(TunerAudioState(reading = reading))
                         sampleCount = 0
                     }
                 }
@@ -116,7 +115,6 @@ internal class TunerAudioSession(private val inputFactory: PcmInputFactory) {
                 if (input === opened) input = null
                 if (worker === Thread.currentThread()) worker = null
                 if (stopRequested) _state.value = TunerAudioState()
-                else if (_state.value.isListening) _state.value = _state.value.copy(isListening = false)
                 microphoneLease?.close()
                 microphoneLease = null
             }

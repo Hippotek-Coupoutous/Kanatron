@@ -72,7 +72,6 @@ internal class AudioDecodePipeline(
                 var format = decoder.initialFormat
                 validateFormat(format)
                 format.durationUs?.let { duration ->
-                    if (duration > MAX_DURATION_US) throw AudioImportException("Import is limited to ${MAX_DURATION_MINUTES} minutes.")
                     checkFreeSpace(duration * format.sampleRate * format.channels * 2L / 1_000_000L + WavFormat.HEADER_BYTES)
                 }
                 var written = 0L
@@ -96,9 +95,6 @@ internal class AudioDecodePipeline(
                                         val align = format.channels * 2
                                         if (pcm.size % align != 0) throw AudioImportException("The decoder returned an incomplete audio frame.")
                                         val nextBytes = Math.addExact(written, pcm.size.toLong())
-                                        if (nextBytes / align > MAX_DURATION_MINUTES * 60L * format.sampleRate) {
-                                            throw AudioImportException("Import is limited to ${MAX_DURATION_MINUTES} minutes.")
-                                        }
                                         sink.write(pcm)
                                         written = nextBytes
                                         progress(written, format.durationUs?.let { it * format.sampleRate * format.channels * 2L / 1_000_000L })
@@ -148,11 +144,6 @@ internal class AudioDecodePipeline(
                 putPcm16(output, index * 2, sample)
             }
         }
-    }
-
-    private companion object {
-        const val MAX_DURATION_MINUTES = 60L
-        const val MAX_DURATION_US = MAX_DURATION_MINUTES * 60L * 1_000_000L
     }
 }
 

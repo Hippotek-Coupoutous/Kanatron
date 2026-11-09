@@ -77,6 +77,7 @@ import com.kanatron.app.ui.LibraryHeader
 import com.kanatron.app.ui.LibraryKeys
 import com.kanatron.app.ui.MissingAudioScreen
 import com.kanatron.app.ui.SynthTopBar
+import com.kanatron.app.ui.rememberWavPlayer
 import com.kanatron.app.ui.OverdubCalibrationScreen
 import com.kanatron.app.ui.OverdubScreen
 import com.kanatron.app.ui.SketchScreen
@@ -398,23 +399,27 @@ private fun KanatronApp(
             )
         ) {
             when (route) {
-                Route.LIBRARY -> LibraryScreen(
-                    projects = projects,
-                    // A tap chooses the recording that Sketch, Edit and Share work on; a second tap lets it go.
-                    onTap = { appViewModel.selectProject(it.id.takeIf { id -> id != selectedId }) },
-                    selectedId = selectedId,
-                    header = { LibraryHeader(onImportRequest) },
-                    selectedKeys = { project ->
-                        LibraryKeys(
-                            project = project,
-                            wav = appState.audioFiles[project.id],
-                            onEdit = { appViewModel.navigate(Route.EDIT) },
-                            onShare = { share(project) },
-                            onRename = { appViewModel.renameProject(project.id, it) },
-                            onDelete = { appViewModel.deleteProject(project.id) }
-                        )
-                    }
-                )
+                Route.LIBRARY -> {
+                    // Owned here, not by the lazy row, so scrolling the selection offscreen keeps it playing.
+                    val player = rememberWavPlayer(context, selectedId?.let { appState.audioFiles[it] })
+                    LibraryScreen(
+                        projects = projects,
+                        // A tap chooses the recording that Sketch, Edit and Share work on; a second tap lets it go.
+                        onTap = { appViewModel.selectProject(it.id.takeIf { id -> id != selectedId }) },
+                        selectedId = selectedId,
+                        header = { LibraryHeader(onImportRequest) },
+                        selectedKeys = { project ->
+                            LibraryKeys(
+                                project = project,
+                                loaded = player,
+                                onEdit = { appViewModel.navigate(Route.EDIT) },
+                                onShare = { share(project) },
+                                onRename = { appViewModel.renameProject(project.id, it) },
+                                onDelete = { appViewModel.deleteProject(project.id) }
+                            )
+                        }
+                    )
+                }
                 Route.SKETCH -> {
                     val visibleCurrent = projects.firstOrNull { it.id == selectedId }
                     val draft = appState.drafts.firstOrNull()
@@ -463,16 +468,11 @@ private fun KanatronApp(
                     val sourcesMissing by produceState<Boolean?>(null, project) {
                         value = project?.let { withContext(Dispatchers.IO) { repository.missingSources(it).isNotEmpty() } }
                     }
-                    // Edit rebuilds the recording from its one source, so anything else it would silently drop.
-                    val editable = project?.tracks?.singleOrNull()?.let { track ->
-                        val clip = track.clips.singleOrNull()
-                        clip != null && clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.source.sampleRate == project.sampleRate
-                    } == true
                     when {
                         subjectId == null -> EditMessage("Choose a recording in the Library to edit it here.") { appViewModel.leave(Route.LIBRARY) }
                         project == null -> EditMessage(appState.selectionError ?: "Loading recording…") { appViewModel.leave(Route.LIBRARY) }
                         sourcesMissing == true -> MissingAudioScreen(project.name) { appViewModel.leave(Route.LIBRARY) }
-                        !editable -> EditMessage("${project.name} was placed or speed-corrected by an older version and cannot be edited here.") { appViewModel.leave(Route.LIBRARY) }
+                        !project.isEditable() -> EditMessage("${project.name} was placed or speed-corrected by an older version and cannot be edited here.") { appViewModel.leave(Route.LIBRARY) }
                         else -> {
                             val session = appState.edit?.takeIf { it.projectId == project.id }
                             EditScreen(
@@ -507,9 +507,9 @@ private fun KanatronApp(
                     Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)) {
                         SynthTopBar("Add part", { appViewModel.navigate(Route.CLIP) }, backLabel = "Clip")
                     }
-                    // A comp may reuse a phrase from the same take, so no recording is excluded.
+                    // A comp may reuse a phrase from the same take; only recordings Edit could not rebuild are left out.
                     LibraryScreen(
-                        projects = projects.filter { it.tracks.size == 1 && it.tracks[0].clips.size == 1 },
+                        projects = projects.filter(Project::isEditable),
                         onTap = appViewModel::addToClip
                     )
                 }
@@ -748,4 +748,10 @@ private fun TopLevelBar(current: Route, itemsEnabled: Boolean, onNavigate: (Rout
             )
         }
     }
+}
+
+/** Edit and Clip rebuild a recording from its one source, so placement, speed correction or a foreign rate would be dropped. */
+private fun Project.isEditable(): Boolean {
+    val clip = tracks.singleOrNull()?.clips?.singleOrNull() ?: return false
+    return clip.positionFrames == 0L && clip.rateCorrectionPpm == 0 && clip.source.sampleRate == sampleRate
 }

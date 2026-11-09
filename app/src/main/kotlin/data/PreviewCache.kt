@@ -67,7 +67,7 @@ internal class PreviewCache(private val directory: File) {
 
     /** Only the fields MultitrackRenderer reads: names and ids must not invalidate a cached render. */
     private fun renderKey(project: Project): String = buildString {
-        append(project.sampleRate).append('|').append(project.channels).append('|').append(project.totalFrames)
+        append(MultitrackRenderer.REVISION).append('|').append(project.sampleRate).append('|').append(project.channels).append('|').append(project.totalFrames)
         project.tracks.single().clips.forEach { clip ->
                 append("|c").append(clip.source.wav).append(',')
                     .append(clip.source.sampleRate).append(',').append(clip.source.channels).append(',')

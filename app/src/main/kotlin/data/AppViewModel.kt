@@ -358,6 +358,7 @@ internal class AppViewModel(
                 val result = withContext(Dispatchers.IO) {
                     if (startup) {
                         repository.sweepStartupOrphans(ImportActivePaths.activeDecodePaths(), ImportActivePaths.activeStagingPaths())
+                        repository.reclaimArchived()
                         repository.recovery.recoverTakes()
                         repository.recovery.recoverOrphanImports()
                     }

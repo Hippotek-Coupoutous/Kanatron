@@ -2,12 +2,14 @@ package com.kanatron.app.data
 
 import com.kanatron.app.core.PROJECT_ID
 import com.kanatron.app.core.PROJECT_ID_PATTERN
+import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.ProjectTrack
 import com.kanatron.app.core.RecordingCore
 import com.kanatron.app.core.SUPPORTED_SAMPLE_RATES
 import com.kanatron.app.core.WavFormat
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 
 /**
@@ -22,7 +24,7 @@ internal class TakeRecovery(
     private val createProject: (String, File, Int, Int, Long, String, Boolean, Boolean) -> Project
 ) {
     /** Source paths referenced by project metadata, plus whether every JSON could be read at all. */
-    class SourceReferences internal constructor(private val sources: Set<String>, private val fullyReadable: Boolean) {
+    class SourceReferences internal constructor(private val sources: Set<String>, val fullyReadable: Boolean) {
         /** Unreadable metadata makes every source look referenced, so nothing may be deleted or rebuilt. */
         fun isReferenced(sourcePath: String): Boolean = !fullyReadable || sourcePath in sources
     }
@@ -44,13 +46,65 @@ internal class TakeRecovery(
         for (file in bases.values) {
             if (excludeProjectId != null && file.name == "$excludeProjectId.json") continue
             try {
-                val project = ProjectStore(file).loadSupported() ?: continue
-                project.tracks.flatMap(ProjectTrack::clips).mapTo(sources) { it.source.wav }
+                val project = ProjectStore(file).loadSupported()
+                // An unsupported project that could not be archived is still on disk with references nobody reads.
+                if (project == null && file.isFile) fullyReadable = false
+                project?.tracks?.flatMap(ProjectTrack::clips)?.mapTo(sources) { it.source.wav }
+            } catch (_: Exception) {
+                fullyReadable = false
+            }
+        }
+        // Until startup reclaims an archive, its audio stays referenced so recovery does not adopt it.
+        projects.listFiles { file -> file.name.endsWith(ARCHIVED_JSON) }.orEmpty().forEach { archived ->
+            if (excludeProjectId != null && archived.name == excludeProjectId + ARCHIVED_JSON) return@forEach
+            try {
+                sources += Project.sourcePaths(archived.readText())
             } catch (_: Exception) {
                 fullyReadable = false
             }
         }
         return SourceReferences(sources, fullyReadable)
+    }
+
+    /** The private WAV a project source path names; anything outside the recordings folder is rejected. */
+    fun recordingFile(wav: String): File {
+        val name = File(wav).name
+        require(wav == "recordings/$name" && RECORDING_PATH.matches(name)) { "Invalid recording source path." }
+        return File(recordings, name)
+    }
+
+    /** Caller holds the project lock. Throws when an unreferenced WAV survives, so its metadata is kept and the failure shows. */
+    fun deleteUnreferenced(wavs: Collection<String>, references: SourceReferences) {
+        wavs.filterNot(references::isReferenced).forEach { wav ->
+            val file = runCatching { recordingFile(wav) }.getOrNull() ?: return@forEach
+            if (file.delete()) PeakExtractor.deleteCaches(file)
+            else if (file.exists()) throw IOException("Could not delete the recording audio.")
+        }
+    }
+
+    /**
+     * Removes archived projects with the audio no other project uses. Caller holds the project lock. Audio goes first,
+     * so a crash or a WAV that resists deletion keeps the archive for the next launch instead of leaving WAVs to adopt.
+     */
+    fun reclaimArchived() {
+        // A full scan archives any unsupported project still under its .json name.
+        sourceReferences()
+        projects.listFiles { file -> file.name.endsWith(ARCHIVED_JSON) }.orEmpty()
+            // A failed read keeps the archive for the next launch; only malformed JSON counts as unreadable.
+            .mapNotNull { archive -> runCatching(archive::readText).getOrNull()?.let { archive to runCatching { Project.sourcePaths(it) }.getOrNull() } }
+            // An unreadable archive makes every scan incomplete, so it goes before those that need a complete one.
+            .sortedBy { (_, wavs) -> wavs != null }
+            .forEach { (archive, wavs) ->
+                runCatching {
+                    if (wavs != null) {
+                        val references = sourceReferences(excludeProjectId = archive.name.removeSuffix(ARCHIVED_JSON))
+                        if (!references.fullyReadable) return@runCatching
+                        deleteUnreferenced(wavs, references)
+                    }
+                    // An unreadable archive names no audio to reclaim; recovery adopts its WAVs as recordings instead.
+                    archive.delete()
+                }
+            }
     }
 
     fun recoverTakes(): List<Project> {
@@ -91,10 +145,10 @@ internal class TakeRecovery(
         if (references.isReferenced("recordings/${partial.name}")) return null
         val id = partial.name.removePrefix("take-").removeSuffix(".partial.wav")
         if (!id.matches(PROJECT_ID) || loadProject(id) != null) return null
-        val dataBytes = RecordingCore.repairableDataBytes(partial.length(), channels = 1)
+        val (sampleRate, channels) = readCanonicalHeaderOrDefault(partial)
+        val dataBytes = RecordingCore.repairableDataBytes(partial.length(), channels)
         if (dataBytes < 2L) return null
         val allZero = RecordingCore.allSamplesZero(partial, WavFormat.HEADER_BYTES.toLong(), dataBytes)
-        val sampleRate = readRateFromPlaceholderOrDefault(partial)
         val finalFile = File(recordings, "take-$id.wav")
         // Recheck under the registration lock: the recorder may own the file, or its save may have renamed it.
         val repaired = RecordingActivePath.exclusive {
@@ -104,7 +158,7 @@ internal class TakeRecovery(
             RandomAccessFile(partial, "rw").use { file ->
                 file.setLength(WavFormat.HEADER_BYTES + dataBytes)
                 file.seek(0)
-                file.write(RecordingCore.header(sampleRate = sampleRate, channels = 1, dataBytes = dataBytes))
+                file.write(RecordingCore.header(sampleRate = sampleRate, channels = channels, dataBytes = dataBytes))
                 file.fd.sync()
             }
             if (!partial.renameTo(finalFile)) error("Could not recover partial recording")
@@ -112,7 +166,7 @@ internal class TakeRecovery(
         }
         if (!repaired) return null
         return try {
-            createProject(id, finalFile, sampleRate, 1, dataBytes / 2, takeName(finalFile.lastModified()), allZero, true)
+            createProject(id, finalFile, sampleRate, channels, dataBytes / (channels * 2), takeName(finalFile.lastModified()), allZero, true)
         } catch (failure: Throwable) {
             finalFile.renameTo(partial)
             throw failure
@@ -135,24 +189,32 @@ internal class TakeRecovery(
         return createProject(id, wav, format.sampleRate, format.channels, format.frameCount, takeName(wav.lastModified()), allZero, true)
     }
 
-    private fun readRateFromPlaceholderOrDefault(file: File): Int =
+    /**
+     * Rate and channels from the canonical 44-byte header every take is written with: the recorder's placeholder, or a
+     * complete stereo render that saveTake moved back after its metadata failed. Unreadable headers mean a mono 48 kHz take.
+     */
+    private fun readCanonicalHeaderOrDefault(file: File): Pair<Int, Int> =
         runCatching {
             RandomAccessFile(file, "r").use { input ->
                 val header = ByteArray(28)
                 input.readFully(header)
                 require(String(header, 0, 4, Charsets.US_ASCII) == "RIFF" && String(header, 8, 4, Charsets.US_ASCII) == "WAVE")
                 require(String(header, 12, 4, Charsets.US_ASCII) == "fmt ")
+                val channels = (header[22].toInt() and 0xFF) or ((header[23].toInt() and 0xFF) shl 8)
                 val sampleRate = (header[24].toLong() and 0xFF) or
                     ((header[25].toLong() and 0xFF) shl 8) or
                     ((header[26].toLong() and 0xFF) shl 16) or
                     ((header[27].toLong() and 0xFF) shl 24)
-                sampleRate.toInt().takeIf { sampleRate in SUPPORTED_SAMPLE_RATES.first.toLong()..SUPPORTED_SAMPLE_RATES.last.toLong() } ?: 48_000
+                require(channels in 1..2 && sampleRate in SUPPORTED_SAMPLE_RATES.first.toLong()..SUPPORTED_SAMPLE_RATES.last.toLong())
+                sampleRate.toInt() to channels
             }
-        }.getOrDefault(48_000)
+        }.getOrDefault(48_000 to 1)
 
     private companion object {
         val TAKE_PARTIAL_PATH = Regex("take-$PROJECT_ID_PATTERN\\.partial\\.wav")
         val TAKE_PATH = Regex("take-$PROJECT_ID_PATTERN\\.wav")
         val IMPORT_PATH = Regex("import-$PROJECT_ID_PATTERN\\.wav")
+        val RECORDING_PATH = Regex("(?:take-$PROJECT_ID_PATTERN(?:\\.partial)?|import-$PROJECT_ID_PATTERN)\\.wav")
+        const val ARCHIVED_JSON = ".json" + ProjectStore.ARCHIVE_SUFFIX
     }
 }

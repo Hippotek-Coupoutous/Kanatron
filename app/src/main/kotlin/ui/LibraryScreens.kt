@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,6 +19,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -107,7 +110,8 @@ internal fun SketchScreen(
 ) {
     val context = LocalContext.current
     val wav = currentWav
-    val player = rememberWavPlayer(context, wav)
+    val loaded = rememberWavPlayer(context, wav)
+    val player = loaded?.getOrNull()
     val playerState = player?.state?.collectAsState()?.value
     val clickState by click.state.collectAsState()
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
@@ -159,7 +163,7 @@ internal fun SketchScreen(
     val notice: Pair<String, Color>? = listOfNotNull(
         (recording.error.takeIf { active || lastTakeShown } ?: startError)?.let { it to error },
         recording.interruptionNotice?.takeIf { active || lastTakeShown }?.let { it to error },
-        playerState?.error?.let { it to error },
+        (loaded?.exceptionOrNull()?.let { "This recording could not be opened." } ?: playerState?.error)?.let { it to error },
         clickState.error?.let { it to error },
         when {
             !active -> null
@@ -447,17 +451,18 @@ internal fun LibraryScreen(
     header: (@Composable () -> Unit)? = null,
     selectedKeys: (@Composable (Project) -> Unit)? = null
 ) {
-    Column(
-        Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+    LazyColumn(
+        Modifier.fillMaxSize().safeDrawingPadding(),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        header?.invoke()
-        if (projects.isEmpty()) {
+        header?.let { item { it() } }
+        if (projects.isEmpty()) item {
             Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Image(painterResource(R.drawable.kanatron_logo), null, Modifier.height(180.dp))
                 Text("Your recordings live here", color = Synth.night, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
             }
-        } else projects.sortedByDescending { it.createdAtEpochMillis }.forEach { project ->
+        } else items(projects, key = Project::id) { project ->
             val selected = project.id == selectedId
             Column(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(if (selected) Synth.surfaceHi else Synth.surface)
@@ -474,7 +479,7 @@ internal fun LibraryScreen(
                     Text(project.name, color = if (selected) Synth.cyan else Synth.text, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(if (project.silent) "${duration(project)} · silent" else duration(project), color = Synth.muted, fontFamily = FontFamily.Monospace)
                 }
-                if (selected && selectedKeys != null) Box(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) { selectedKeys(project) }
+                if (selected && selectedKeys != null) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) { selectedKeys(project) }
             }
         }
     }
@@ -494,18 +499,21 @@ internal fun LibraryHeader(onImport: () -> Unit) {
 @Composable
 internal fun LibraryKeys(
     project: Project,
-    wav: File?,
+    loaded: Result<WavPlayer>?,
     onEdit: () -> Unit,
     onShare: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit
 ) {
-    val context = LocalContext.current
-    val player = rememberWavPlayer(context, wav)
-    val playing = player?.state?.collectAsState()?.value?.isPlaying == true
+    val player = loaded?.getOrNull()
+    val playerState = player?.state?.collectAsState()?.value
+    val playing = playerState?.isPlaying == true
     var menuOpen by remember { mutableStateOf(false) }
     var renaming by rememberSaveable(project.id) { mutableStateOf<String?>(null) }
     var deleting by remember(project.id) { mutableStateOf(false) }
+    (loaded?.exceptionOrNull()?.let { "This recording could not be opened." } ?: playerState?.error)?.let {
+        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Key(
             if (playing) "Pause" else "Play",
@@ -593,10 +601,11 @@ private fun LevelMeter(peak: Float, clipping: Boolean, modifier: Modifier = Modi
     }
 }
 
+/** Opens [wav] off the main thread; null while loading or without a file, a failure when the WAV cannot be played. */
 @Composable
-private fun rememberWavPlayer(context: Context, wav: File?, takesFocus: Boolean = true): WavPlayer? {
+internal fun rememberWavPlayer(context: Context, wav: File?, takesFocus: Boolean = true): Result<WavPlayer>? {
     val path = wav?.absolutePath
-    var player by remember(path, takesFocus) { mutableStateOf<WavPlayer?>(null) }
+    var player by remember(path, takesFocus) { mutableStateOf<Result<WavPlayer>?>(null) }
     val holder = remember(path, takesFocus) { AtomicReference<WavPlayer?>(null) }
     LaunchedEffect(path, takesFocus) {
         val file = wav ?: return@LaunchedEffect
@@ -605,11 +614,11 @@ private fun rememberWavPlayer(context: Context, wav: File?, takesFocus: Boolean 
             val loaded = withContext(Dispatchers.IO) {
                 WavPlayer(context, file, takesFocus).also(holder::set)
             }
-            if (ownerJob?.isActive == true) player = loaded else holder.getAndSet(null)?.release()
+            if (ownerJob?.isActive == true) player = Result.success(loaded) else holder.getAndSet(null)?.release()
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
-            player = null
+        } catch (failure: Throwable) {
+            player = Result.failure(failure)
         } finally {
             if (ownerJob?.isActive == false) holder.getAndSet(null)?.release()
         }

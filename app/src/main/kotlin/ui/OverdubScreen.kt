@@ -14,12 +14,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -28,7 +23,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.data.ProjectRepository
-import com.kanatron.app.playback.WavPlayer
 import kotlin.math.abs
 
 /** A finished take over its backing: set the balance, nudge the take into time, hear it, then mix it. */
@@ -48,9 +42,11 @@ internal fun OverdubScreen(
     val context = LocalContext.current
     // A save renders the mix itself, so the preview stops competing with it.
     val preview = producePlaybackRender(repository, PREVIEW_DEBOUNCE_MILLIS, mix, saving) { if (saving) null else mix.arrangement() }
-    var player by remember(preview) { mutableStateOf<WavPlayer?>(null) }
-    DisposableEffect(preview) { onDispose { player?.release() } }
-    val playing = player?.state?.collectAsState()?.value?.isPlaying == true
+    val loaded = rememberWavPlayer(context, preview?.getOrNull())
+    val player = loaded?.getOrNull()
+    val playerState = player?.state?.collectAsState()?.value
+    val playing = playerState?.isPlaying == true
+    val failure = error ?: loaded?.exceptionOrNull()?.let { "This preview could not be opened." } ?: playerState?.error
     if (!playbackAllowed && playing) player?.pause()
     val rate = mix.base.sampleRate
     val balance: @Composable (Modifier) -> Unit = { modifier ->
@@ -107,24 +103,22 @@ internal fun OverdubScreen(
         notice?.let { Text(it, color = Synth.night, style = MaterialTheme.typography.bodySmall) }
         val status = when {
             saving -> "Saving…"
-            error != null -> error
+            failure != null -> failure
             preview?.exceptionOrNull() != null -> preview.exceptionOrNull()?.message
             preview == null -> "Preparing the mix…"
             else -> "Save mixes the take into a new recording and removes the separate take. ${mix.base.name} stays as it is."
         }
-        Text(status.orEmpty(), color = if (error != null) MaterialTheme.colorScheme.error else Synth.night, style = MaterialTheme.typography.bodySmall)
+        Text(status.orEmpty(), color = if (failure != null) MaterialTheme.colorScheme.error else Synth.night, style = MaterialTheme.typography.bodySmall)
         if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val file = preview?.getOrNull()
             Key(
                 if (playing) "Pause" else "Preview",
                 {
-                    val wav = file ?: return@Key
-                    val current = player ?: WavPlayer(context, wav).also { player = it }
+                    val current = player ?: return@Key
                     // A second of backing before the take is enough to judge its timing.
                     if (playing) current.pause() else { current.seek((mix.takePositionFrames - rate).coerceAtLeast(0L)); current.play() }
                 },
-                Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan, enabled = file != null && !saving && playbackAllowed,
+                Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan, enabled = player != null && !saving && playbackAllowed,
                 description = if (playing) "Pause preview" else "Preview from just before the take"
             )
             Key("Save as new", { player?.stop(); onSave() }, Modifier.weight(2f), icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving)

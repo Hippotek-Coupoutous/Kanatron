@@ -71,9 +71,7 @@ internal class AudioDecodePipeline(
             val result = decoderFactory.open(source).use { decoder ->
                 var format = decoder.initialFormat
                 validateFormat(format)
-                format.durationUs?.let { duration ->
-                    checkFreeSpace(duration * format.sampleRate * format.channels * 2L / 1_000_000L + WavFormat.HEADER_BYTES)
-                }
+                expectedDataBytes(format)?.let { checkFreeSpace(it + WavFormat.HEADER_BYTES) }
                 var written = 0L
                 sinkFactory.open(output).use { sink ->
                     var done = false
@@ -95,9 +93,10 @@ internal class AudioDecodePipeline(
                                         val align = format.channels * 2
                                         if (pcm.size % align != 0) throw AudioImportException("The decoder returned an incomplete audio frame.")
                                         val nextBytes = Math.addExact(written, pcm.size.toLong())
+                                        if (nextBytes > WavFormat.MAX_WAV_BYTES) throw AudioImportException("This audio file is too long to import.")
                                         sink.write(pcm)
                                         written = nextBytes
-                                        progress(written, format.durationUs?.let { it * format.sampleRate * format.channels * 2L / 1_000_000L })
+                                        progress(written, expectedDataBytes(format))
                                     }
                                 } finally {
                                     event.release()
@@ -124,6 +123,15 @@ internal class AudioDecodePipeline(
         } finally {
             if (!complete) output.delete()
         }
+    }
+
+    /** Null when the container gives no duration, or one that is negative or too large to be true. */
+    private fun expectedDataBytes(format: DecoderFormat): Long? = format.durationUs?.takeIf { it >= 0L }?.let { duration ->
+        try {
+            Math.multiplyExact(duration, format.sampleRate * format.channels * 2L) / 1_000_000L
+        } catch (_: ArithmeticException) {
+            null
+        }?.takeIf { it <= WavFormat.MAX_WAV_BYTES }
     }
 
     private fun validateFormat(format: DecoderFormat) {

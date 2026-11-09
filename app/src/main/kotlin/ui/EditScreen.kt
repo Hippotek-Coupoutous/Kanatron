@@ -33,7 +33,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -74,7 +73,6 @@ import com.kanatron.app.core.TrimEdge
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.data.EditSession
 import com.kanatron.app.data.ProjectRepository
-import com.kanatron.app.playback.WavPlayer
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.async
@@ -122,8 +120,8 @@ internal fun EditScreen(
     var mixOpen by rememberSaveable { mutableStateOf(false) }
     val selection = TrimRange(selectionStart, selectionEnd)
 
-    var player by remember(file) { mutableStateOf<WavPlayer?>(null) }
-    DisposableEffect(file) { onDispose { player?.release() } }
+    val loaded = rememberWavPlayer(context, file)
+    val player = loaded?.getOrNull()
     val playerState = player?.state?.collectAsState()?.value
     val playing = playerState?.isPlaying == true
     var playhead by remember(file) { mutableStateOf<Long?>(null) }
@@ -141,8 +139,7 @@ internal fun EditScreen(
         viewEnd = start + span
     }
     fun preview() {
-        val wav = file ?: return
-        val current = player ?: WavPlayer(context, wav).also { player = it }
+        val current = player ?: return
         if (playing) return current.pause()
         val from = playhead?.takeIf { it in selectionStart until selectionEnd } ?: selectionStart
         current.seek(from)
@@ -205,7 +202,7 @@ internal fun EditScreen(
                     }
                 )
             }
-            (busyText ?: error ?: timeline?.exceptionOrNull()?.message ?: playerState?.error)?.let {
+            (busyText ?: error ?: timeline?.exceptionOrNull()?.message ?: loaded?.exceptionOrNull()?.let { "This preview could not be opened." } ?: playerState?.error)?.let {
                 Text(it, color = if (busyText != null) Synth.muted else MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -229,7 +226,7 @@ internal fun EditScreen(
             val idle = !saving && file != null
             Key(
                 if (playing) "Pause" else "Play", ::preview, Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan,
-                height = KeyHeight.Transport, enabled = idle && playbackAllowed, description = if (playing) "Pause preview" else "Preview selection"
+                height = KeyHeight.Transport, enabled = idle && player != null && playbackAllowed, description = if (playing) "Pause preview" else "Preview selection"
             )
             Key("Keep", { cut(Cuts.keep(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Trim, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Keep only the selection")
             Key("Delete", { cut(Cuts.delete(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Delete, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Delete the selection")

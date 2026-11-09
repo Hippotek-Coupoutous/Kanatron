@@ -4,7 +4,6 @@ import android.content.Context
 import com.kanatron.app.core.ExportPreflight
 import com.kanatron.app.core.MultitrackRenderer
 import com.kanatron.app.core.PROJECT_ID
-import com.kanatron.app.core.PROJECT_ID_PATTERN
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.ProjectAudioSource
@@ -69,11 +68,7 @@ class ProjectRepository(context: Context) {
     /** The raw WAV of a project's first clip. */
     fun audioFile(project: Project): File = sourceFile(project.firstClip.source)
 
-    private fun sourceFile(source: ProjectAudioSource): File {
-        val name = File(source.wav).name
-        require(source.wav == "recordings/$name" && RECORDING_PATH.matches(name)) { "Invalid recording source path." }
-        return File(recordings, name)
-    }
+    private fun sourceFile(source: ProjectAudioSource): File = recovery.recordingFile(source.wav)
 
     fun missingSources(project: Project): List<String> = project.tracks.flatMap(ProjectTrack::clips)
         .map(ProjectClip::source).distinct()
@@ -150,7 +145,8 @@ class ProjectRepository(context: Context) {
             )
             ProjectStore(projectFile(project.id)).save(replaced)
             previewCache.delete(project.id)
-            deleteUnreferenced(project.sources(), excludeProjectId = null)
+            // The replace has landed; an old WAV that resists deletion stays behind rather than failing the save.
+            runCatching { recovery.deleteUnreferenced(project.sourceWavs(), recovery.sourceReferences()) }
             replaced
         }
     }
@@ -234,7 +230,7 @@ class ProjectRepository(context: Context) {
             if (project != null) {
                 // Metadata goes last: a crash must not leave WAVs that startup recovery rebuilds as projects.
                 previewCache.delete(id)
-                deleteUnreferenced(project.sources(), excludeProjectId = id)
+                recovery.deleteUnreferenced(project.sourceWavs(), recovery.sourceReferences(excludeProjectId = id))
                 val metadata = projectFile(id)
                 if (!metadata.delete() && metadata.exists()) throw IOException("Could not delete the project metadata.")
                 File(metadata.path + ".bak").delete()
@@ -242,19 +238,10 @@ class ProjectRepository(context: Context) {
         }
     }
 
-    private fun Project.sources(): List<ProjectAudioSource> =
-        tracks.flatMap(ProjectTrack::clips).map(ProjectClip::source).distinct()
+    /** Startup: drops archived projects and the audio only they used, before recovery adopts any WAV. */
+    fun reclaimArchived() = synchronized(PROJECT_LOCK) { recovery.reclaimArchived() }
 
-    /** Caller holds PROJECT_LOCK. */
-    private fun deleteUnreferenced(sources: List<ProjectAudioSource>, excludeProjectId: String?) {
-        val references = recovery.sourceReferences(excludeProjectId)
-        sources.forEach { source ->
-            if (!references.isReferenced(source.wav)) runCatching {
-                val file = sourceFile(source)
-                if (file.delete()) PeakExtractor.deleteCaches(file)
-            }
-        }
-    }
+    private fun Project.sourceWavs(): List<String> = tracks.flatMap(ProjectTrack::clips).map { it.source.wav }.distinct()
 
     fun saveTake(
         takeId: String,
@@ -361,7 +348,6 @@ class ProjectRepository(context: Context) {
     }
 
     internal companion object {
-        private val RECORDING_PATH = Regex("(?:take-$PROJECT_ID_PATTERN(?:\\.partial)?|import-$PROJECT_ID_PATTERN)\\.wav")
         private const val MIX_SOURCE_PREFIX = "mix-source-"
         private const val MIX_SOURCE_SUFFIX = ".wav"
         private val PROJECT_LOCK = Any()

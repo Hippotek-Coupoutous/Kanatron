@@ -127,4 +127,86 @@ class TakeRecoveryTest {
         assertFalse(File(recordings, "take-bad999.partial.wav").exists())
         assertFalse(created.containsKey("bad999"))
     }
+
+    @Test
+    fun repairsStereoRenderMovedBackToPartialAsStereo() {
+        val root = temp.newFolder("root")
+        val projects = File(root, "projects").apply { mkdirs() }
+        val recordings = File(root, "recordings").apply { mkdirs() }
+        val pcm = ByteArray(1_000) { (it % 251 + 1).toByte() }
+        // A complete stereo render that saveTake renamed back after its metadata write failed.
+        File(recordings, "take-st1.partial.wav").writeBytes(RecordingCore.header(44_100, 2, 1_000) + pcm)
+
+        val created = mutableMapOf<String, Project>()
+        val captured = mutableListOf<CapturedTake>()
+        val recovery = TakeRecovery(projects, recordings, { File(projects, "$it.json") }, { created[it] }) { id, file, sampleRate, channels, frames, name, silent, draft ->
+            captured += CapturedTake(id, file, sampleRate, channels, frames, silent, draft)
+            Project(
+                id = id, name = name, sampleRate = sampleRate, channels = channels, createdAtEpochMillis = 0L,
+                tracks = listOf(ProjectTrack("track-main", name, listOf(ProjectClip("clip-main", ProjectAudioSource("recordings/${file.name}", sampleRate, channels, frames), 0L, TrimRange(0L, frames)))))
+            ).also { created[id] = it }
+        }
+        recovery.recoverTakes()
+
+        val take = captured.single()
+        assertEquals(2, take.channels)
+        assertEquals(44_100, take.sampleRate)
+        // 1000 bytes / 4 bytes per stereo frame.
+        assertEquals(250L, take.frames)
+        val format = File(recordings, "take-st1.wav").inputStream().use(WavFormat::read)
+        assertEquals(2, format.channels)
+        assertEquals(250L, format.frameCount)
+    }
+
+    @Test
+    fun anArchivedProjectKeepsItsTakeFromBeingAdoptedAsARecording() {
+        val (projects, recordings) = storage()
+        val take = File(recordings, "take-old1.wav").apply { writeBytes(RecordingCore.header(48_000, 1, 100) + ByteArray(100) { 1 }) }
+        File(projects, "old1.json.unsupported").writeText(archive("take-old1.wav"))
+        val adopted = mutableListOf<String>()
+
+        recovery(projects, recordings, adopted).recoverTakes()
+
+        assertTrue(adopted.isEmpty())
+        assertTrue(take.isFile)
+    }
+
+    @Test
+    fun reclaimDeletesArchivedAudioNoOtherProjectUsesAndKeepsAnArchiveWhoseAudioResists() {
+        val (projects, recordings) = storage()
+        val wav = { name: String -> File(recordings, name).apply { writeBytes(RecordingCore.header(48_000, 1, 2) + byteArrayOf(1, 1)) } }
+        val own = wav("take-own1.wav")
+        val shared = wav("take-shared1.wav")
+        // A non-empty directory under a WAV name cannot be deleted, like a WAV the system refuses to remove.
+        File(recordings, "take-stuck1.wav").mkdirs()
+        File(recordings, "take-stuck1.wav/held").writeText("held")
+        val reclaimable = File(projects, "a1.json.unsupported").apply { writeText(archive("take-own1.wav", "take-shared1.wav")) }
+        // Its stuck WAV is tried first, so the shared one survives whichever archive goes first.
+        val resisting = File(projects, "b1.json.unsupported").apply { writeText(archive("take-stuck1.wav", "take-shared1.wav")) }
+        val unreadable = File(projects, "c1.json.unsupported").apply { writeText("{") }
+        val adopted = mutableListOf<String>()
+
+        recovery(projects, recordings, adopted).reclaimArchived()
+
+        assertFalse(own.exists())
+        assertFalse(reclaimable.exists())
+        assertTrue(shared.isFile)
+        assertTrue(resisting.isFile)
+        assertFalse(unreadable.exists())
+        assertTrue(adopted.isEmpty())
+    }
+
+    private fun storage(): Pair<File, File> {
+        val root = temp.newFolder("root")
+        return File(root, "projects").apply { mkdirs() } to File(root, "recordings").apply { mkdirs() }
+    }
+
+    private fun archive(vararg wavs: String): String =
+        wavs.joinToString(",", "{\"tracks\":[{\"clips\":[", "]}]}") { "{\"source\":{\"wav\":\"recordings/$it\"}}" }
+
+    private fun recovery(projects: File, recordings: File, adopted: MutableList<String>) =
+        TakeRecovery(projects, recordings, { File(projects, "$it.json") }, { null }) { id, _, _, _, _, _, _, _ ->
+            adopted += id
+            error("Recovery must not adopt archived audio")
+        }
 }

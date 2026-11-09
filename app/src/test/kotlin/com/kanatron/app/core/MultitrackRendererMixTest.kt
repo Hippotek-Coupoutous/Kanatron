@@ -204,6 +204,25 @@ class MultitrackRendererMixTest {
     private fun project(track: ProjectTrack, channels: Int) =
         Project("p", "Base", 48_000, channels, 0L, tracks = listOf(track))
 
+    @Test
+    fun `downsampling by three averages a tone above the new Nyquist down to a third`() {
+        val root = tempFolder.root
+        // 12 kHz at 48 kHz: plain decimation to 16 kHz would fold it to a full-scale 4 kHz alias.
+        writeWav(File(root, "tone.wav"), channels = 1, sampleRate = 48_000, samples = List(4_800) { listOf(16_000, 0, -16_000, 0)[it % 4] })
+        // A silent frame at 16 kHz gives the project its rate, as a first Clip part would.
+        writeWav(File(root, "anchor.wav"), channels = 1, sampleRate = 16_000, samples = listOf(0))
+        val tone = ProjectClip("tone", ProjectAudioSource("tone.wav", 48_000, 1, 4_800), 0L, TrimRange(0, 4_800))
+        val anchor = ProjectClip("anchor", ProjectAudioSource("anchor.wav", 16_000, 1, 1), 0L, TrimRange(0, 1))
+        val project = Project("p", "Tone", 16_000, 1, 0L, tracks = listOf(ProjectTrack("track-main", "Tone", listOf(anchor, tone))))
+
+        val destination = File(root, "tone-16k.wav")
+        MultitrackRenderer.renderToWav(project, { File(root, it.wav) }, destination)
+
+        val samples = pcm(destination)
+        assertEquals(1_600, samples.size)
+        assertEquals(5_333, samples.maxOf { kotlin.math.abs(it) })
+    }
+
     private fun pcm(file: File): List<Int> {
         val bytes = file.readBytes()
         return List((bytes.size - 44) / 2) { pcm16At(bytes, 44 + it * 2) }

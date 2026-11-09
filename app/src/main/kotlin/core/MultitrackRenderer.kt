@@ -14,6 +14,8 @@ import kotlin.math.max
 /** Sequential PCM16 rendering; working sample memory is limited by one output block and one source block. */
 object MultitrackRenderer {
     const val BLOCK_FRAMES = 1_024
+    /** Bumped whenever the rendered audio changes, so cached previews render again. */
+    const val REVISION = 2
     private const val TEMP_PREFIX = "mix-render-"
     private const val TEMP_SUFFIX = ".tmp"
 
@@ -171,8 +173,11 @@ object MultitrackRenderer {
             val localFirst = start - clip.positionFrames
             val firstPosition = mappingAt(localFirst, ratio)
             val lastPosition = advance(firstPosition, (end - start - 1L).toInt(), ratio)
+            // Downsampling 2× or more averages a whole number of source frames per output frame, so highs fold back far less.
+            // ponytail: a box filter, not band-limited; a windowed-sinc resampler if mild ratios ever alias audibly.
+            val taps = (ratio.numerator / ratio.denominator).toInt()
             val firstFrame = clip.trim.startFrame + firstPosition.offset
-            val lastFrame = minOf(clip.trim.endFrame - 1L, clip.trim.startFrame + lastPosition.offset + 1L)
+            val lastFrame = minOf(clip.trim.endFrame - 1L, clip.trim.startFrame + lastPosition.offset + maxOf(1, taps - 1))
             val sourceFrames = Math.addExact(lastFrame - firstFrame, 1L)
             val byteCount = Math.toIntExact(Math.multiplyExact(sourceFrames, format.blockAlign.toLong()))
             val bytes = ByteArray(byteCount)
@@ -196,10 +201,14 @@ object MultitrackRenderer {
                 val outputIndex = ((outputFrame - blockStart).toInt()) * outputChannels
                 for (channel in 0 until outputChannels) {
                     val sourceChannel = if (clip.source.channels == 1) 0 else channel
-                    val lower = sample(bytes, firstFrame, lowerFrame, sourceChannel)
-                    val upper = sample(bytes, firstFrame, upperFrame, sourceChannel)
-                    val interpolated = lower + (upper - lower) * fraction
-                    sums[outputIndex + channel] += interpolated * envelope * gain
+                    val value = if (taps >= 2) {
+                        (0 until taps).sumOf { sample(bytes, firstFrame, minOf(lastFrame, lowerFrame + it), sourceChannel) }.toDouble() / taps
+                    } else {
+                        val lower = sample(bytes, firstFrame, lowerFrame, sourceChannel)
+                        val upper = sample(bytes, firstFrame, upperFrame, sourceChannel)
+                        lower + (upper - lower) * fraction
+                    }
+                    sums[outputIndex + channel] += value * envelope * gain
                 }
                 position = advance(position, 1, ratio)
             }

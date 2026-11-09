@@ -15,8 +15,7 @@ class ProjectStore(private val file: File) {
         load()
     } catch (unsupported: UnsupportedProjectException) {
         synchronized(IO_LOCK) {
-            file.renameTo(File(file.path + ".unsupported"))
-            File(file.path + ".bak").delete()
+            if (file.renameTo(File(file.path + ARCHIVE_SUFFIX))) File(file.path + ".bak").delete()
         }
         null
     }
@@ -51,8 +50,10 @@ class ProjectStore(private val file: File) {
         Project.fromJson(json)
     }
 
-    private companion object {
+    companion object {
+        const val ARCHIVE_SUFFIX = ".unsupported"
+
         /** Android AtomicFile recovery is unsafe while any store instance is writing this process. */
-        val IO_LOCK = Any()
+        private val IO_LOCK = Any()
     }
 }

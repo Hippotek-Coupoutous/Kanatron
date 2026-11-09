@@ -22,7 +22,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,7 +51,6 @@ import com.kanatron.app.data.ClipPart
 import com.kanatron.app.data.MAX_CLIP_PARTS
 import com.kanatron.app.data.ProjectRepository
 import com.kanatron.app.data.clipArrangement
-import com.kanatron.app.playback.WavPlayer
 import kotlin.math.roundToLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
@@ -81,9 +79,11 @@ internal fun ClipScreen(
     val timelineEnd = arrangement.totalFrames
     // A save renders the clip itself, so the preview stops competing with it.
     val preview = producePlaybackRender(repository, PREVIEW_DEBOUNCE_MILLIS, parts, saving) { if (parts.size >= 2 && !saving) arrangement else null }
-    var player by remember(preview) { mutableStateOf<WavPlayer?>(null) }
-    DisposableEffect(preview) { onDispose { player?.release() } }
-    val playing = player?.state?.collectAsState()?.value?.isPlaying == true
+    val loaded = rememberWavPlayer(context, preview?.getOrNull())
+    val player = loaded?.getOrNull()
+    val playerState = player?.state?.collectAsState()?.value
+    val playing = playerState?.isPlaying == true
+    val failure = error ?: loaded?.exceptionOrNull()?.let { "This preview could not be opened." } ?: playerState?.error
     val overview by produceState(emptyList<Peak>(), preview) {
         value = preview?.getOrNull()?.let { withContext(Dispatchers.IO) { runCatching { PeakExtractor.extract(it, 512, { !isActive }) }.getOrNull() } }.orEmpty()
     }
@@ -140,26 +140,24 @@ internal fun ClipScreen(
         }
         val notice = when {
             saving -> "Saving…"
-            error != null -> error
+            failure != null -> failure
             preview?.exceptionOrNull() != null -> preview.exceptionOrNull()?.message
             parts.size < 2 -> "Add another recording to clip it with this one."
             parts.any { it.project.sampleRate != rate } -> "Every part plays at $rate Hz, the first part's rate."
             else -> "Saving makes a new recording. The originals stay as they are."
         }
-        Text(notice.orEmpty(), color = if (error != null) MaterialTheme.colorScheme.error else Synth.night, style = MaterialTheme.typography.bodySmall)
+        Text(notice.orEmpty(), color = if (failure != null) MaterialTheme.colorScheme.error else Synth.night, style = MaterialTheme.typography.bodySmall)
         if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val file = preview?.getOrNull()
             val idle = !saving
             Key(
                 if (playing) "Pause" else "Play",
                 {
-                    val wav = file ?: return@Key
-                    val current = player ?: WavPlayer(context, wav).also { player = it }
+                    val current = player ?: return@Key
                     if (playing) current.pause() else { current.seek(0L); current.play() }
                 },
                 Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan, height = KeyHeight.Transport,
-                enabled = file != null && idle && playbackAllowed, description = if (playing) "Pause preview" else "Play the clip"
+                enabled = player != null && idle && playbackAllowed, description = if (playing) "Pause preview" else "Play the clip"
             )
             Key("Add", { player?.stop(); onAdd() }, Modifier.weight(1f), icon = SynthIcon.New, height = KeyHeight.Transport, enabled = idle && parts.size < MAX_CLIP_PARTS, description = "Add a recording")
             Key("Remove", { player?.stop(); onRemove(selected) }, Modifier.weight(1f), icon = SynthIcon.Delete, height = KeyHeight.Transport, enabled = idle && parts.size > 1, description = "Remove part ${selected + 1}")

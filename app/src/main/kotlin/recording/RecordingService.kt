@@ -290,6 +290,7 @@ class RecordingService : Service() {
             }
             return
         }
+        val token = startToken
         Thread({
             try {
                 val file = ProjectRepository(this).playbackFile(project)
@@ -298,22 +299,21 @@ class RecordingService : Service() {
                     this, file, takesFocus = false, onClock = clockTracker::onBackingClock,
                     monitorClick = monitorClick, onRoute = clockTracker::onBackingRoute
                 )
-                if (transportStopped || recorder == null) {
-                    player.release()
-                    return@Thread
+                // Installed on main, where pause, resume and stop run, so none of them can slip in between.
+                main.post {
+                    if (token != startToken || transportStopped || recorder == null) {
+                        player.release()
+                        return@post
+                    }
+                    backingPlayer = player
+                    player.seek(0L)
+                    // A paused take gets its backing from resumeTransport.
+                    if (recorder?.state?.value?.phase != RecordingPhase.PAUSED) player.play(project.totalFrames)
+                    main.postDelayed({ reportBackingStatus(player) }, 1_000L)
                 }
-                backingPlayer = player
-                if (transportStopped) {
-                    player.release()
-                    if (backingPlayer === player) backingPlayer = null
-                    return@Thread
-                }
-                player.seek(0L)
-                player.play(project.totalFrames)
-                main.postDelayed({ reportBackingStatus(player) }, 1_000L)
             } catch (_: Throwable) {
                 main.post {
-                    if (!transportStopped) mutableState.value = mutableState.value.copy(
+                    if (token == startToken && !transportStopped) mutableState.value = mutableState.value.copy(
                         alignmentNotice = "Backing playback is unavailable. Recording continues without it."
                     )
                 }

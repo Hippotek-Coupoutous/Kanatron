@@ -154,6 +154,16 @@ data class Project(
             )
         }
 
+        /** Every clip source path in [json], read without the version checks [fromJson] applies; malformed structure throws. */
+        fun sourcePaths(json: String): Set<String> {
+            val root = JsonReader(json).read().asObject("project")
+            return root["tracks"].asArray("tracks").flatMapTo(mutableSetOf()) { track ->
+                track.asObject("track")["clips"].asArray("clips").map { clip ->
+                    clip.asObject("clip")["source"].asObject("clip source").string("wav")
+                }
+            }
+        }
+
         private fun quote(value: String): String = buildString {
             append('"')
             for (character in value) {

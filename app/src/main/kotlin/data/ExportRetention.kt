@@ -54,7 +54,7 @@ internal class ExportRetention(
             if (remove(file)) used = (used - size).coerceAtLeast(0L)
             if (fits(used, additionalBytes)) return
         }
-        throw IOException("Export storage is full. Delete an unneeded recording or try a shorter selection. Recent shares are kept for seven days.")
+        throw IOException("Export storage is full: recent shares are kept for seven days. Try a shorter selection, or share again once older shares expire.")
     }
 
     private fun canRetire(file: File, time: Long): Boolean = time >= plus(file.lastModified(), SHARE_GRACE_MS)

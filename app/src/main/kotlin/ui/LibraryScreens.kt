@@ -28,6 +28,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -482,6 +483,26 @@ internal fun LibraryScreen(
                 if (selected && selectedKeys != null) Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp)) { selectedKeys(project) }
             }
         }
+    }
+}
+
+/** Shown while startup recovery and the first library read run; their passes report no fraction, so the bar sweeps. */
+@Composable
+internal fun LoadingScreen() {
+    Column(
+        Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Image(painterResource(R.drawable.kanatron_splash), null, Modifier.fillMaxWidth(0.6f).weight(1f, fill = false))
+        Text("KANATRON", style = MaterialTheme.typography.displayLarge, color = Synth.night, modifier = Modifier.padding(top = 24.dp, bottom = 16.dp))
+        LinearProgressIndicator(
+            Modifier.fillMaxWidth(0.6f).height(8.dp).clip(RoundedCornerShape(4.dp)),
+            color = Synth.cyan,
+            trackColor = Synth.night,
+            gapSize = 0.dp
+        )
+        Text("Loading recordings…", color = Synth.night, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 12.dp))
     }
 }
 

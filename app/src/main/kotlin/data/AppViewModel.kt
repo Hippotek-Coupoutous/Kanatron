@@ -99,6 +99,8 @@ internal data class AppUiState(
     val audioFiles: Map<String, File> = emptyMap(),
     val unreadableProjectCount: Int = 0,
     val libraryError: String? = null,
+    /** False until the startup scan settles, even on failure, so the loading screen never traps the user. */
+    val libraryReady: Boolean = false,
     val selectedProject: Project? = null,
     val selectionError: String? = null,
     val selectionErrorForId: String? = null,
@@ -340,15 +342,21 @@ internal class AppViewModel(
 
     fun clearShortcutRequest() = updateState { it.copy(shortcutRequested = false) }
 
+    private var shortcutDispatchPending = false
+
     /**
      * A RECORD_NOW intent shows Sketch for a deliberate new take; an open overdub review closes, its take stays in the Library.
      * Refused while a save runs, since the save ends on its own screen. Returns whether the take should start.
      */
     fun startShortcutRecord(): Boolean {
         if (_state.value.editSaving) return false
+        shortcutDispatchPending = true
         updateState { it.copy(route = Route.SKETCH, shortcutRequested = true) }
         return true
     }
+
+    /** Survives rotation between the RECORD_NOW intent and the startup gate that dispatches it. */
+    fun takeShortcutDispatch() = shortcutDispatchPending.also { shortcutDispatchPending = false }
 
     /** The single exit for editing screens so system Back refreshes exactly like on-screen Back. */
     fun leave(to: Route) {
@@ -360,6 +368,7 @@ internal class AppViewModel(
         if (initialization != null) return
         initialization = viewModelScope.launch {
             refreshLibrary(startup = true).join()
+            _state.update { it.copy(libraryReady = true) }
         }
     }
 

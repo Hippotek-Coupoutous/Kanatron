@@ -12,6 +12,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,6 +77,7 @@ import com.kanatron.app.ui.EditScreen
 import com.kanatron.app.ui.Key
 import com.kanatron.app.ui.LibraryHeader
 import com.kanatron.app.ui.LibraryKeys
+import com.kanatron.app.ui.LoadingScreen
 import com.kanatron.app.ui.MissingAudioScreen
 import com.kanatron.app.ui.SynthTopBar
 import com.kanatron.app.ui.rememberWavPlayer
@@ -88,13 +91,13 @@ import com.kanatron.app.ui.TunerScreen
 import com.kanatron.app.ui.shareExport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val click = ClickEngine()
     private val recordingStartGate = ResumeStartGate()
-    private var shortcutRequestPending = false
     private var shortcutRecordAction: (() -> Unit)? = null
     private lateinit var appViewModel: AppViewModel
 
@@ -146,6 +149,8 @@ class MainActivity : ComponentActivity() {
             } else requestMicrophone(MicrophoneAction.RECORD)
         }
         val askToRecord: (String?, MonitorClick?) -> Unit = { overdubProjectId, click ->
+            // A manual press during the startup fade answers the queued shortcut, so it must not fire again.
+            appViewModel.takeShortcutDispatch()
             appViewModel.setPendingRecord(overdubProjectId, click)
             appViewModel.awaitMicrophonePermission(MicrophoneAction.RECORD)
             appViewModel.setStartError(null)
@@ -169,26 +174,37 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             KanatronTheme {
-                KanatronApp(
-                    hostLifecycle = lifecycle,
-                    appViewModel = appViewModel,
-                    click = click,
-                    onContinueMicrophoneRationale = {
-                        appViewModel.setMicrophoneRationale(false)
-                        when (appViewModel.state.value.pendingMicrophoneAction ?: MicrophoneAction.RECORD) {
-                            MicrophoneAction.RECORD -> requestRecordPermissions()
-                            MicrophoneAction.TUNER -> requestMicrophone(MicrophoneAction.TUNER)
+                val ready = appViewModel.state.collectAsState().value.libraryReady
+                LaunchedEffect(ready) {
+                    if (!ready) return@LaunchedEffect
+                    // A shortcut take waits out the fade so it never starts behind the loading screen.
+                    delay(STARTUP_FADE_MS.toLong())
+                    dispatchShortcutRecordRequest()
+                }
+                // Until recovery settles the library looks empty, so a user with recordings would see "no recordings".
+                Crossfade(ready, animationSpec = tween(STARTUP_FADE_MS), label = "startup") { libraryReady ->
+                    if (!libraryReady) LoadingScreen()
+                    else KanatronApp(
+                        hostLifecycle = lifecycle,
+                        appViewModel = appViewModel,
+                        click = click,
+                        onContinueMicrophoneRationale = {
+                            appViewModel.setMicrophoneRationale(false)
+                            when (appViewModel.state.value.pendingMicrophoneAction ?: MicrophoneAction.RECORD) {
+                                MicrophoneAction.RECORD -> requestRecordPermissions()
+                                MicrophoneAction.TUNER -> requestMicrophone(MicrophoneAction.TUNER)
+                            }
+                        },
+                        onDismissMicrophoneRationale = { appViewModel.dismissMicrophoneRationale() },
+                        onRecordRequest = askToRecord,
+                        onTunerMicRequest = askToTune,
+                        onOpenSettings = { openAppSettings() },
+                        onImportRequest = {
+                            appViewModel.setImportNotice(null)
+                            openAudioDocument.launch(arrayOf("audio/*"))
                         }
-                    },
-                    onDismissMicrophoneRationale = { appViewModel.dismissMicrophoneRationale() },
-                    onRecordRequest = askToRecord,
-                    onTunerMicRequest = askToTune,
-                    onOpenSettings = { openAppSettings() },
-                    onImportRequest = {
-                        appViewModel.setImportNotice(null)
-                        openAudioDocument.launch(arrayOf("audio/*"))
-                    }
-                )
+                    )
+                }
             }
         }
     }
@@ -223,16 +239,16 @@ class MainActivity : ComponentActivity() {
             if (!appViewModel.startShortcutRecord()) return
             // A deliberate new take outranks reviewing a finished one, which stays in the Library on its own.
             RecordingService.takeCompletion()
-            shortcutRequestPending = true
-            window.decorView.post { dispatchShortcutRecordRequest() }
+            // Before recovery settles the recovered take is not yet a draft and would be recorded over; the startup gate dispatches then.
+            if (appViewModel.state.value.libraryReady) window.decorView.post { dispatchShortcutRecordRequest() }
         }
     }
 
     private fun dispatchShortcutRecordRequest() {
         val action = shortcutRecordAction ?: return
-        if (!shortcutRequestPending) return
-        shortcutRequestPending = false
-        action()
+        if (!appViewModel.takeShortcutDispatch()) return
+        // A tab tapped during the startup fade outranks the older shortcut.
+        if (appViewModel.state.value.route == Route.SKETCH) action() else appViewModel.clearShortcutRequest()
     }
 
     private fun microphoneAllowed() =
@@ -280,6 +296,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_RECORD_NOW = "com.kanatron.app.action.RECORD_NOW"
+        private const val STARTUP_FADE_MS = 300
     }
 }
 
@@ -559,7 +576,7 @@ private fun KanatronApp(
             val go = { if (destination == Route.LIBRARY) appViewModel.leave(Route.LIBRARY) else appViewModel.navigate(destination) }
             when {
                 // A running take keeps the microphone, so Sketch stays put and says why.
-                takeRunning -> scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar("Save the take first.") }
+                takeRunning && destination != Route.SKETCH -> scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar("Save the take first.") }
                 route == Route.EDIT -> leavingEdits(go)
                 else -> go()
             }

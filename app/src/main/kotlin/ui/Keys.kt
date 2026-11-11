@@ -192,10 +192,10 @@ fun Stepper(
 
 /** Rounded translucent surface. */
 @Composable
-fun SynthPanel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+fun SynthPanel(modifier: Modifier = Modifier, contentPadding: Dp = 16.dp, content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Synth.surface.copy(alpha = 0.93f))
-            .border(1.dp, Synth.line, RoundedCornerShape(22.dp)).padding(16.dp),
+            .border(1.dp, Synth.line, RoundedCornerShape(22.dp)).padding(contentPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // Panels are dark islands on the orange ground: their text is light.

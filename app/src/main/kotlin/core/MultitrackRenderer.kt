@@ -9,13 +9,14 @@ import java.math.RoundingMode
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.max
 
 /** Sequential PCM16 rendering; working sample memory is limited by one output block and one source block. */
 object MultitrackRenderer {
     const val BLOCK_FRAMES = 1_024
     /** Bumped whenever the rendered audio changes, so cached previews render again. */
-    const val REVISION = 2
+    const val REVISION = 3
     private const val TEMP_PREFIX = "mix-render-"
     private const val TEMP_SUFFIX = ".tmp"
 
@@ -35,12 +36,13 @@ object MultitrackRenderer {
     fun clipFrameCount(clip: ProjectClip, sampleRate: Int): Long =
         resampledFrames(clip.trim.frameCount, clip.source.sampleRate, sampleRate, clip.rateCorrectionPpm)
 
-    /** Returns true when the sum exceeded PCM16 and some samples were clamped. */
+    /** Returns true when the sum exceeded PCM16 and some samples were clamped; [onPeak] gets the loudest unclamped sum. */
     fun renderToWav(
         project: Project,
         resolveSource: (ProjectAudioSource) -> File,
         destination: File,
-        cancelled: AtomicBoolean = AtomicBoolean(false)
+        cancelled: AtomicBoolean = AtomicBoolean(false),
+        onPeak: (Double) -> Unit = {}
     ): Boolean {
         val frames = project.totalFrames
         val clips = project.tracks.single().clips
@@ -60,10 +62,17 @@ object MultitrackRenderer {
             for ((clip, source, file) in inputs) readers += ClipReader(clip.id, source, file, project.sampleRate, frames)
             val byClipId = readers.associateBy { it.clipId }
             val filters = clips.associate { it.id to it.eq.filter(project.sampleRate, channels) }
+            fun continues(first: ProjectClip, second: ProjectClip) = first.id != second.id && first.source == second.source &&
+                first.trim.endFrame == second.trim.startFrame && first.rateCorrectionPpm == second.rateCorrectionPpm &&
+                first.positionFrames + clipFrameCount(first, project.sampleRate) == second.positionFrames
+            val neighbours = clips.associate { clip ->
+                clip.id to (clips.firstOrNull { continues(it, clip) } to clips.firstOrNull { continues(clip, it) })
+            }
 
             val temp = File.createTempFile(TEMP_PREFIX, TEMP_SUFFIX, parent)
             var committed = false
             var clipped = false
+            var peak = 0.0
             try {
                 FileOutputStream(temp).use { output ->
                     WavFormat.writeHeader(output, channels, project.sampleRate, dataBytes)
@@ -76,18 +85,46 @@ object MultitrackRenderer {
                         for (clip in clips) {
                             val reader = byClipId.getValue(clip.id)
                             val filter = filters.getValue(clip.id)
-                            if (filter == null) {
-                                reader.addBlock(clip, start, count, channels, sums)
+                            val (previous, next) = neighbours.getValue(clip.id)
+                            val unity = ProjectClip.UNITY_GAIN
+                            fun plain(it: ProjectClip) = filters.getValue(it.id) == null && it.gainPermille == unity
+                            if (plain(clip)) {
+                                reader.addBlock(clip, start, count, channels, sums, previous == null, next == null)
                             } else {
-                                // The filter runs on this clip alone, so its tone never colours the others.
                                 val own = DoubleArray(sums.size)
-                                reader.addBlock(clip, start, count, channels, own)
-                                filter.process(own)
-                                for (i in sums.indices) sums[i] += own[i]
+                                reader.addBlock(clip.copy(gainPermille = unity), start, count, channels, own, previous == null, next == null)
+                                val dry = if (previous != null || next != null) own.copyOf() else null
+                                val gain = clip.gainPermille / unity.toDouble()
+                                // Both sides of a join meet in the same unfiltered signal, so it neither clicks nor jumps:
+                                // an untouched neighbour's own level, else the two levels' average.
+                                fun edgeGain(neighbour: ProjectClip?) = when {
+                                    neighbour == null -> gain
+                                    plain(neighbour) -> 1.0
+                                    else -> (gain + neighbour.gainPermille / unity.toDouble()) / 2
+                                }
+                                val gainBefore = edgeGain(previous)
+                                val gainAfter = edgeGain(next)
+                                for (i in own.indices) own[i] *= gain
+                                filter?.process(own)
+                                val clipFrames = clipFrameCount(clip, project.sampleRate)
+                                val blendFrames = minOf(fadeFrames(project.sampleRate).toLong(), clipFrames / 2)
+                                for (i in own.indices) {
+                                    if (dry == null) { sums[i] += own[i]; continue }
+                                    val local = start + i / channels - clip.positionFrames
+                                    val nearStart = local < clipFrames / 2
+                                    val wet = when {
+                                        previous != null && nearStart && local < blendFrames -> (local + 1).toDouble() / (blendFrames + 1)
+                                        next != null && !nearStart && clipFrames - local <= blendFrames -> (clipFrames - local).toDouble() / (blendFrames + 1)
+                                        else -> 1.0
+                                    }.coerceIn(0.0, 1.0)
+                                    val edge = dry[i] * if (nearStart) gainBefore else gainAfter
+                                    sums[i] += edge + (own[i] - edge) * wet
+                                }
                             }
                         }
                         var byteOffset = 0
                         for (sum in sums) {
+                            peak = max(peak, abs(sum))
                             val rounded = Math.round(sum)
                             val sample = rounded.coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toInt()
                             if (sample.toLong() != rounded) clipped = true
@@ -101,6 +138,7 @@ object MultitrackRenderer {
                 }
                 Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 committed = true
+                onPeak(peak)
                 return clipped
             } finally {
                 if (!committed) Files.deleteIfExists(temp.toPath())
@@ -161,7 +199,9 @@ object MultitrackRenderer {
             blockStart: Long,
             blockCount: Int,
             outputChannels: Int,
-            sums: DoubleArray
+            sums: DoubleArray,
+            allowFadeIn: Boolean = true,
+            allowFadeOut: Boolean = true
         ) {
             val ratio = rateRatio(clip.source.sampleRate, targetRate, clip.rateCorrectionPpm)
             val clipFrames = resampledFrames(clip.trim.frameCount, clip.source.sampleRate, targetRate, clip.rateCorrectionPpm)
@@ -186,8 +226,8 @@ object MultitrackRenderer {
 
             val fade = minOf(fadeFrames(targetRate).toLong(), clipFrames / 2)
             // An edge cut from its source, or met by other audio inside the timeline, would click.
-            val fadeIn = clip.trim.startFrame > 0L || clip.positionFrames > 0L
-            val fadeOut = clip.trim.endFrame < clip.source.totalFrames || clipEnd < timelineFrames
+            val fadeIn = allowFadeIn && (clip.trim.startFrame > 0L || clip.positionFrames > 0L)
+            val fadeOut = allowFadeOut && (clip.trim.endFrame < clip.source.totalFrames || clipEnd < timelineFrames)
             val gain = clip.gainPermille / ProjectClip.UNITY_GAIN.toDouble()
             var position = firstPosition
             for (outputFrame in start until end) {

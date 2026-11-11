@@ -5,9 +5,9 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
-import com.kanatron.app.core.Cuts
-import com.kanatron.app.core.Eq
-import com.kanatron.app.core.MultitrackRenderer
+import com.kanatron.app.core.AudioEdits
+import com.kanatron.app.core.AudioSection
+import com.kanatron.app.core.MusicalGrid
 import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.ProjectClip
 import com.kanatron.app.core.ProjectTrack
@@ -37,44 +37,33 @@ internal enum class Route {
     val isTopLevel: Boolean get() = this == LIBRARY || this == SKETCH || this == EDIT || this == TUNER
 }
 
-/**
- * One recording's kept [range] on Clip's timeline: it starts playing at [positionFrames], counted at the first
- * part's rate, lowered by [levelSteps] and shaped by [eq].
- */
 internal data class ClipPart(
     val project: Project,
     val range: TrimRange,
     val positionFrames: Long,
-    val levelSteps: Int = 0,
-    val eq: Eq = Eq.FLAT
+    val laneId: String = project.id,
+    val id: String = UUID.randomUUID().toString()
 )
 
-/** Every part on one track at the first part's rate; where parts overlap they sum. */
-internal fun clipArrangement(parts: List<ClipPart>): Project {
+/** One shared [gainPermille] on every clip lowers the whole sum alike, joins included. */
+internal fun clipArrangement(parts: List<ClipPart>, sampleRate: Int, grid: MusicalGrid, gainPermille: Int = ProjectClip.UNITY_GAIN): Project {
     val base = parts.first().project
     val clips = parts.mapIndexed { index, part ->
-        ProjectClip("clip-$index", part.project.firstClip.source, part.positionFrames, part.range).mixed(part.levelSteps, part.eq)
+        ProjectClip("clip-$index", part.project.firstClip.source, part.positionFrames, part.range, gainPermille = gainPermille)
     }
-    return base.copy(channels = clips.maxOf { it.source.channels }, tracks = listOf(ProjectTrack("track-main", base.name, clips)))
+    return base.copy(sampleRate = sampleRate, grid = grid, channels = clips.maxOf { it.source.channels }, tracks = listOf(ProjectTrack("track-main", base.name, clips)))
 }
 
-/** Enough parts to comp a phrase from several takes while every lane stays tall enough to drag. */
-internal const val MAX_CLIP_PARTS = 4
+internal const val MAX_CLIP_PARTS = 64
 
-/** Unsaved cuts, level and EQ on the Edit subject; they survive rotation but not process death. */
 internal data class EditSession(
     val projectId: String,
-    val pieces: List<TrimRange>,
-    val undo: List<List<TrimRange>>,
-    val levelSteps: Int = 0,
-    val eq: Eq = Eq.FLAT
+    val sections: List<AudioSection>,
+    val undo: List<List<AudioSection>> = emptyList(),
+    val redo: List<List<AudioSection>> = emptyList()
 ) {
-    val pending: Boolean get() = undo.isNotEmpty() || levelSteps != 0 || !eq.flat
-
-    /** The recording as it would save: its pieces back to back, each lowered and shaped alike. */
-    fun arrangement(project: Project): Project = Cuts.arrangement(project, pieces).let { cut ->
-        cut.copy(tracks = cut.tracks.map { track -> track.copy(clips = track.clips.map { it.mixed(levelSteps, eq) }) })
-    }
+    val pending: Boolean get() = undo.isNotEmpty()
+    fun arrangement(project: Project): Project = AudioEdits.arrangement(project, sections)
 }
 
 /** What the Activity is about to do once the microphone permission is settled. */
@@ -86,6 +75,10 @@ internal data class AppUiState(
     val edit: EditSession? = null,
     /** The clip being built from Edit; rotation-safe only. */
     val clip: List<ClipPart> = emptyList(),
+    val clipUndo: List<List<ClipPart>> = emptyList(),
+    val clipRedo: List<List<ClipPart>> = emptyList(),
+    val clipRate: Int = 48_000,
+    val clipGrid: MusicalGrid = MusicalGrid(),
     /** A finished take over its backing, not mixed yet; rotation-safe only, the take itself is already saved. */
     val overdub: OverdubMix? = null,
     val editSaving: Boolean = false,
@@ -143,70 +136,97 @@ internal class AppViewModel(
     fun navigate(route: Route) = updateState { it.copy(route = route) }
 
     private fun AppUiState.session(project: Project): EditSession =
-        edit?.takeIf { it.projectId == project.id } ?: EditSession(project.id, listOf(project.firstClip.trim), emptyList())
+        edit?.takeIf { it.projectId == project.id } ?: EditSession(project.id, listOf(AudioSection(project.firstClip.trim)))
 
-    /** A session with nothing pending is no session, so leaving Edit asks nothing. */
-    private fun AppUiState.withSession(session: EditSession) = copy(edit = session.takeIf { it.pending })
+    /** Redo stays available even when every edit has been undone. */
+    private fun AppUiState.withSession(session: EditSession) = copy(edit = session.takeIf { it.pending || it.redo.isNotEmpty() })
 
-    fun cut(project: Project, pieces: List<TrimRange>) = editing { state ->
+    fun editSections(project: Project, sections: List<AudioSection>) = editing { state ->
         val session = state.session(project)
-        state.withSession(session.copy(pieces = pieces, undo = session.undo + listOf(session.pieces)))
+        if (sections == session.sections) state else state.withSession(session.copy(sections = sections, undo = session.undo + listOf(session.sections), redo = emptyList()))
     }
 
-    fun undoCut() = editing { state ->
+    fun undoEdit() = editing { state ->
         val session = state.edit?.takeIf { it.undo.isNotEmpty() } ?: return@editing state
-        state.withSession(session.copy(pieces = session.undo.last(), undo = session.undo.dropLast(1)))
+        state.withSession(session.copy(sections = session.undo.last(), undo = session.undo.dropLast(1), redo = session.redo + listOf(session.sections)))
     }
 
-    fun mix(project: Project, levelSteps: Int, eq: Eq) = editing { state ->
-        state.withSession(state.session(project).copy(levelSteps = levelSteps, eq = eq))
+    fun redoEdit() = editing { state ->
+        val session = state.edit?.takeIf { it.redo.isNotEmpty() } ?: return@editing state
+        state.withSession(session.copy(sections = session.redo.last(), redo = session.redo.dropLast(1), undo = session.undo + listOf(session.sections)))
     }
 
     fun discardEdits() = updateState { it.copy(edit = null, editError = null) }
 
-    fun startClip(project: Project) = updateState { it.copy(clip = listOf(ClipPart(project, project.firstClip.trim, 0L)), route = Route.CLIP) }
+    fun startClip(project: Project) = updateState {
+        it.copy(clip = listOf(ClipPart(project, project.firstClip.trim, 0L)), clipUndo = emptyList(), clipRedo = emptyList(), clipRate = project.sampleRate, clipGrid = project.grid, editError = null, route = Route.CLIP)
+    }
 
-    /** A new part starts where the timeline ends, overlapping the last fade so the two crossfade. */
     fun addToClip(project: Project) = editing { state ->
         val parts = state.clip
         if (parts.size >= MAX_CLIP_PARTS) return@editing state.copy(route = Route.CLIP)
-        val end = clipArrangement(parts).totalFrames
-        val at = (end - MultitrackRenderer.fadeFrames(parts.first().project.sampleRate)).coerceAtLeast(0L)
-        state.copy(clip = parts + ClipPart(project, project.firstClip.trim, at), route = Route.CLIP)
+        state.withClip(parts + ClipPart(project, project.firstClip.trim, 0L, UUID.randomUUID().toString())).copy(route = Route.CLIP)
     }
 
-    fun setClipPart(index: Int, part: ClipPart) = editing { state ->
-        state.copy(clip = state.clip.mapIndexed { i, old -> if (i == index) part else old })
+    private fun AppUiState.withClip(parts: List<ClipPart>): AppUiState =
+        if (parts == clip) this else copy(clip = parts, clipUndo = clipUndo + listOf(clip), clipRedo = emptyList())
+
+    fun setClipParts(parts: List<ClipPart>) = editing { state ->
+        if (parts.isEmpty() || parts.size > MAX_CLIP_PARTS) state else state.withClip(parts)
     }
 
-    fun removeClipPart(index: Int) = editing { state ->
-        val parts = state.clip
-        if (parts.size <= 1 || index !in parts.indices) return@editing state
-        val left = parts.filterIndexed { i, _ -> i != index }
-        // Positions count frames at the first part's rate, so a new first part at another rate rescales them.
-        val from = parts.first().project.sampleRate
-        val to = left.first().project.sampleRate
-        state.copy(clip = if (from == to) left else left.map { it.copy(positionFrames = it.positionFrames * to / from) })
+    fun undoClip() = editing { state ->
+        if (state.clipUndo.isEmpty()) state else state.copy(clip = state.clipUndo.last(), clipUndo = state.clipUndo.dropLast(1), clipRedo = state.clipRedo + listOf(state.clip))
     }
 
-    fun closeClip() = updateState { it.copy(clip = emptyList(), route = Route.EDIT) }
+    fun redoClip() = editing { state ->
+        if (state.clipRedo.isEmpty()) state else state.copy(clip = state.clipRedo.last(), clipRedo = state.clipRedo.dropLast(1), clipUndo = state.clipUndo + listOf(state.clip))
+    }
 
-    /** Saves the clip as a new recording and makes it Edit's subject. */
+    fun setClipGrid(grid: MusicalGrid) = editing { it.copy(clipGrid = grid) }
+
+    fun closeClip() = updateState { it.copy(clip = emptyList(), clipUndo = emptyList(), clipRedo = emptyList(), editError = null, route = Route.EDIT) }
+
+    /** Saves the clip as a new recording and makes it Edit's subject; a sum past full scale is lowered as a whole to fit. */
     fun saveClip() {
         val parts = _state.value.clip
-        if (parts.size < 2 || _state.value.editSaving) return
+        if (parts.isEmpty() || _state.value.editSaving) return
+        val rate = _state.value.clipRate
+        val grid = _state.value.clipGrid
         updateState { it.copy(editSaving = true, editError = null) }
         viewModelScope.launch {
             try {
                 val saved = withContext(Dispatchers.IO) {
-                    repository.saveRendered(clipArrangement(parts)) ?: error("The clip would clip. Lower a part's level in Mix.")
+                    var peak = 0.0
+                    // ponytail: a clipping clip renders twice; one float pass if long clips save too slowly.
+                    repository.saveRendered(clipArrangement(parts, rate, grid)) { peak = it }
+                        ?: repository.saveRendered(clipArrangement(parts, rate, grid, (ProjectClip.UNITY_GAIN * Short.MAX_VALUE / peak).toInt()))
+                        ?: error("The combined audio could not be lowered to fit.")
                 }
                 refreshLibrary(selectId = saved.id).join()
-                updateState { it.copy(selectedProject = saved, clip = emptyList(), editSaving = false, route = Route.EDIT) }
+                updateState { it.copy(selectedProject = saved, clip = emptyList(), clipUndo = emptyList(), clipRedo = emptyList(), editSaving = false, route = Route.EDIT) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
                 updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the clip.") }
+            }
+        }
+    }
+
+    fun extractSelection(project: Project, sections: List<AudioSection>) {
+        if (_state.value.editSaving) return
+        updateState { it.copy(editSaving = true, editError = null) }
+        viewModelScope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) {
+                    repository.saveRendered(AudioEdits.arrangement(project, sections)) ?: error("The selection is too loud. Lower its level in EQ.")
+                }
+                refreshLibrary().join()
+                updateState { it.copy(editSaving = false, editError = "Selection saved as ${saved.name}.") }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                updateState { it.copy(editSaving = false, editError = failure.message ?: "Could not save the selection.") }
             }
         }
     }
@@ -257,7 +277,7 @@ internal class AppViewModel(
             try {
                 val saved = withContext(Dispatchers.IO) {
                     val arrangement = session.arrangement(project)
-                    if (asNew) repository.saveRendered(arrangement) ?: error("The edit would clip. Lower the level in Mix.")
+                    if (asNew) repository.saveRendered(arrangement) ?: error("The edit would clip. Lower the selected section's level in EQ.")
                     else repository.replaceAudio(project, arrangement)
                 }
                 invalidatePlayback(project.id)

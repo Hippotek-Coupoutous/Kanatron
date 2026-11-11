@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -19,15 +21,27 @@ import androidx.compose.ui.unit.dp
 import com.kanatron.app.core.Eq
 import com.kanatron.app.core.OverdubMix
 
-/** Level and three-band EQ for whatever Edit is working on; changes apply live and render on Save. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun MixSheet(subject: String, levelSteps: Int, eq: Eq, onChange: (levelSteps: Int, eq: Eq) -> Unit, onDismiss: () -> Unit) {
-    // Every row matters at once, so the sheet opens fully.
+internal fun MixSheet(
+    subject: String,
+    levelSteps: Int,
+    eq: Eq,
+    mixed: Boolean,
+    bypass: Boolean,
+    playing: Boolean,
+    previewReady: Boolean,
+    onChange: (Int, Eq) -> Unit,
+    onBypass: () -> Unit,
+    onPreview: () -> Unit,
+    onApply: () -> Unit,
+    onDismiss: () -> Unit,
+    status: String?
+) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Synth.surface, contentColor = Synth.text) {
-        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("MIX · $subject", style = MaterialTheme.typography.titleLarge, maxLines = 1)
-            // Level only lowers: it is the way out when a boost or an overlap would clip.
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("EQ · $subject", style = MaterialTheme.typography.titleLarge, maxLines = 1)
+            if (mixed) Text("Mixed settings. Change a control or Reset to set the whole selection.", color = Synth.muted, style = MaterialTheme.typography.bodySmall)
             MixRow("Level", if (levelSteps == 0) "0 dB" else "−${levelSteps * OverdubMix.DB_PER_STEP} dB",
                 minus = (levelSteps + 1).takeIf { it <= OverdubMix.MAX_BALANCE_STEPS }?.let { { onChange(it, eq) } },
                 plus = (levelSteps - 1).takeIf { it >= 0 }?.let { { onChange(it, eq) } })
@@ -40,9 +54,15 @@ internal fun MixSheet(subject: String, levelSteps: Int, eq: Eq, onChange: (level
                     minus = (steps - 1).takeIf { it >= -Eq.MAX_STEPS }?.let { { onChange(levelSteps, set(it)) } },
                     plus = (steps + 1).takeIf { it <= Eq.MAX_STEPS }?.let { { onChange(levelSteps, set(it)) } })
             }
-            Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Key("Flat", { onChange(0, Eq.FLAT) }, Modifier.weight(1f), enabled = levelSteps != 0 || !eq.flat, description = "Reset level and EQ")
-                Key("Done", onDismiss, Modifier.weight(1f), face = Synth.cyan)
+            status?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Key(if (playing) "Pause" else "Preview", onPreview, Modifier.weight(1f), enabled = previewReady, face = Synth.cyan, height = KeyHeight.Small)
+                Key("Bypass", onBypass, Modifier.weight(1f), selected = bypass, height = KeyHeight.Small)
+                Key("Reset", { onChange(0, Eq.FLAT) }, Modifier.weight(1f), enabled = levelSteps != 0 || !eq.flat || mixed, description = "Reset level and EQ", height = KeyHeight.Small)
+            }
+            Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Key("Cancel", onDismiss, Modifier.weight(1f), height = KeyHeight.Small)
+                Key("Apply", onApply, Modifier.weight(1f), face = Synth.yellow, enabled = !mixed, height = KeyHeight.Small)
             }
         }
     }

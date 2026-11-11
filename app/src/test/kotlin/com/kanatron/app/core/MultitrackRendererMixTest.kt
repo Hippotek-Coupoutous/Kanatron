@@ -1,5 +1,7 @@
 package com.kanatron.app.core
 
+import com.kanatron.app.data.ClipPart
+import com.kanatron.app.data.clipArrangement
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -128,7 +130,7 @@ class MultitrackRendererMixTest {
     }
 
     @Test
-    fun `a cut crossfades with no dip and a kept range fades out where it was cut`() {
+    fun `deletes and loops crossfade with no dip and a kept range fades out where it was cut`() {
         val root = tempFolder.root
         // 8 kHz makes the 5 ms fade 40 frames.
         writeWav(File(root, "steady.wav"), channels = 1, sampleRate = 8_000, samples = List(200) { 1_000 })
@@ -136,22 +138,59 @@ class MultitrackRendererMixTest {
         val recording = Project("p", "Steady", 8_000, 1, 0L, tracks = listOf(
             ProjectTrack("track-main", "Steady", listOf(ProjectClip("clip-main", source, 0L, TrimRange(0, 200))))
         ))
+        val whole = listOf(AudioSection(TrimRange(0, 200)))
         val destination = File(root, "edit.wav")
+        fun render(sections: List<AudioSection>): List<Int> {
+            val arrangement = AudioEdits.arrangement(recording, sections)
+            MultitrackRenderer.renderToWav(arrangement, { File(root, it.wav) }, destination)
+            assertEquals(AudioEdits.length(sections), arrangement.totalFrames)
+            return pcm(destination)
+        }
 
-        val cut = Cuts.delete(listOf(TrimRange(0, 200)), TrimRange(50, 100))
-        val arrangement = Cuts.arrangement(recording, cut)
-        MultitrackRenderer.renderToWav(arrangement, { File(root, it.wav) }, destination)
-        assertEquals(Cuts.length(cut), arrangement.totalFrames)
-        assertEquals(List(150) { 1_000 }, pcm(destination))
+        assertEquals(List(150) { 1_000 }, render(AudioEdits.delete(whole, TrimRange(50, 100))))
+        assertEquals(List(250) { 1_000 }, render(AudioEdits.repeat(whole, TrimRange(50, 100), 2)))
 
-        MultitrackRenderer.renderToWav(Cuts.arrangement(recording, listOf(TrimRange(0, 100))), { File(root, it.wav) }, destination)
-        val kept = pcm(destination)
+        val kept = render(listOf(AudioSection(TrimRange(0, 100))))
         assertEquals(1_000, kept[59])
         assertEquals(24, kept[99]) // 1000 x 1/41
 
         // 20 frames cannot hold two 40-frame fades, so each edge ramps over 10.
-        MultitrackRenderer.renderToWav(Cuts.arrangement(recording, listOf(TrimRange(100, 120))), { File(root, it.wav) }, destination)
-        assertEquals(909, pcm(destination).max()) // 1000 x 10/11
+        assertEquals(909, render(listOf(AudioSection(TrimRange(100, 120)))).max()) // 1000 x 10/11
+    }
+
+    @Test
+    fun `sections joined in their source keep their levels through the join`() {
+        val root = tempFolder.root
+        writeWav(File(root, "steady.wav"), channels = 1, sampleRate = 8_000, samples = List(400) { 1_000 })
+        val source = ProjectAudioSource("steady.wav", 8_000, 1, 400)
+        val recording = Project("p", "Steady", 8_000, 1, 0L, tracks = listOf(
+            ProjectTrack("track-main", "Steady", listOf(ProjectClip("clip-main", source, 0L, TrimRange(0, 400))))
+        ))
+        val quiet = AudioEdits.mix(listOf(AudioSection(TrimRange(0, 400))), TrimRange(0, 400), 4, Eq.FLAT)
+        val sections = AudioEdits.mix(quiet, TrimRange(100, 300), 2, Eq.FLAT)
+        val destination = File(root, "levels.wav")
+        MultitrackRenderer.renderToWav(AudioEdits.arrangement(recording, sections), { File(root, it.wav) }, destination)
+        val samples = pcm(destination)
+
+        assertEquals(OverdubMix.gainPermille(4), samples[50])
+        assertEquals(OverdubMix.gainPermille(2), samples[200])
+        assertTrue(samples.max() <= OverdubMix.gainPermille(2))
+    }
+
+    @Test
+    fun `a clip summing past full scale lowered by its peak fits just under it`() {
+        val root = tempFolder.root
+        writeWav(File(root, "a.wav"), channels = 1, sampleRate = 8_000, samples = List(200) { 20_000 })
+        val source = ProjectAudioSource("a.wav", 8_000, 1, 200)
+        val a = Project("a", "a", 8_000, 1, 0L, tracks = listOf(ProjectTrack("track-a", "a", listOf(ProjectClip("clip-a", source, 0L, TrimRange(0, 200))))))
+        val parts = listOf(ClipPart(a, TrimRange(0, 200), 0), ClipPart(a, TrimRange(0, 200), 0, laneId = "lane-2"))
+        val destination = File(root, "clip.wav")
+        var peak = 0.0
+
+        assertTrue(MultitrackRenderer.renderToWav(clipArrangement(parts, 8_000, MusicalGrid()), { File(root, it.wav) }, destination) { peak = it })
+        val lowered = clipArrangement(parts, 8_000, MusicalGrid(), (ProjectClip.UNITY_GAIN * Short.MAX_VALUE / peak).toInt())
+        assertEquals(false, MultitrackRenderer.renderToWav(lowered, { File(root, it.wav) }, destination))
+        assertEquals(32_760, pcm(destination)[100]) // two clips at 819 permille of 20000
     }
 
     @Test
@@ -159,11 +198,12 @@ class MultitrackRendererMixTest {
         val root = tempFolder.root
         writeWav(File(root, "a.wav"), channels = 1, sampleRate = 8_000, samples = List(100) { 1_000 })
         writeWav(File(root, "b.wav"), channels = 2, sampleRate = 16_000, samples = List(400) { 2_000 })
-        val a = ProjectAudioSource("a.wav", 8_000, 1, 100)
-        val b = ProjectAudioSource("b.wav", 16_000, 2, 200)
-        val base = Project("p", "A", 8_000, 1, 0L, tracks = listOf(ProjectTrack("track-main", "A", listOf(ProjectClip("clip-main", a, 0L, TrimRange(0, 100))))))
+        fun recording(id: String, source: ProjectAudioSource) = Project(id, id, source.sampleRate, source.channels, 0L,
+            tracks = listOf(ProjectTrack("track-$id", id, listOf(ProjectClip("clip-$id", source, 0L, TrimRange(0, source.totalFrames))))))
+        val a = recording("a", ProjectAudioSource("a.wav", 8_000, 1, 100))
+        val b = recording("b", ProjectAudioSource("b.wav", 16_000, 2, 200))
 
-        val joined = Cuts.join(base, listOf(a to TrimRange(0, 100), b to TrimRange(0, 200)))
+        val joined = clipArrangement(listOf(ClipPart(a, TrimRange(0, 100), 0), ClipPart(b, TrimRange(0, 200), 100)), 8_000, MusicalGrid())
         val destination = File(root, "joined.wav")
         MultitrackRenderer.renderToWav(joined, { File(root, it.wav) }, destination)
         val samples = pcm(destination)

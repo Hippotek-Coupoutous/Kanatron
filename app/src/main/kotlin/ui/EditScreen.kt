@@ -1,47 +1,46 @@
 package com.kanatron.app.ui
 
-import android.content.res.Configuration
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,25 +50,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.kanatron.app.core.Cuts
+import com.kanatron.app.core.AudioEdits
+import com.kanatron.app.core.AudioSection
+import com.kanatron.app.core.MusicalGrid
+import com.kanatron.app.core.firstClip
 import com.kanatron.app.core.Eq
-import com.kanatron.app.core.OverdubMix
 import com.kanatron.app.core.Peak
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
 import com.kanatron.app.core.RecordingCore
-import com.kanatron.app.core.TrimEdge
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.data.EditSession
 import com.kanatron.app.data.ProjectRepository
@@ -83,7 +81,6 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToLong
 
-/** One recording's pending changes: select a range and keep or delete it, set its level and EQ, then save. */
 @Composable
 internal fun EditScreen(
     project: Project,
@@ -92,205 +89,235 @@ internal fun EditScreen(
     playbackAllowed: Boolean,
     saving: Boolean,
     error: String?,
-    onCut: (List<TrimRange>) -> Unit,
+    onEdit: (List<AudioSection>) -> Unit,
     onUndo: () -> Unit,
-    onMix: (levelSteps: Int, eq: Eq) -> Unit,
-    onSave: (asNew: Boolean) -> Unit,
+    onRedo: () -> Unit,
+    onExtract: (List<AudioSection>) -> Unit,
+    onDeleteTrack: () -> Unit,
+    onSave: (Boolean) -> Unit,
     onClip: () -> Unit
 ) {
     val context = LocalContext.current
     val rate = project.sampleRate
-    val pieces = session.pieces
-    val length = Cuts.length(pieces)
-    // The edited recording plays from a cached render; an untouched one plays its own WAV.
-    val timeline = producePlaybackRender(repository, PREVIEW_DEBOUNCE_MILLIS, project, session) { session.arrangement(project) }
+    val length = AudioEdits.length(session.sections)
+    val selection = rememberWaveformSelection(project.id + project.firstClip.source.wav, length)
+    val range = selection.range(length)
+    var cursor by rememberSaveable(project.id) { mutableStateOf(0L) }
+    var previewSections by remember(project.id) { mutableStateOf<List<AudioSection>?>(null) }
+    var resumePreview by remember { mutableStateOf(false) }
+    var selectionPlayback by remember { mutableStateOf(false) }
+    var localError by remember(project.id) { mutableStateOf<String?>(null) }
+    var actionsOpen by remember { mutableStateOf(false) }
+    var askSave by rememberSaveable { mutableStateOf(false) }
+    var askDelete by rememberSaveable { mutableStateOf(false) }
+    var loopOpen by rememberSaveable { mutableStateOf(false) }
+    var mixOpen by remember { mutableStateOf(false) }
+    var mixLevel by rememberSaveable { mutableStateOf(0) }
+    var mixEq by remember { mutableStateOf(Eq.FLAT) }
+    var mixedSettings by remember { mutableStateOf(false) }
+    var bypass by rememberSaveable { mutableStateOf(false) }
+    val renderedSections = previewSections ?: session.sections
+    val timeline = producePlaybackRender(repository, PREVIEW_DEBOUNCE_MILLIS, project, renderedSections) {
+        AudioEdits.arrangement(project, renderedSections)
+    }
     val file = timeline?.getOrNull()
     val overview by produceState(emptyList<Peak>(), file) {
-        value = emptyList()
         value = file?.let { withContext(Dispatchers.IO) { runCatching { PeakExtractor.extract(it, OVERVIEW_BUCKETS, { !isActive }) }.getOrNull() } }.orEmpty()
     }
-
-    var selectionStart by rememberSaveable(project.id, length) { mutableStateOf(0L) }
-    var selectionEnd by rememberSaveable(project.id, length) { mutableStateOf(length) }
-    var activeEdge by rememberSaveable(project.id) { mutableStateOf(TrimEdge.Start) }
-    var viewStart by rememberSaveable(project.id, length) { mutableStateOf(0L) }
-    var viewEnd by rememberSaveable(project.id, length) { mutableStateOf(length) }
-    var dragging by remember { mutableStateOf<TrimEdge?>(null) }
-    var askSave by rememberSaveable { mutableStateOf(false) }
-    var mixOpen by rememberSaveable { mutableStateOf(false) }
-    val selection = TrimRange(selectionStart, selectionEnd)
-
     val loaded = rememberWavPlayer(context, file)
     val player = loaded?.getOrNull()
     val playerState = player?.state?.collectAsState()?.value
     val playing = playerState?.isPlaying == true
-    var playhead by remember(file) { mutableStateOf<Long?>(null) }
-    LaunchedEffect(playerState?.positionFrames, playing) { if (playing) playhead = playerState?.positionFrames }
-    if (!playbackAllowed && playing) player?.pause()
-
-    fun setEdge(edge: TrimEdge, frame: Long) {
-        if (edge == TrimEdge.Start) selectionStart = frame.coerceIn(0L, selectionEnd - 1L)
-        else selectionEnd = frame.coerceIn(selectionStart + 1L, length)
+    LaunchedEffect(playerState?.positionFrames, playing) {
+        if (playing) cursor = playerState.positionFrames
+        else if (playerState != null && playerState.positionFrames == playerState.totalFrames) cursor = length
     }
-    fun zoom(factor: Double, anchor: Long) {
-        val span = ((viewEnd - viewStart) * factor).roundToLong().coerceIn(MIN_VIEW_FRAMES.coerceAtMost(length), length)
-        val start = (anchor - (anchor - viewStart) * span / (viewEnd - viewStart).coerceAtLeast(1L)).coerceIn(0L, length - span)
-        viewStart = start
-        viewEnd = start + span
+    LaunchedEffect(player, playbackAllowed, saving) {
+        if (player != null && resumePreview && playbackAllowed && !saving) {
+            player.seek(cursor.coerceIn(0, length - 1))
+            player.play(if (selectionPlayback) range.endFrame else length)
+            resumePreview = false
+        }
+        if (!playbackAllowed || saving) { player?.pause(); resumePreview = false }
     }
-    fun preview() {
+    fun play(selectedOnly: Boolean) {
+        if (playing) { player.pause(); resumePreview = false; return }
         val current = player ?: return
-        if (playing) return current.pause()
-        val from = playhead?.takeIf { it in selectionStart until selectionEnd } ?: selectionStart
-        current.seek(from)
-        current.play(selectionEnd)
+        selectionPlayback = selectedOnly
+        cursor = if (selectedOnly) range.startFrame else cursor.takeIf { it < length } ?: 0L
+        current.seek(cursor)
+        current.play(if (selectedOnly) range.endFrame else length)
     }
-    fun cut(next: List<TrimRange>) {
-        player?.stop()
-        onCut(next)
+    fun stageMix() {
+        val next = AudioEdits.mix(session.sections, range, mixLevel, if (bypass) Eq.FLAT else mixEq)
+        if (next != renderedSections) {
+            resumePreview = resumePreview || playing
+            player?.pause()
+        }
+        previewSections = next
     }
-
-    val wholeSelected = selectionStart == 0L && selectionEnd == length
-    val busyText = when {
-        saving -> "Saving…"
-        timeline == null -> "Preparing audio…"
-        else -> null
+    fun applySections(next: List<AudioSection>) {
+        player?.pause()
+        resumePreview = false
+        localError = null
+        onEdit(next)
     }
-    val waveform: @Composable ColumnScope.() -> Unit = {
+    fun attempt(action: () -> Unit) {
+        runCatching(action).onFailure { localError = it.message ?: "Could not apply this edit." }
+    }
+    val ready = selection.confirmed && !saving && previewSections == null
+    val transport: @Composable () -> Unit = {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Key(if (playing) "Pause" else "Play", { play(false) }, Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play,
+                face = Synth.cyan, enabled = player != null && playbackAllowed && !saving, height = KeyHeight.Small)
+            Key("Preview selection", { play(true) }, Modifier.weight(1f), enabled = player != null && playbackAllowed && selection.confirmed && !saving, height = KeyHeight.Small)
+        }
+    }
+    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 12.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SynthTopBar("Edit") {
-            // Clip joins saved audio, so pending changes are saved first.
-            Key("Clip", { player?.stop(); onClip() }, icon = SynthIcon.Clip, height = KeyHeight.Small, enabled = !saving && !session.pending,
-                description = if (session.pending) "Save your edits before clipping" else "Clip with other recordings")
+            Key("Clip", { player?.stop(); onClip() }, height = KeyHeight.Small, icon = SynthIcon.Clip, enabled = !saving && !session.pending,
+                description = if (session.pending) "Save edits before combining recordings" else "Combine recordings")
         }
-        Text(
-            buildString {
-                append(project.name)
-                if (project.draft) append(" · unsaved take")
-            },
-            color = Synth.night, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis
-        )
-        SynthPanel(Modifier.fillMaxWidth().weight(1f)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Overview(overview, length, viewStart, viewEnd, selection, Modifier.weight(1f)) { center ->
-                    val span = viewEnd - viewStart
-                    viewStart = (center - span / 2).coerceIn(0L, length - span)
-                    viewEnd = viewStart + span
+        Text(project.name + if (project.draft) " · unsaved take" else "", color = Synth.night, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        WaveformSelectionEditor(project.name, file, overview, length, rate, selection, cursor,
+            onSeek = { cursor = it; player?.seek(it) }, enabled = !saving && !mixOpen, grid = project.grid, transport = transport)
+        transport()
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Key("EQ / Level", {
+                attempt {
+                    val settings = AudioEdits.slice(session.sections, range).map { it.levelSteps to it.eq }.distinct()
+                    mixedSettings = settings.size > 1
+                    mixLevel = settings.singleOrNull()?.first ?: 0
+                    mixEq = settings.singleOrNull()?.second ?: Eq.FLAT
+                    bypass = false
+                    mixOpen = true
                 }
-                val anchor = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
-                Key("−", { zoom(4.0, anchor) }, Modifier.width(48.dp), description = "Zoom out", height = KeyHeight.Small)
-                Key("+", { zoom(0.25, anchor) }, Modifier.width(48.dp), description = "Zoom in", height = KeyHeight.Small)
-            }
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                Waveform(
-                    file, overview, length, rate, viewStart, viewEnd, selection, playhead, dragging,
-                    onEdgeDrag = { edge, frame ->
-                        dragging = edge
-                        if (edge != null) {
-                            activeEdge = edge
-                            setEdge(edge, frame)
+            }, Modifier.weight(1f), enabled = ready, height = KeyHeight.Small)
+            Key("Loop", { loopOpen = true }, Modifier.weight(1f), enabled = ready, height = KeyHeight.Small)
+            Box(Modifier.weight(1f)) {
+                Key("Actions", { actionsOpen = true }, Modifier.fillMaxWidth(), enabled = ready, height = KeyHeight.Small)
+                DropdownMenu(actionsOpen, { actionsOpen = false }) {
+                    DropdownMenuItem(text = { Text("New track from selection") }, onClick = {
+                        actionsOpen = false
+                        attempt { player?.pause(); onExtract(AudioEdits.slice(session.sections, range)) }
+                    })
+                    DropdownMenuItem(text = { Text("Delete selection") }, onClick = {
+                        actionsOpen = false
+                        if (range.frameCount == length) askDelete = true
+                        else attempt {
+                            applySections(AudioEdits.delete(session.sections, range))
+                            val nextLength = length - range.frameCount
+                            val join = range.startFrame.coerceAtMost(nextLength - 1)
+                            cursor = (join - rate / 2).coerceAtLeast(0)
+                            selection.select(TrimRange(cursor, minOf(nextLength, join + rate / 2 + 1)))
+                            selection.confirmed = true
+                            selection.fit(TrimRange((join - rate * 2).coerceAtLeast(0), minOf(nextLength, join + rate * 2 + 1)))
                         }
-                    },
-                    onPan = { frames ->
-                        val span = viewEnd - viewStart
-                        viewStart = (viewStart + frames).coerceIn(0L, length - span)
-                        viewEnd = viewStart + span
-                    },
-                    onZoom = ::zoom,
-                    onTap = { frame ->
-                        playhead = frame
-                        if (playing) player?.seek(frame)
-                    }
-                )
+                    })
+                }
             }
-            (busyText ?: error ?: timeline?.exceptionOrNull()?.message ?: loaded?.exceptionOrNull()?.let { "This preview could not be opened." } ?: playerState?.error)?.let {
-                Text(it, color = if (busyText != null) Synth.muted else MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
-        }
-    }
-    val controls: @Composable ColumnScope.() -> Unit = {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (edge in TrimEdge.entries) {
-                val frame = if (edge == TrimEdge.Start) selectionStart else selectionEnd
-                Key(
-                    edge.name, { activeEdge = edge }, Modifier.weight(1f), selected = edge == activeEdge, role = Role.Tab,
-                    sublabel = clockMillis(frame, rate), description = "${edge.name} ${clockMillis(frame, rate)}"
-                )
-            }
-        }
-        NudgeKeys(rate, "edge") { frames ->
-            val current = if (activeEdge == TrimEdge.Start) selectionStart else selectionEnd
-            setEdge(activeEdge, current + frames)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val idle = !saving && file != null
-            Key(
-                if (playing) "Pause" else "Play", ::preview, Modifier.weight(1f), icon = if (playing) SynthIcon.Pause else SynthIcon.Play, face = Synth.cyan,
-                height = KeyHeight.Transport, enabled = idle && player != null && playbackAllowed, description = if (playing) "Pause preview" else "Preview selection"
-            )
-            Key("Keep", { cut(Cuts.keep(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Trim, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Keep only the selection")
-            Key("Delete", { cut(Cuts.delete(pieces, selection)) }, Modifier.weight(1f), icon = SynthIcon.Delete, height = KeyHeight.Transport, enabled = idle && !wholeSelected, description = "Delete the selection")
-            Key("Undo", { player?.stop(); onUndo() }, Modifier.weight(1f), icon = SynthIcon.Undo, height = KeyHeight.Transport, enabled = !saving && session.undo.isNotEmpty(), description = "Undo last cut")
+            Key("Undo", { player?.pause(); onUndo() }, Modifier.weight(1f), enabled = !saving && session.undo.isNotEmpty(), height = KeyHeight.Small)
+            Key("Redo", { player?.pause(); onRedo() }, Modifier.weight(1f), enabled = !saving && session.redo.isNotEmpty(), height = KeyHeight.Small)
+            Key(if (project.draft) "Save take" else "Save", { if (project.draft) onSave(false) else askSave = true }, Modifier.weight(1f),
+                icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving && (project.draft || session.pending), height = KeyHeight.Small)
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Key(
-                "Mix", { mixOpen = true }, Modifier.weight(1f), enabled = !saving,
-                sublabel = mixSummary(session.levelSteps, session.eq), description = "Level and EQ, ${mixSummary(session.levelSteps, session.eq)}"
-            )
-            Key(
-                if (project.draft) "Save to Library" else "Save",
-                { if (project.draft) onSave(false) else askSave = true },
-                Modifier.weight(2f), icon = SynthIcon.Save, face = Synth.yellow, enabled = !saving && (project.draft || session.pending)
-            )
+        val status = when {
+            saving -> "Saving…"
+            localError != null -> localError
+            error != null -> error
+            timeline?.exceptionOrNull() != null -> timeline.exceptionOrNull()?.message
+            loaded?.exceptionOrNull() != null -> "This preview could not be opened."
+            playerState?.error != null -> playerState.error
+            timeline == null -> "Preparing audio…"
+            overview.any { it.max >= Short.MAX_VALUE || it.min <= Short.MIN_VALUE } -> "Output reaches its limit. Lower the selected section's level in EQ."
+            session.pending -> "Edits ready to save."
+            else -> null
         }
+        status?.let { Text(it, color = Synth.night, style = MaterialTheme.typography.bodySmall) }
+        if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
     }
-
-    Column(
-        Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp), content = waveform)
-                Column(Modifier.width(360.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom), content = controls)
+    if (mixOpen) MixSheet(
+        "${clockMillis(range.startFrame, rate)} – ${clockMillis(range.endFrame, rate)}", mixLevel, mixEq,
+        mixed = mixedSettings, bypass = bypass, playing = playing, previewReady = player != null && playbackAllowed,
+        onChange = { level, eq -> attempt { mixLevel = level; mixEq = eq; mixedSettings = false; stageMix() } },
+        onBypass = { attempt { bypass = !bypass; stageMix() } },
+        onPreview = { play(true) },
+        onApply = {
+            attempt {
+                val next = AudioEdits.mix(session.sections, range, mixLevel, mixEq)
+                applySections(next)
+                previewSections = null
+                mixOpen = false
             }
-        } else BoxWithConstraints(Modifier.fillMaxSize()) {
-            // Short screens and large fonts scroll instead of squeezing the waveform below a usable height.
-            // ponytail: the keys' height is estimated from the font scale; measure them if this misjudges a device.
-            val roomy = maxHeight / LocalDensity.current.fontScale >= 500.dp
-            Column(
-                Modifier.fillMaxSize().then(if (roomy) Modifier else Modifier.verticalScroll(rememberScrollState())),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Column(Modifier.fillMaxWidth().then(if (roomy) Modifier.weight(1f) else Modifier.height(320.dp)), verticalArrangement = Arrangement.spacedBy(8.dp), content = waveform)
-                controls()
-            }
-        }
-    }
-
-    if (mixOpen) MixSheet(project.name, session.levelSteps, session.eq, onChange = onMix, onDismiss = { mixOpen = false })
-
-    if (askSave) AlertDialog(
-        onDismissRequest = { askSave = false },
-        title = { Text("Save edits") },
-        text = { Text("Save replaces this recording's audio. Save as new keeps it and adds a new recording named with today's date and time.") },
-        confirmButton = {
-            Column(horizontalAlignment = Alignment.End) {
-                TextButton({ askSave = false; player?.stop(); onSave(false) }) { Text("Save") }
-                TextButton({ askSave = false; player?.stop(); onSave(true) }) { Text("Save as new") }
-                TextButton({ askSave = false }) { Text("Cancel") }
-            }
-        }
+        },
+        onDismiss = { player?.pause(); resumePreview = false; previewSections = null; mixOpen = false },
+        status = localError ?: if (overview.any { it.max >= Short.MAX_VALUE || it.min <= Short.MIN_VALUE }) "Output reaches its limit. Lower Level." else null
     )
+    if (loopOpen) LoopDialog(range.frameCount, length, rate, session.sections, range,
+        onApply = { times -> attempt {
+            applySections(AudioEdits.repeat(session.sections, range, times))
+            selection.select(TrimRange(range.startFrame, range.startFrame + range.frameCount * times))
+            selection.confirmed = true
+            selection.selecting = false
+            selection.fit(selection.range(length + range.frameCount * (times - 1)))
+            cursor = range.startFrame
+            loopOpen = false
+        } }, onDismiss = { loopOpen = false })
+    if (askDelete) AlertDialog(onDismissRequest = { askDelete = false }, title = { Text("Delete recording?") },
+        text = { Text("The whole track is selected. Delete ${project.name} from the Library?") }, confirmButton = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Key("Cancel", { askDelete = false }, Modifier.weight(1f), height = KeyHeight.Small)
+                Key("Delete", { player?.stop(); askDelete = false; onDeleteTrack() }, Modifier.weight(1f), face = Synth.pink, height = KeyHeight.Small)
+            }
+        })
+    if (askSave) AlertDialog(onDismissRequest = { askSave = false }, title = { Text("Save edits") },
+        text = { Text("Save as new adds a recording. Replace original writes these edits into this recording's audio.") }, confirmButton = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Key("Save as new", { askSave = false; player?.stop(); onSave(true) }, Modifier.weight(1f), face = Synth.yellow, height = KeyHeight.Small)
+                    Key("Replace original", { askSave = false; player?.stop(); onSave(false) }, Modifier.weight(1f), height = KeyHeight.Small)
+                }
+                Key("Cancel", { askSave = false }, Modifier.fillMaxWidth(), height = KeyHeight.Small)
+            }
+        })
+}
+
+@Composable
+private fun LoopDialog(sectionFrames: Long, totalFrames: Long, rate: Int, sections: List<AudioSection>, range: TrimRange, onApply: (Int) -> Unit, onDismiss: () -> Unit) {
+    var count by rememberSaveable { mutableStateOf("2") }
+    val times = count.toIntOrNull()
+    val result = times?.let { runCatching { AudioEdits.repeat(sections, range, it) } }
+    val valid = result?.isSuccess == true
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Loop selection") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(count, { count = it }, label = { Text("Total plays, including the original") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), isError = !valid)
+            Text("The rest of the recording follows the final repetition.")
+            if (valid) Text("New duration · ${clockMillis(totalFrames + sectionFrames * (times - 1), rate)}")
+            else Text(result?.exceptionOrNull()?.message ?: "Choose between 1 and 64 plays.", color = MaterialTheme.colorScheme.error)
+        }
+    }, confirmButton = {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Key("Cancel", onDismiss, Modifier.weight(1f), height = KeyHeight.Small)
+            Key("Apply", { onApply(times!!) }, Modifier.weight(1f), face = Synth.cyan, enabled = valid, height = KeyHeight.Small)
+        }
+    })
 }
 
 /** The whole timeline with the visible window outlined; a tap moves the window there. */
 @Composable
-internal fun Overview(peaks: List<Peak>, length: Long, viewStart: Long, viewEnd: Long, selection: TrimRange, modifier: Modifier, onCenter: (Long) -> Unit) {
+internal fun Overview(peaks: List<Peak>, length: Long, viewStart: Long, viewEnd: Long, selection: TrimRange, modifier: Modifier, height: androidx.compose.ui.unit.Dp = 40.dp, onLongPress: (() -> Unit)? = null, onCenter: (Long) -> Unit) {
+    val center by rememberUpdatedState(onCenter)
+    val expand by rememberUpdatedState(onLongPress)
     Canvas(
-        modifier.height(40.dp)
-            .pointerInput(length) { detectTapGestures { onCenter((it.x / size.width * length).roundToLong()) } }
-            .semantics { contentDescription = "Whole recording overview" }
+        modifier.height(height)
+            .pointerInput(length, onLongPress != null) {
+                detectTapGestures(onLongPress = if (onLongPress == null) null else { _ -> expand?.invoke() },
+                    onTap = { center((it.x / size.width * length).roundToLong()) })
+            }
+            .semantics { contentDescription = "Whole recording overview"; stateDescription = "Viewing frames $viewStart to $viewEnd" }
     ) {
         fun x(frame: Long) = frame.toFloat() / length * size.width
         drawRect(Synth.cyan.copy(alpha = 0.18f), Offset(x(selection.startFrame), 0f), Size(x(selection.endFrame) - x(selection.startFrame), size.height))
@@ -299,10 +326,6 @@ internal fun Overview(peaks: List<Peak>, length: Long, viewStart: Long, viewEnd:
     }
 }
 
-/**
- * Drag a handle to move it (a loupe shows its exact samples), drag elsewhere to scroll,
- * pinch to zoom, tap to place the playhead.
- */
 @Composable
 internal fun Waveform(
     file: File?,
@@ -315,9 +338,14 @@ internal fun Waveform(
     playhead: Long?,
     dragging: TrimEdge?,
     onEdgeDrag: (TrimEdge?, Long) -> Unit,
-    onPan: (Long) -> Unit,
     onZoom: (Double, Long) -> Unit,
-    onTap: (Long) -> Unit
+    onTap: (Long) -> Unit,
+    selecting: Boolean = false,
+    onSelection: (TrimRange) -> Unit = {},
+    onLongPress: (() -> Unit)? = null,
+    grid: MusicalGrid = MusicalGrid(),
+    gridOffset: Long = 0L,
+    handlesEnabled: Boolean = true
 ) {
     var widthPx by remember { mutableStateOf(1) }
     // Close-up peaks are read straight from the file once the view settles; the overview fills in meanwhile.
@@ -342,59 +370,80 @@ internal fun Waveform(
     }
     val current by rememberUpdatedState(Triple(viewStart, viewEnd, selection))
     val edgeDrag by rememberUpdatedState(onEdgeDrag)
-    val pan by rememberUpdatedState(onPan)
     val zoom by rememberUpdatedState(onZoom)
     val tap by rememberUpdatedState(onTap)
+    val selectRange by rememberUpdatedState(onSelection)
+    val longPress by rememberUpdatedState(onLongPress)
     Box(Modifier.fillMaxSize()) {
         Canvas(
             Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)).background(Synth.night)
-                .pointerInput(length) {
-                    // A touch on a handle becomes a drag only once it moves; a still touch places the playhead.
+                .pointerInput(length, selecting, handlesEnabled) {
                     val slop = 28.dp.toPx()
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         val (start, end, range) = current
                         fun frameAt(x: Float) = (start + x / size.width * (end - start)).roundToLong().coerceIn(0L, length)
                         fun xOf(frame: Long) = (frame - start).toFloat() / (end - start) * size.width
-                        // A narrow range shrinks the handle zones so its middle stays free to drag.
                         val zone = minOf(slop, abs(xOf(range.endFrame) - xOf(range.startFrame)) / 3f)
-                        val nearStart = abs(down.position.x - xOf(range.startFrame)) <= zone
-                        val nearEnd = abs(down.position.x - xOf(range.endFrame)) <= zone
+                        val nearStart = handlesEnabled && abs(down.position.x - xOf(range.startFrame)) <= zone
+                        val nearEnd = handlesEnabled && abs(down.position.x - xOf(range.endFrame)) <= zone
+                        val anchor = frameAt(down.position.x).coerceAtMost(length - 1)
                         var edge: TrimEdge? = null
-                        var travelled = 0f
-                        do {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.first()
-                            val dx = change.position.x - change.previousPosition.x
-                            travelled += abs(dx)
-                            if (edge == null && (nearStart || nearEnd) && travelled > viewConfiguration.touchSlop) {
-                                // Overlapping handles split by direction: right drags the end, left the start.
-                                edge = if (nearStart && nearEnd) (if (dx > 0) TrimEdge.End else TrimEdge.Start)
-                                else if (nearStart) TrimEdge.Start else TrimEdge.End
+                        var moved = false
+                        var transformed = false
+                        var held = false
+                        var finished = false
+                        while (!finished) {
+                            val remaining = down.uptimeMillis + viewConfiguration.longPressTimeoutMillis - android.os.SystemClock.uptimeMillis()
+                            val event = if (!moved && !transformed && longPress != null) {
+                                withTimeoutOrNull(remaining.coerceAtLeast(1L)) { awaitPointerEvent() }
+                            } else awaitPointerEvent()
+                            if (event == null) {
+                                held = true
+                                longPress?.invoke()
+                                waitForUpOrCancellation()
+                                break
                             }
-                            if (edge != null) {
-                                edgeDrag(edge, frameAt(change.position.x))
-                            } else if (!nearStart && !nearEnd) {
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (change.isConsumed) { transformed = true; break }
+                            val dx = change.position.x - down.position.x
+                            val dy = change.position.y - down.position.y
+                            moved = moved || kotlin.math.hypot(dx, dy) > viewConfiguration.touchSlop
+                            var handled = false
+                            if (event.changes.count { it.pressed } > 1) {
+                                transformed = true
+                                handled = true
                                 val (viewFrom, viewTo) = current
                                 val framesPerPx = (viewTo - viewFrom).toDouble() / size.width
                                 val factor = event.calculateZoom()
-                                val shift = event.calculatePan().x
                                 if (factor != 1f) zoom(1.0 / factor, (viewFrom + event.calculateCentroid().x * framesPerPx).roundToLong())
-                                else if (shift != 0f && travelled > viewConfiguration.touchSlop) pan((-shift * framesPerPx).roundToLong())
+                            } else if (moved && !transformed && abs(dx) >= abs(dy)) {
+                                val frame = frameAt(change.position.x)
+                                if (selecting) {
+                                    handled = true
+                                    selectRange(TrimRange(minOf(anchor, frame).coerceAtMost(length - 1), maxOf(anchor + 1, frame).coerceAtMost(length)))
+                                } else if (nearStart || nearEnd) {
+                                    handled = true
+                                    if (edge == null) edge = if (nearStart && nearEnd) (if (dx > 0) TrimEdge.End else TrimEdge.Start) else if (nearStart) TrimEdge.Start else TrimEdge.End
+                                    edgeDrag(edge, frame)
+                                }
                             }
-                            event.changes.forEach { if (it.positionChanged()) it.consume() }
-                        } while (event.changes.any { it.pressed })
+                            if (handled) event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            finished = event.changes.none { it.pressed }
+                        }
                         if (edge != null) edgeDrag(null, 0L)
-                        else if (travelled <= viewConfiguration.touchSlop) tap(frameAt(down.position.x))
+                        if (!moved && !transformed && !held) tap(frameAt(down.position.x))
                     }
                 }
                 .semantics {
                     contentDescription = "Waveform"
                     stateDescription = "Selection ${clockMillis(selection.startFrame, rate)} to ${clockMillis(selection.endFrame, rate)}"
+                    if (onLongPress != null) onLongClick("Open full-screen waveform") { onLongPress(); true }
                 }
         ) {
             widthPx = size.width.toInt().coerceAtLeast(1)
             fun x(frame: Long) = (frame - viewStart).toFloat() / (viewEnd - viewStart) * size.width
+            drawMusicalGrid(grid, rate, viewStart + gridOffset, viewEnd + gridOffset)
             drawRect(Synth.cyan.copy(alpha = 0.12f), Offset(x(selection.startFrame), 0f), Size(x(selection.endFrame) - x(selection.startFrame), size.height))
             val close = detail?.takeIf { it.first == viewStart..viewEnd }
             if (close != null) drawPeaks(close.second, viewStart.coerceIn(0L, length), viewEnd.coerceIn(0L, length), viewStart, viewEnd, Synth.cyan)
@@ -420,7 +469,7 @@ internal fun Waveform(
 }
 
 /** Peaks spread evenly over frames [from, to), drawn into the view [viewStart, viewEnd). */
-private fun DrawScope.drawPeaks(peaks: List<Peak>, from: Long, to: Long, viewStart: Long, viewEnd: Long, color: Color) {
+internal fun DrawScope.drawPeaks(peaks: List<Peak>, from: Long, to: Long, viewStart: Long, viewEnd: Long, color: Color) {
     if (peaks.isEmpty() || to <= from || viewEnd <= viewStart) {
         drawLine(color.copy(alpha = 0.4f), Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 1f)
         return
@@ -438,24 +487,6 @@ private fun DrawScope.drawPeaks(peaks: List<Peak>, from: Long, to: Long, viewSta
         drawRect(color, Offset(left, top), Size(width, (bottom - top).coerceAtLeast(1f)))
     }
 }
-
-/** Fine moves shared by Edit's range edges and Clip's parts. */
-@Composable
-internal fun NudgeKeys(rate: Int, what: String, onNudge: (frames: Long) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        for ((label, unit, frames) in listOf(
-            Triple("−10", "ms", -rate / 100L), Triple("−1", "frame", -1L), Triple("+1", "frame", 1L), Triple("+10", "ms", rate / 100L)
-        )) {
-            Key(label, { onNudge(frames) }, Modifier.weight(1f), sublabel = unit, description = "Move $what $label $unit", height = KeyHeight.Small)
-        }
-    }
-}
-
-/** What the Mix key says it is doing, or Flat. */
-internal fun mixSummary(levelSteps: Int, eq: Eq): String = listOfNotNull(
-    "−${levelSteps * OverdubMix.DB_PER_STEP} dB".takeIf { levelSteps != 0 },
-    "EQ".takeIf { !eq.flat }
-).joinToString(" · ").ifEmpty { "Flat" }
 
 internal fun clockMillis(frames: Long, rate: Int) = RecordingCore.formatClock(RecordingCore.elapsedMillis(frames, rate), withMillis = true, hours = false)
 

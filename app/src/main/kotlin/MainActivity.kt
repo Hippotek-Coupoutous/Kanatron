@@ -34,14 +34,14 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -55,8 +55,8 @@ import com.kanatron.app.core.firstClip
 import com.kanatron.app.core.ResumeStartGate
 import com.kanatron.app.core.TrimRange
 import com.kanatron.app.data.AppViewModel
-import com.kanatron.app.data.ClipPart
 import com.kanatron.app.data.EditSession
+import com.kanatron.app.core.AudioSection
 import com.kanatron.app.data.ImportStage
 import com.kanatron.app.data.MicrophoneAction
 import com.kanatron.app.data.OverdubCalibrationStore
@@ -317,11 +317,11 @@ private fun KanatronApp(
         when {
             appState.editSaving -> Unit
             // Only an untouched single part is nothing to lose.
-            route == Route.CLIP && appState.clip.singleOrNull()?.let { it == ClipPart(it.project, it.project.firstClip.trim, 0L) } != true ->
+            route == Route.CLIP && (appState.clipUndo.isNotEmpty() || appState.clipGrid != appState.clip.firstOrNull()?.project?.grid) ->
                 discardAndThen = { appViewModel.closeClip(); then() }
             route == Route.CLIP -> { appViewModel.closeClip(); then() }
             route == Route.OVERDUB_REVIEW -> discardAndThen = { appViewModel.discardOverdub(); then() }
-            appState.edit != null -> discardAndThen = { appViewModel.discardEdits(); then() }
+            appState.edit?.pending == true -> discardAndThen = { appViewModel.discardEdits(); then() }
             else -> then()
         }
     }
@@ -477,14 +477,16 @@ private fun KanatronApp(
                             val session = appState.edit?.takeIf { it.projectId == project.id }
                             EditScreen(
                                 project = project,
-                                session = session ?: EditSession(project.id, listOf(project.firstClip.trim), emptyList()),
+                                session = session ?: EditSession(project.id, listOf(AudioSection(project.firstClip.trim))),
                                 repository = repository,
                                 playbackAllowed = playbackAllowed(recording.phase),
                                 saving = appState.editSaving,
                                 error = appState.editError ?: appState.libraryError,
-                                onCut = { appViewModel.cut(project, it) },
-                                onUndo = appViewModel::undoCut,
-                                onMix = { level, eq -> appViewModel.mix(project, level, eq) },
+                                onEdit = { appViewModel.editSections(project, it) },
+                                onUndo = appViewModel::undoEdit,
+                                onRedo = appViewModel::redoEdit,
+                                onExtract = { appViewModel.extractSelection(project, it) },
+                                onDeleteTrack = { appViewModel.deleteProject(project.id) },
                                 onSave = { asNew -> appViewModel.saveEdits(project, asNew) },
                                 onClip = { appViewModel.startClip(project) }
                             )
@@ -493,13 +495,19 @@ private fun KanatronApp(
                 }
                 Route.CLIP -> ClipScreen(
                     parts = appState.clip,
+                    sampleRate = appState.clipRate,
+                    grid = appState.clipGrid,
+                    canUndo = appState.clipUndo.isNotEmpty(),
+                    canRedo = appState.clipRedo.isNotEmpty(),
                     repository = repository,
                     playbackAllowed = playbackAllowed(recording.phase),
                     saving = appState.editSaving,
                     error = appState.editError,
-                    onPart = appViewModel::setClipPart,
+                    onParts = appViewModel::setClipParts,
+                    onGrid = appViewModel::setClipGrid,
+                    onUndo = appViewModel::undoClip,
+                    onRedo = appViewModel::redoClip,
                     onAdd = { appViewModel.navigate(Route.CLIP_PICK) },
-                    onRemove = appViewModel::removeClipPart,
                     onSave = appViewModel::saveClip,
                     onClose = { leavingEdits {} }
                 )

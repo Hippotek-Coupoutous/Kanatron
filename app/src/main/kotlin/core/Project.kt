@@ -82,7 +82,6 @@ private fun requireValidTracks(tracks: List<ProjectTrack>, channels: Int, sample
     require(clips.map(ProjectClip::id).distinct().size == clips.size) { "Clip ids must be unique." }
     require(clips.size <= Project.MAX_CLIPS) { "A project supports up to ${Project.MAX_CLIPS} clips." }
     require(clips.maxOf { it.source.channels } == channels) { "Project channels do not match its sources." }
-    require(clips.any { it.source.sampleRate == sampleRate }) { "The project sample rate must match at least one source rate." }
     require(MultitrackRenderer.frameCount(tracks, sampleRate) > 0L) { "A project must contain audio." }
 }
 
@@ -95,7 +94,8 @@ data class Project(
     val silent: Boolean = false,
     /** A recovered, unsaved take: stored on disk but hidden from the Library until explicitly saved. */
     val draft: Boolean = false,
-    val tracks: List<ProjectTrack>
+    val tracks: List<ProjectTrack>,
+    val grid: MusicalGrid = MusicalGrid()
 ) {
     init {
         require(id.matches(PROJECT_ID))
@@ -118,6 +118,10 @@ data class Project(
         append("\"channels\":").append(channels).append(',')
         append("\"silent\":").append(silent).append(',')
         append("\"draft\":").append(draft).append(',')
+        append("\"grid\":{\"enabled\":").append(grid.enabled)
+        append(",\"barMillis\":").append(grid.barMillis)
+        append(",\"beatsPerBar\":").append(grid.beatsPerBar)
+        append(",\"snap\":").append(grid.snap).append("},")
         append("\"tracks\":").append(tracks.tracksToJson())
         append(",\"createdAtEpochMillis\":").append(createdAtEpochMillis)
         append('}')
@@ -150,7 +154,10 @@ data class Project(
                 createdAtEpochMillis = root.long("createdAtEpochMillis"),
                 silent = if (root.containsKey("silent")) root.boolean("silent") else false,
                 draft = if (root.containsKey("draft")) root.boolean("draft") else false,
-                tracks = tracks
+                tracks = tracks,
+                grid = root["grid"]?.asObject("grid")?.let {
+                    MusicalGrid(it.boolean("enabled"), it.long("barMillis"), it.long("beatsPerBar").toIntExact("beatsPerBar"), it.boolean("snap"))
+                } ?: MusicalGrid()
             )
         }
 

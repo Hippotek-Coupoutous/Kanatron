@@ -3,6 +3,7 @@ package com.kanatron.app.data
 import android.content.Context
 import com.kanatron.app.core.ExportPreflight
 import com.kanatron.app.core.MultitrackRenderer
+import com.kanatron.app.core.MusicalGrid
 import com.kanatron.app.core.PROJECT_ID
 import com.kanatron.app.core.PeakExtractor
 import com.kanatron.app.core.Project
@@ -34,7 +35,9 @@ class ProjectRepository(context: Context) {
     private val exportRetention = ExportRetention(rootDirectory)
 
     /** Repairs takes and rebuilds records at startup; each pass scans project metadata once. */
-    internal val recovery = TakeRecovery(projects, recordings, ::projectFile, ::get, ::createProject)
+    internal val recovery = TakeRecovery(projects, recordings, ::projectFile, ::get) { id, file, rate, channels, frames, name, silent, draft ->
+        createProject(id, file, rate, channels, frames, name, silent, draft)
+    }
 
     data class LibraryContents(
         val projects: List<Project>,
@@ -102,6 +105,7 @@ class ProjectRepository(context: Context) {
     /** Holds the private rendered WAV, and whether it clipped, only while the bounded callback consumes it. */
     fun <T> withTemporaryWav(
         project: Project,
+        onPeak: (Double) -> Unit = {},
         consume: (wav: File, clipped: Boolean) -> T
     ): T = synchronized(ARRANGEMENT_WORK_LOCK) {
         if (!arrangementWork.isDirectory && !arrangementWork.mkdirs()) {
@@ -115,15 +119,15 @@ class ProjectRepository(context: Context) {
         }
         val temp = File.createTempFile(MIX_SOURCE_PREFIX, MIX_SOURCE_SUFFIX, arrangementWork)
         try {
-            consume(temp, MultitrackRenderer.renderToWav(project, ::sourceFile, temp))
+            consume(temp, MultitrackRenderer.renderToWav(project, ::sourceFile, temp, onPeak = onPeak))
         } finally {
             temp.delete()
         }
     }
 
     /** Renders [arrangement] as a new Library recording. Returns null, committing nothing, when the sum would clip. */
-    fun saveRendered(arrangement: Project): Project? = withTemporaryWav(arrangement) { wav, clipped ->
-        if (clipped) null else saveTake(UUID.randomUUID().toString(), wav, arrangement.sampleRate, arrangement.channels, arrangement.totalFrames)
+    fun saveRendered(arrangement: Project, onPeak: (Double) -> Unit = {}): Project? = withTemporaryWav(arrangement, onPeak) { wav, clipped ->
+        if (clipped) null else saveTake(UUID.randomUUID().toString(), wav, arrangement.sampleRate, arrangement.channels, arrangement.totalFrames, grid = arrangement.grid)
     }
 
     /**
@@ -131,7 +135,7 @@ class ProjectRepository(context: Context) {
      * The new WAV lands before the metadata that points at it, so a crash leaves at most a WAV startup recovery adopts.
      */
     fun replaceAudio(project: Project, arrangement: Project): Project = withTemporaryWav(arrangement) { wav, clipped ->
-        if (clipped) throw IOException("The edit would clip. Lower the level in Mix; nothing was changed.")
+        if (clipped) throw IOException("The edit would clip. Lower the selected section's level in EQ.")
         synchronized(PROJECT_LOCK) {
             val file = File(recordings, "take-${UUID.randomUUID()}.wav")
             Files.move(wav.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
@@ -249,7 +253,8 @@ class ProjectRepository(context: Context) {
         sampleRate: Int,
         channels: Int,
         frames: Long,
-        silent: Boolean = false
+        silent: Boolean = false,
+        grid: MusicalGrid = MusicalGrid()
     ): Project? {
         if (frames <= 0L) return null
         require(takeId.matches(PROJECT_ID)) { "Invalid recording id" }
@@ -268,7 +273,7 @@ class ProjectRepository(context: Context) {
                 throw IOException("Could not finalize recording; the partial file was kept for startup recovery.")
             }
             return try {
-                createProject(takeId, finalFile, sampleRate, channels, frames, takeName(finalFile.lastModified()), silent)
+                createProject(takeId, finalFile, sampleRate, channels, frames, takeName(finalFile.lastModified()), silent, grid = grid)
             } catch (failure: Throwable) {
                 if (!finalFile.renameTo(partialFile)) {
                     throw IOException("Project metadata could not be saved and the WAV could not be moved back to a partial recording.", failure)
@@ -313,7 +318,8 @@ class ProjectRepository(context: Context) {
         frames: Long,
         name: String,
         silent: Boolean = false,
-        draft: Boolean = false
+        draft: Boolean = false,
+        grid: MusicalGrid = MusicalGrid()
     ): Project {
         val project = Project(
             id = id,
@@ -323,6 +329,7 @@ class ProjectRepository(context: Context) {
             createdAtEpochMillis = System.currentTimeMillis(),
             silent = silent,
             draft = draft,
+            grid = grid,
             tracks = listOf(
                 ProjectTrack(
                     id = "track-main",

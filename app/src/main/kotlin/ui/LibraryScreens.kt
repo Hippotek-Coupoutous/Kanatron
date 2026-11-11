@@ -49,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
@@ -371,6 +372,9 @@ internal fun SketchScreen(
                     }
                 }
                 Key("Timing calibration", onCalibration, Modifier.fillMaxWidth(), description = "Overdub timing calibration", height = KeyHeight.Small)
+                val uriHandler = LocalUriHandler.current
+                // A phone without a browser throws; the link is optional, so the tap does nothing.
+                Key("Open-source licences", { runCatching { uriHandler.openUri("https://rootedrobot.com/kanatron/licences") } }, Modifier.fillMaxWidth(), height = KeyHeight.Small)
             }
         }
         val prompt = draftPrompt

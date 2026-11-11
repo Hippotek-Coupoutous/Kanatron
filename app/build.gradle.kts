@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -12,7 +14,28 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.1.0-alpha.1"
+    }
+
+    // The key lives outside the repo; without it assembleRelease stays unsigned.
+    val localProps = Properties()
+    rootProject.file("local.properties").takeIf { it.exists() }?.reader()?.use { localProps.load(it) }
+    val releaseKey = localProps.getProperty("kanatron.storeFile")?.let { path ->
+        signingConfigs.create("release") {
+            storeFile = file(path)
+            storePassword = localProps.getProperty("kanatron.storePassword")
+            keyAlias = localProps.getProperty("kanatron.keyAlias")
+            keyPassword = localProps.getProperty("kanatron.keyPassword")
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            signingConfig = releaseKey
+        }
     }
 
     buildFeatures {
